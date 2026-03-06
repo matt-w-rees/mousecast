@@ -1,6 +1,6 @@
 # mousecast
 
-Forecasting house mouse abundance and plagues in Australian grain-growing regions.
+Forecasting house mouse abundance in Australian grain-growing regions.
 
 ## Overview
 
