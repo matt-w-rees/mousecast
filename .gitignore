@@ -7,7 +7,7 @@
 # RStudio
 .Rproj.user/
 
-# data files
+# file types
 *.csv
 *.tif
 *.tiff
@@ -16,6 +16,7 @@
 *.accdb
 *.RDS
 *.rds
+*.pdf
 
 # targets pipeline
 _targets/

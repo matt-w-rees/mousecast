@@ -11,10 +11,12 @@
   background-origin: content-box;
 }
 
-/* Footer logo area */
+/* Footer logo area: NSW logo on the left, GRDC + CSIRO on the right */
 .doc-footer {
   margin-top: 60px;
   padding-top: 20px;
   border-top: 1px solid #dee2e6;
-  text-align: center;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }

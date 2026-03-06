@@ -2,7 +2,8 @@
 title: "Mouse Forecast"
 subtitle: "Current season"
 description: "House mouse abundance across Australian grain-growing regions"
-title-block-banner: "white"
+title-block-banner: "#EBEBEB"
+title-block-banner-color: "black"
 format:
   html:
     self-contained: true
@@ -421,8 +422,8 @@ make_prev_note <- function(prev_items, prev_s) {
     "<br>Faded polygons show data from the previous season (",
     prev_s,
     ") where current-season surveys are not yet available",
-    " \u2014 interpret with caution as mouse populations can change",
-    " substantially between seasons."
+    " \u2014 *interpret with caution as mouse populations can change",
+    " substantially between seasons*."
   )
 }
 
@@ -430,13 +431,11 @@ make_prev_note <- function(prev_items, prev_s) {
 ## The legend-key explanation appears on its own line; a fallback note is
 ## appended when at least one polygon uses previous-season data.
 cap_aez <- paste0(
-  "Proportion of sites which detected mice presence within GRDC agro-ecological zones.<br>",
-  "Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%.",
+  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zones with mice presence (Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%).",
   make_prev_note(aez_prev_season, prev_season)
 )
 cap_region <- paste0(
-  "Proportion of sites which detected mice presence within monitoring regions.<br>",
-  "Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%.",
+  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%).",
   make_prev_note(reg_prev_season, prev_season)
 )
 
@@ -529,7 +528,7 @@ make_activity_fill <- function(has_nodata = FALSE) {
     limits   = shown_levels,
     drop     = FALSE,
     na.value = "grey80",
-    name  = "Expected mouse abundance",
+    name  = "Expected mouse abundance derived from survey data",
     guide = guide_legend(
       title.position = "top",
       nrow  = if (!is.na(prev_season)) 2L else 1L,
@@ -579,20 +578,19 @@ plot_region_map <- function() {
 
 ### In detail
 
-+ Western Australia: widespread and concerning reports of very high mouse numbers, primarily around Geraldton, suggesting an outbreak is currently underway. 
-Recent monitoring in suggests this extends to the Kwinana West region. 
++ Western Australia: we are receiving concerning reports of very high mouse numbers, primarily around Geraldton, suggesting an outbreak could be underway. 
+Recent rapid assessment monitoring suggests this extends to the Kwinana West region. 
 We are currently uncertain about other regions in the state. 
 
-+ Adelaide Plains: strong evidence of widespread, moderate-high (and increasing) population densities from recent survey data. 
-There is some potential of an outbreak here depending on future conditions.
++ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data. 
+There is some potential for an outbreak here depending on future conditions.
+
++ Northern NSW and southern QLD: Low-moderate numbers seen here from recent rapid assessment monitoring. 
+
++ Victoria, southern & central west NSW: mouse numbers likely remain low. 
 
 
-+ Low-moderate numbers seen across northern NSW and southern QLD from recent rapid assessment monitoring, although some farmer reports have come in recently.  
-
-+ Low mouse numbers in Victoria, southern & central west NSW. 
-
-
-## Map: survey data
+## Map
 
 ::: {.panel-tabset}
 
@@ -616,13 +614,14 @@ plot_region_map()
 
 :::
 
+#### Key results from recent mouse surveys
 
 + `r {
   # High-activity regions
   if (length(reg_high) == 0) {
     "No monitoring regions currently show high mouse activity based on the combined survey index."
   } else {
-    paste0("Mouse activity is **high** in ", list_names(reg_high), ".")
+    paste0("Survey data shows mouse activity to be **high** in ", list_names(reg_high), ".")
   }
 }`
 
@@ -632,57 +631,43 @@ plot_region_map()
   if (length(reg_med) == 0) {
     "No monitoring regions currently show moderate mouse activity."
   } else {
-    paste0("Mouse activity is **moderate** in ", list_names(reg_med), ".")
+    paste0("Survey data shows mouse activity to be **moderate** in ", list_names(reg_med), ".")
   }
 }`
 
-
-+ `r {
-  # Coverage note — regions with no current-season data within the recent window
-  if (length(reg_nodata) == 0) {
-    paste0("All ", n_reg_total, " recently-surveyed regions have current-season data.")
-  } else {
-    paste0(list_names(reg_nodata),
-           " had no data this season and ",
-           if (length(reg_nodata) == 1) "is" else "are",
-           " shown in grey.")
-  }
-}`
 
 
 
 
 ## Management reccomendations
 
-1. Actively gauge mouse numbers by walking through paddocks (mouse chew cards and active burrow counts are
-useful tools at this time of year).
-2. At 6 weeks prior to sowing (now): If mouse activity is high and there is plenty of background food, reduce the
-background food through light tillage or sheep grazing, and strategically bait with ZnP25 as the only currently
-registered ZnP bait available. If mice are still a problem at sowing, be prepared to bait again at that time,
-ensuring a 6-week gap to overcome any behavioural aversion from ingesting a sub-lethal dose.
-3. At sowing: If mice remain a problem at sowing, apply bait off the back of the seeder to prevent damage to the
-freshly sown crop.
-4. Baiting at sowing is most effective if no other food sources are available.
-5. Talk to bait suppliers early to ensure timely supply. As with any agricultural chemical, use the product in
-accordance with the label instructions, and report any adverse or off target effects via the APVMA website.
+1. Monitor mice activity by walking through paddocks and [searching for active burrows (chew cards are also useful at this time of the year)](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/know-your-mouse-numbers). Two or three active burrows per 100 square metres are cause for concern prior to sowing. 
+
+2. Where mouse activity is high, [strategically apply bait](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/mouse-baiting) off the back of the seeder to prevent damage to the
+freshly sown crop. ZnP25 is the only currently registered bait available; use in
+accordance with the label instructions and report any adverse effects (including a lack of efficacy) via the [APVMA website](https://www.apvma.gov.au/regulation/adverse-experience-reporting-program). Wait at least 6 weeks before baiting again, as mice could otherwise develop bait-aversion.
+
+3. Reduce available mouse food (e.g., spilt grain). High rates of background food directly reduces baiting effectiveness (as mice are less likely to consume the baits). 
 
 
 ## About
 
-Mouse forecasts are possible through GRDC’s investment in CSP2501-006RTX (Mouse surveillance and monitoring to inform leading practice).
-
-Monitoring data is collected 2 - 3 times a year at each long-term monitoring site. Using live-traps, active burrow seaches and chew card surveys. 
-
-Data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Rural Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also supplied through the **CSP2501-006RTX (Mouse Ecology project)**.
+Mouse forecasts are enabled through a [GRDC AND CSIRO investment](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). 
 
 Forecasts will be updated seasonally and as new data comes available. We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. 
 
-Mouse forecasts are put together through consultation with the National Mouse Group (NMG), a grower-led group made up of 20-30 members who meet 3x a year to discuss the current mouse situation and develop management recommendations. The NMG comprises grower representatives, state government staff, grain industry representatives, GRDC and CSIRO.  
+Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
+Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
+
+Mouse survey data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Rural Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+
+We also receive reports from farmers and agronomists, both directly and through the National Mouse Group. This is key information we consider when providing advice given we cannot feasibly survey across the entire grain growing region. The National Mouse Group is a grower-led group comprising farmers, industry representatives, state government, GRDC and CSIRO.  The group meet 3x a year to discuss the current mouse management, and review these forecast communications. 
 
 
-### Contact
 
-Seen mice? Want to get involved? Contact Steve Henry [steve.henry@csiro.au](steve.henry@csiro.au)
+## Contact
+
+Seen mice? Want to get involved in the National Mouse Group? Contact Steve Henry [steve.henry@csiro.au](steve.henry@csiro.au)
 
 Questions about the project or forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](matt.rees@csiro.au)
 
@@ -694,4 +679,9 @@ We value your feedback.
 
 ::: {.doc-footer}
 ![](images/logo_nsw_gov.png){height="60px" style="opacity: 0.85;"}
+
+<div>
+![](images/logo_csiro.png){height="60px" style="opacity: 0.85;"}
+![](images/logo_grdc.png){height="60px" style="opacity: 0.85;"}
+</div>
 :::
