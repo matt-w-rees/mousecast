@@ -375,8 +375,13 @@ tar_plan(
   # quarto report: plots of filtered cleaned data
   tar_quarto(cleaned_raw_dataset_filtered_plots, path = "quarto_reports/cleaned_raw_dataset_filtered_plots.qmd", quiet = TRUE),
   
-  # quarto report: mouse update using this raw data 
-  tar_quarto(mouse_update_raw_data, path = "quarto_reports/mouse_update_raw_data.qmd", quiet = TRUE),
+  # quarto report: mouse update using this raw data
+  # rendered HTML is also copied to docs/index.html so GitHub Pages stays up to date
+  tar_target(mouse_update_raw_data, {
+    quarto::quarto_render("quarto_reports/mouse_update_raw_data.qmd", quiet = TRUE)
+    file.copy("quarto_reports/mouse_update_raw_data.html", "docs/index.html", overwrite = TRUE)
+    "docs/index.html"
+  }, format = "file"),
   
   
   
