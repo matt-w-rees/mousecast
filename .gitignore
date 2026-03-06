@@ -1,0 +1,52 @@
+# R history / workspace
+.Rhistory
+.RData
+.RDataTmp
+.Ruserdata
+
+# RStudio
+.Rproj.user/
+
+# data files
+*.csv
+*.tif
+*.tiff
+*.nc
+*.gif
+*.accdb
+*.RDS
+*.rds
+
+# targets pipeline
+_targets/
+
+# other folders
+quarto_reports/images/
+quarto_reports/seasonal_summaries/
+quarto_reports/*.html 
+derived_data/predictor_variables/
+derived_data/model_fits/
+derived_data/data_vis/
+raw_data/predictor_variables/
+raw_data/mouse_updates/
+tmp/
+
+
+
+# R markdown cache
+*_cache/
+cache/
+
+# package build
+*-Ex.R
+/*.tar.gz
+/*.Rcheck/
+
+# docs
+docs/
+
+# auth
+.httr-oauth
+
+# temp
+.DS_Store

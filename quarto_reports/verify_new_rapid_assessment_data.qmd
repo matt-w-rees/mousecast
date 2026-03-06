@@ -1,0 +1,743 @@
+---
+title: "Rapid Assessment Data Verification Report"
+subtitle: "`r basename(params$csv_path)`"
+params:
+  csv_path: "raw_data/survey_data/rapid_assessment_data_2026_onwards/adelaide_plains/19_01_2026.csv"
+  site_info_path: null
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+
+# path to the CSV to verify — passed as a parameter when rendered via targets pipeline
+path <- params$csv_path
+
+# Load required packages
+library(dplyr)
+library(leaflet)
+library(sf)
+library(lubridate)
+library(readr)
+library(knitr)
+
+# Load data
+data <- read_csv(path, show_col_types = FALSE)
+
+# Initialize error tracking
+validation_errors <- list()
+validation_passed <- TRUE
+```
+
+## Survey Information
+
+**Data file:** `r basename(path)`
+**Report generated:** `r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`
+**Number of records:** `r nrow(data)`
+
+---
+
+# Data Validation Checks {.tabset}
+
+```{r checks-setup}
+# Expected columns and their required R class after read_csv()
+# character columns are read as-is; date_in/date_out arrive as character (d/m/Y strings)
+# and are parsed with dmy() later in the pipeline
+expected_cols <- c(
+  "project", "recorder", "organisation",
+  "state", "region", "farmer", "site", "subsite", "new_site",
+  "longitude", "latitude",
+  "date_in", "date_out",
+  "crop_type", "crop_stage", "ground_cover_percent", "biomass",
+  paste0("active_burrows_t", 1:4),
+  paste0("chewcard_percent_", 1:40),
+  "comments"
+)
+
+# Expected class for each column (columns not listed are checked only for presence)
+expected_classes <- list(
+  new_site             = "logical",
+  longitude            = "numeric",
+  latitude             = "numeric",
+  ground_cover_percent = "numeric",
+  active_burrows_t1    = "numeric",
+  active_burrows_t2    = "numeric",
+  active_burrows_t3    = "numeric",
+  active_burrows_t4    = "numeric"
+)
+# all chewcard columns should also be numeric
+for (i in 1:40) expected_classes[[paste0("chewcard_percent_", i)]] <- "numeric"
+```
+
+## Column Structure
+
+```{r check-columns}
+missing_cols <- setdiff(expected_cols, names(data))
+extra_cols <- setdiff(names(data), expected_cols)
+
+if (length(missing_cols) > 0) {
+  validation_errors <- c(validation_errors,
+                         list(paste("Missing columns:", paste(missing_cols, collapse = ", "))))
+  validation_passed <- FALSE
+  cat("❌ **MISSING COLUMNS:**", paste(missing_cols, collapse = ", "), "\n\n")
+} else {
+  cat("✓ All expected columns present\n\n")
+}
+
+if (length(extra_cols) > 0) {
+  cat("⚠️  **UNEXPECTED COLUMNS:**", paste(extra_cols, collapse = ", "), "\n\n")
+}
+```
+
+## Blank Cells
+
+```{r check-blanks}
+blank_issues <- data %>%
+  mutate(across(everything(), as.character)) %>%
+  summarise(across(everything(), ~sum(.x == "", na.rm = TRUE))) %>%
+  select(where(~.x > 0))
+
+if (ncol(blank_issues) > 0) {
+  validation_errors <- c(validation_errors,
+                         list("Blank cells found (should be explicit NA)"))
+  validation_passed <- FALSE
+  cat("❌ **BLANK CELLS FOUND** (should be NA):\n\n")
+  kable(blank_issues)
+} else {
+  cat("✓ No blank cells found\n\n")
+}
+```
+
+## Required Fields
+
+```{r check-required}
+required_fields <- c("project", "recorder", "state", "region",
+                     "farmer", "site",
+                     "new_site", "longitude", "latitude", "date_in", "date_out")
+
+na_counts <- data %>%
+  select(all_of(required_fields[required_fields %in% names(data)])) %>%
+  summarise(across(everything(), ~sum(is.na(.x)))) %>%
+  select(where(~.x > 0))
+
+if (ncol(na_counts) > 0) {
+  validation_errors <- c(validation_errors,
+                         list("Missing values in required fields"))
+  validation_passed <- FALSE
+  cat("❌ **MISSING VALUES IN REQUIRED FIELDS:**\n\n")
+  kable(na_counts)
+} else {
+  cat("✓ All required fields have values\n\n")
+}
+```
+
+## Coordinates
+
+```{r check-coords}
+coord_issues <- character()
+
+## 1. Range checks — longitude 110-155, latitude -45 to -10
+if ("longitude" %in% names(data)) {
+  invalid_lon <- sum(data$longitude < 110 | data$longitude > 155, na.rm = TRUE)
+  if (invalid_lon > 0) {
+    coord_issues <- c(coord_issues, paste(invalid_lon, "longitude value(s) outside Australian range (110-155)"))
+    validation_errors <- c(validation_errors, list("Invalid longitude values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_lon, "longitude value(s) outside Australian range (110–155)\n\n")
+  } else {
+    cat("✓ Longitude values within Australian range (110–155)\n\n")
+  }
+}
+
+if ("latitude" %in% names(data)) {
+  invalid_lat <- sum(data$latitude < -45 | data$latitude > -10, na.rm = TRUE)
+  if (invalid_lat > 0) {
+    coord_issues <- c(coord_issues, paste(invalid_lat, "latitude value(s) outside Australian range (-45 to -10)"))
+    validation_errors <- c(validation_errors, list("Invalid latitude values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_lat, "latitude value(s) outside Australian range (−45 to −10)\n\n")
+  } else {
+    cat("✓ Latitude values within Australian range (−45 to −10)\n\n")
+  }
+}
+
+## 2. Swapped coordinate check — catch the common mistake of entering (lat, lon) instead of (lon, lat)
+if (all(c("longitude", "latitude") %in% names(data))) {
+  # longitude should be large positive (~110-155); latitude should be negative (~-45 to -10)
+  # swapped if longitude looks like a latitude (negative or tiny) or latitude looks like a longitude (large positive)
+  swapped <- with(data, (longitude < 0 | longitude < 90) & (latitude > 0 | latitude > 100))
+  n_swapped <- sum(swapped, na.rm = TRUE)
+  if (n_swapped > 0) {
+    coord_issues <- c(coord_issues, paste(n_swapped, "record(s) with possibly swapped lat/lon"))
+    validation_errors <- c(validation_errors, list("Possibly swapped latitude and longitude"))
+    validation_passed <- FALSE
+    cat("❌", n_swapped, "record(s) where latitude and longitude may be swapped\n\n")
+    kable(data[which(swapped), c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
+          caption = "Possibly swapped coordinates")
+  } else {
+    cat("✓ No obviously swapped lat/lon detected\n\n")
+  }
+}
+
+## 3. Spatial validation — check points fall within Australian state boundaries and
+##    that the stated 'state' field matches the state polygon the point falls in.
+##    Uses aus_shp from the targets store (ST_NAME column = state abbreviation, e.g. "NSW").
+if (all(c("longitude", "latitude") %in% names(data))) {
+  tryCatch({
+    store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+    aus_shp <- targets::tar_read(aus_shp, store = store_path)
+
+    # only check rows that have valid coordinates
+    data_coords <- data[!is.na(data$longitude) & !is.na(data$latitude), ]
+    data_sf <- sf::st_as_sf(data_coords, coords = c("longitude", "latitude"), crs = 4326)
+
+    # dissolve state polygons into a single Australia boundary
+    aus_boundary <- sf::st_union(aus_shp)
+
+    # check every point is inside Australia
+    within_aus <- as.vector(sf::st_within(data_sf, aus_boundary, sparse = FALSE))
+    n_outside <- sum(!within_aus)
+    if (n_outside > 0) {
+      coord_issues <- c(coord_issues, paste(n_outside, "point(s) outside Australian boundaries"))
+      validation_errors <- c(validation_errors, list("Point(s) fall outside Australia"))
+      validation_passed <- FALSE
+      cat("❌", n_outside, "point(s) fall outside Australian state boundaries\n\n")
+      kable(data_coords[!within_aus, c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
+            caption = "Records outside Australia")
+    } else {
+      cat("✓ All points fall within Australian state boundaries\n\n")
+    }
+
+    # check stated state matches the state polygon the point falls in
+    # aus_shp$Name holds the full state name (e.g. "Western Australia") which matches
+    # the CSV convention; ST_NAME holds the abbreviation (e.g. "WA") for display
+    if ("state" %in% names(data)) {
+      joined <- sf::st_join(data_sf, aus_shp[, c("ST_NAME", "Name")], join = sf::st_within)
+      joined_df <- sf::st_drop_geometry(joined)
+      # compare case-insensitively using full Name (CSV has e.g. "western australia")
+      state_mismatch <- !is.na(joined_df$Name) &
+        tolower(trimws(data_coords$state)) != tolower(trimws(joined_df$Name))
+      n_mismatch <- sum(state_mismatch, na.rm = TRUE)
+      if (n_mismatch > 0) {
+        coord_issues <- c(coord_issues, paste(n_mismatch, "record(s) with state field not matching coordinate location"))
+        validation_errors <- c(validation_errors, list("State field does not match coordinate location"))
+        validation_passed <- FALSE
+        cat("❌", n_mismatch, "record(s) where stated 'state' does not match the state the coordinates fall in\n\n")
+        mismatch_rows <- cbind(
+          data_coords[state_mismatch, c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
+          state_from_coords = paste0(joined_df$Name[state_mismatch], " (", joined_df$ST_NAME[state_mismatch], ")")
+        )
+        kable(mismatch_rows, caption = "State field vs. coordinate-derived state")
+      } else {
+        cat("✓ All stated 'state' values match the coordinates' location\n\n")
+      }
+    }
+
+  }, error = function(e) {
+    cat("⚠️ Spatial validation could not be completed:", conditionMessage(e), "\n\n")
+  })
+}
+
+## 4. Coordinate table — display all records so values can be visually inspected
+if (all(c("farmer", "site", "subsite", "state", "region", "longitude", "latitude") %in% names(data))) {
+  cat("\n**All site coordinates (for visual inspection):**\n\n")
+  kable(data[, c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
+        caption = "All site coordinates")
+}
+```
+
+```{r map-coords}
+#| fig-width: 10
+#| fig-height: 6
+
+# only render if coordinates are present
+if (all(c("longitude", "latitude") %in% names(data)) &&
+    any(!is.na(data$longitude) & !is.na(data$latitude))) {
+
+  # popup shows key fields per record
+  popup_text <- paste0(
+    "<b>", data$farmer, " – ", data$site, "</b><br>",
+    "Subsite: ", data$subsite, "<br>",
+    "Region: ", data$region, "<br>",
+    "State: ", data$state, "<br>",
+    "Lon: ", round(data$longitude, 6), "  Lat: ", round(data$latitude, 6), "<br>",
+    "New site: ", data$new_site
+  )
+
+  # colour markers by region so multiple regions are easy to distinguish
+  unique_regions <- unique(data$region)
+  region_colors  <- rainbow(length(unique_regions))
+  names(region_colors) <- unique_regions
+  marker_colors <- region_colors[data$region]
+
+  leaflet(data) |>
+    addProviderTiles(provider = "Esri.WorldImagery", group = "Satellite") |>
+    addProviderTiles(provider = "OpenStreetMap",     group = "Street Map") |>
+    addCircleMarkers(
+      lng         = ~longitude,
+      lat         = ~latitude,
+      popup       = popup_text,
+      label       = ~paste(farmer, site, subsite, sep = " / "),
+      color       = marker_colors,
+      fillColor   = marker_colors,
+      radius      = 8,
+      fillOpacity = 0.8,
+      stroke      = TRUE,
+      weight      = 2
+    ) |>
+    addScaleBar(position = "bottomleft", options = scaleBarOptions(imperial = FALSE)) |>
+    addLayersControl(
+      baseGroups = c("Street Map", "Satellite"),
+      options    = layersControlOptions(collapsed = FALSE)
+    ) |>
+    addLegend(
+      position = "bottomright",
+      colors   = region_colors,
+      labels   = names(region_colors),
+      title    = "Region",
+      opacity  = 0.8
+    )
+}
+```
+
+## Existing Sites
+
+```{r check-existing-sites}
+# For rows marked new_site == FALSE, verify that farmer/site/subsite already
+# exists in data_site_information (the reference table built from all historical
+# survey data). Also check that coordinates are close to the recorded location
+# (within 0.05 degrees, ~5 km) to catch accidental coordinate edits.
+
+if ("new_site" %in% names(data) && all(c("farmer", "site", "subsite") %in% names(data))) {
+
+  tryCatch({
+    # prefer the RDS passed in via params (set by the targets pipeline to avoid
+    # calling tar_read() mid-run which causes metadata race conditions);
+    # fall back to tar_read() when rendering the QMD manually outside the pipeline
+    if (!is.null(params$site_info_path) && file.exists(params$site_info_path)) {
+      site_info <- readRDS(params$site_info_path)
+    } else {
+      store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+      site_info  <- targets::tar_read(data_site_information, store = store_path)
+    }
+
+    # only check rows marked as existing sites
+    existing        <- data[!is.na(data$new_site) & data$new_site == FALSE, ]
+
+    if (nrow(existing) == 0) {
+      cat("ℹ️ No rows marked as existing sites (new_site == FALSE)\n\n")
+    } else {
+
+      ## 1. Check that the farmer/site/subsite combination is recognised
+      # join case-insensitively using lower-case keys
+      existing_key  <- tolower(trimws(paste(existing$farmer, existing$site, existing$subsite)))
+      known_key     <- tolower(trimws(paste(site_info$farmer, site_info$site, site_info$subsite)))
+      unrecognised  <- !existing_key %in% known_key
+
+      if (any(unrecognised)) {
+        validation_errors <- c(validation_errors,
+          list(paste(sum(unrecognised), "existing site(s) not found in site information database")))
+        validation_passed <- FALSE
+        cat("❌", sum(unrecognised),
+            "row(s) marked new_site = FALSE but farmer/site/subsite not found in the site database\n\n")
+        kable(existing[unrecognised, c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
+              caption = "Unrecognised existing sites")
+      } else {
+        cat("✓ All existing sites (new_site = FALSE) are recognised in the site database\n\n")
+      }
+
+      ## 2. For recognised sites, check that coordinates are close to the stored values
+      if (all(c("longitude", "latitude") %in% names(existing))) {
+        recognised    <- existing[!unrecognised, ]
+
+        if (nrow(recognised) > 0) {
+          # join to get stored coordinates
+          recognised_key <- tolower(trimws(paste(recognised$farmer, recognised$site, recognised$subsite)))
+          matched_info   <- site_info[match(recognised_key, known_key), ]
+
+          lon_diff <- abs(recognised$longitude - matched_info$longitude)
+          lat_diff <- abs(recognised$latitude  - matched_info$latitude)
+          # flag if either dimension differs by more than 0.05 degrees (~5 km)
+          coord_changed <- (lon_diff > 0.05 | lat_diff > 0.05) & !is.na(lon_diff) & !is.na(lat_diff)
+
+          if (any(coord_changed)) {
+            cat("⚠️", sum(coord_changed),
+                "existing site(s) have coordinates that differ from stored values by > 0.05°\n\n")
+            coord_check_rows <- cbind(
+              recognised[coord_changed, c("farmer", "site", "subsite", "longitude", "latitude")],
+              stored_longitude = round(matched_info$longitude[coord_changed], 6),
+              stored_latitude  = round(matched_info$latitude[coord_changed],  6),
+              lon_diff         = round(lon_diff[coord_changed], 6),
+              lat_diff         = round(lat_diff[coord_changed], 6)
+            )
+            kable(coord_check_rows, caption = "Existing sites with coordinates differing from stored values")
+          } else {
+            cat("✓ Coordinates for all existing sites are consistent with stored values\n\n")
+          }
+        }
+      }
+    }
+
+  }, error = function(e) {
+    cat("⚠️ Existing site check could not be completed:", conditionMessage(e), "\n\n")
+  })
+
+} else {
+  cat("ℹ️ Skipped: new_site, farmer, site, or subsite column not present\n\n")
+}
+```
+
+## Ground Cover
+
+```{r check-ground-cover}
+if ("ground_cover_percent" %in% names(data)) {
+  invalid_gc <- sum(data$ground_cover_percent < 0 | data$ground_cover_percent > 100, na.rm = TRUE)
+  if (invalid_gc > 0) {
+    validation_errors <- c(validation_errors, list("Invalid ground cover percentages"))
+    validation_passed <- FALSE
+    cat("❌", invalid_gc, "ground_cover_percent value(s) outside 0-100 range\n\n")
+  } else {
+    cat("✓ Ground cover percentage values valid\n\n")
+  }
+}
+```
+
+## Burrow Counts
+
+```{r check-burrows}
+burrow_cols <- paste0("active_burrows_t", 1:4)
+burrow_cols <- burrow_cols[burrow_cols %in% names(data)]
+
+if (length(burrow_cols) > 0) {
+  invalid_burrows <- data %>%
+    select(all_of(burrow_cols)) %>%
+    summarise(across(everything(), ~sum(.x < 0, na.rm = TRUE))) %>%
+    select(where(~.x > 0))
+
+  if (ncol(invalid_burrows) > 0) {
+    validation_errors <- c(validation_errors, list("Negative burrow counts"))
+    validation_passed <- FALSE
+    cat("❌ **NEGATIVE VALUES IN BURROW COUNTS:**\n\n")
+    kable(invalid_burrows)
+  } else {
+    cat("✓ All burrow counts are ≥ 0\n\n")
+  }
+}
+```
+
+## Chewcard Percentages
+
+```{r check-chewcards}
+chewcard_cols <- paste0("chewcard_percent_", 1:40)
+chewcard_cols <- chewcard_cols[chewcard_cols %in% names(data)]
+
+if (length(chewcard_cols) > 0) {
+  invalid_chew <- data %>%
+    select(all_of(chewcard_cols)) %>%
+    summarise(across(everything(), ~sum(.x < 0 | .x > 100, na.rm = TRUE))) %>%
+    select(where(~.x > 0))
+
+  if (ncol(invalid_chew) > 0) {
+    validation_errors <- c(validation_errors, list("Invalid chewcard percentages"))
+    validation_passed <- FALSE
+    cat("❌ **INVALID CHEWCARD PERCENTAGES** (should be 0-100):\n\n")
+    kable(invalid_chew)
+  } else {
+    cat("✓ All chewcard percentages are 0-100\n\n")
+  }
+}
+```
+
+## Dates
+
+```{r check-dates}
+if ("date_in" %in% names(data) && "date_out" %in% names(data)) {
+  date_in_parsed  <- dmy(data$date_in)
+  date_out_parsed <- dmy(data$date_out)
+
+  # --- 1. date_out before date_in ---
+  date_issues <- sum(date_out_parsed < date_in_parsed, na.rm = TRUE)
+  if (date_issues > 0) {
+    validation_errors <- c(validation_errors, list("Invalid date ranges"))
+    validation_passed <- FALSE
+    cat("❌", date_issues, "record(s) where date_out is before date_in\n\n")
+  } else {
+    cat("✓ Date ranges are logical (date_out ≥ date_in for all records)\n\n")
+  }
+
+  # --- 2. Survey duration > 6 days ---
+  # A chewcard session longer than 6 days is highly unusual for rapid assessment
+  # surveys and most likely indicates a date entry error (e.g. wrong month or year).
+  duration_days <- as.numeric(date_out_parsed - date_in_parsed)
+  long_survey   <- !is.na(duration_days) & duration_days > 6
+
+  if (any(long_survey)) {
+    validation_errors <- c(validation_errors,
+      list(paste(sum(long_survey), "record(s) with survey duration > 6 days")))
+    validation_passed <- FALSE
+    cat("❌", sum(long_survey), "record(s) with a survey duration longer than 6 days\n\n")
+    long_rows <- data[long_survey,
+                      intersect(c("farmer", "site", "subsite", "date_in", "date_out"), names(data))]
+    long_rows$duration_days <- duration_days[long_survey]
+    kable(long_rows, caption = "Records with unusually long survey duration (> 6 days)")
+  } else {
+    cat("✓ All survey durations are ≤ 6 days\n\n")
+  }
+
+  # --- 3. First survey night ≠ session start date ---
+  # date_in is the session start date (the night chewcards are deployed) and therefore
+  # represents the first — and for rapid assessment, only — survey night.  If date_in
+  # equals date_out the cards were collected the same day they were set out, meaning
+  # there was no overnight soak period.  This is almost certainly a data entry error.
+  same_day <- !is.na(date_in_parsed) & !is.na(date_out_parsed) &
+              date_in_parsed == date_out_parsed
+
+  if (any(same_day)) {
+    validation_errors <- c(validation_errors,
+      list(paste(sum(same_day),
+           "record(s) where date_in equals date_out (first survey night = session end, no overnight soak)")))
+    validation_passed <- FALSE
+    cat("❌", sum(same_day),
+        "record(s) where date_in == date_out",
+        "(first survey night equals the session end date — likely entry error)\n\n")
+    kable(data[same_day,
+               intersect(c("farmer", "site", "subsite", "date_in", "date_out"), names(data))],
+          caption = "Records where date_in equals date_out (no overnight soak)")
+  } else {
+    cat("✓ All records have date_out after date_in (overnight soak period present)\n\n")
+  }
+
+  # --- 4. Year outlier check ---
+  # Detects obvious year typos, e.g. one record shows 2025 while all others are 2026.
+  # Checks both date_in and date_out years against the dominant (most frequent) year
+  # across all dates in the file.
+  all_years <- year(c(date_in_parsed, date_out_parsed))
+  all_years <- all_years[!is.na(all_years)]
+
+  if (length(all_years) > 0) {
+    dominant_year  <- as.integer(names(sort(table(all_years), decreasing = TRUE)[1]))
+    outlier_in     <- !is.na(date_in_parsed)  & year(date_in_parsed)  != dominant_year
+    outlier_out    <- !is.na(date_out_parsed) & year(date_out_parsed) != dominant_year
+    has_year_outlier <- outlier_in | outlier_out
+
+    if (any(has_year_outlier)) {
+      validation_errors <- c(validation_errors,
+        list(paste0(sum(has_year_outlier),
+             " record(s) with a date year that differs from the dominant year (",
+             dominant_year, ")")))
+      validation_passed <- FALSE
+      cat("❌", sum(has_year_outlier),
+          "record(s) with a date year different from the dominant year (", dominant_year, ")\n\n")
+      outlier_rows <- data[has_year_outlier,
+                           intersect(c("farmer", "site", "subsite", "date_in", "date_out"), names(data))]
+      kable(outlier_rows, caption = paste("Records with year ≠", dominant_year,
+                                          "(dominant year across all dates in this file)"))
+    } else {
+      cat("✓ All date years are consistent with the dominant year (", dominant_year, ")\n\n")
+    }
+  }
+}
+```
+
+## Biomass Values
+
+```{r check-biomass}
+if ("biomass" %in% names(data)) {
+  valid_biomass <- c("low", "medium", "high", NA)
+  invalid_biomass <- sum(!tolower(data$biomass) %in% valid_biomass, na.rm = TRUE)
+  if (invalid_biomass > 0) {
+    validation_errors <- c(validation_errors, list("Invalid biomass values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_biomass, "biomass value(s) not in (low, medium, high)\n\n")
+    cat("Unique values found:", paste(unique(data$biomass), collapse = ", "), "\n\n")
+  } else {
+    cat("✓ Biomass values valid\n\n")
+  }
+}
+```
+
+## Data Types
+
+```{r check-types}
+# check that each column present in the data matches its expected R class
+type_mismatches <- data.frame(
+  column   = character(),
+  expected = character(),
+  actual   = character(),
+  stringsAsFactors = FALSE
+)
+
+for (col in names(expected_classes)) {
+  if (col %in% names(data)) {
+    actual_class <- class(data[[col]])[1]
+    exp_class    <- expected_classes[[col]]
+    # treat integer as numeric (readr sometimes reads whole-number columns as integer)
+    # all-NA columns are read as logical by readr regardless of intended type;
+    # this is harmless because bind_rows() will coerce correctly when combined
+    # with other files that have real values in that column
+    all_na <- all(is.na(data[[col]]))
+    ok <- actual_class == exp_class ||
+          (exp_class == "numeric" && actual_class == "integer") ||
+          (exp_class == "numeric" && actual_class == "logical" && all_na)
+    if (!ok) {
+      type_mismatches <- rbind(type_mismatches, data.frame(
+        column   = col,
+        expected = exp_class,
+        actual   = actual_class,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+if (nrow(type_mismatches) > 0) {
+  validation_errors <- c(validation_errors, list("Column(s) have incorrect data type"))
+  validation_passed <- FALSE
+  cat("❌ Column type mismatches found:\n\n")
+  kable(type_mismatches, col.names = c("Column", "Expected class", "Actual class"))
+} else {
+  cat("✓ All columns have the correct data type\n\n")
+}
+```
+
+---
+
+```{r halt-if-errors}
+# Stop rendering if validation failed
+if (!validation_passed) {
+  cat("\n\n# ⚠️ VALIDATION FAILED\n\n")
+  cat("**The following errors were found:**\n\n")
+  for (i in seq_along(validation_errors)) {
+    cat(i, ". ", validation_errors[[i]], "\n", sep = "")
+  }
+  cat("\n\n**Please correct these issues before proceeding.**\n\n")
+  knitr::knit_exit()
+}
+```
+
+::: {.callout-note appearance="simple"}
+## Validation Status
+✅ **All validation checks passed!** Proceeding with summary and analysis.
+:::
+
+---
+
+# Data Summary
+
+```{r summary-survey}
+cat("## Survey Details\n\n")
+cat("- **Project(s):** ", paste(unique(data$project), collapse = ", "), "\n")
+cat("- **Recorder(s):** ", paste(unique(data$recorder), collapse = ", "), "\n")
+cat("- **Organisation(s):** ", paste(unique(data$organisation), collapse = ", "), "\n")
+```
+
+```{r summary-sites}
+cat("\n## Site Information\n\n")
+cat("- **Total records:** ", nrow(data), "\n")
+cat("- **Unique farmers:** ", length(unique(data$farmer)), "\n")
+cat("- **Unique sites:** ", length(unique(paste(data$farmer, data$site))), "\n")
+cat("- **Unique subsites:** ", length(unique(paste(data$farmer, data$site, data$subsite))), "\n")
+
+if ("new_site" %in% names(data)) {
+  cat("- **New sites:** ", sum(data$new_site, na.rm = TRUE), "\n")
+  cat("- **Established sites:** ", sum(!data$new_site, na.rm = TRUE), "\n")
+}
+
+cat("- **State(s):** ", paste(unique(data$state), collapse = ", "), "\n")
+cat("- **Region(s):** ", paste(unique(data$region), collapse = ", "), "\n")
+```
+
+```{r summary-dates}
+cat("\n## Survey Period\n\n")
+if ("date_in" %in% names(data) && "date_out" %in% names(data)) {
+  date_in_parsed <- dmy(data$date_in)
+  date_out_parsed <- dmy(data$date_out)
+
+  cat("- **Survey start dates:** ", paste(range(date_in_parsed, na.rm = TRUE), collapse = " to "), "\n")
+  cat("- **Survey end dates:** ", paste(range(date_out_parsed, na.rm = TRUE), collapse = " to "), "\n")
+
+  survey_days <- as.numeric(date_out_parsed - date_in_parsed)
+  cat("- **Survey duration (days):** min = ", min(survey_days, na.rm = TRUE),
+      ", max = ", max(survey_days, na.rm = TRUE),
+      ", mean = ", round(mean(survey_days, na.rm = TRUE), 1), "\n", sep = "")
+}
+```
+
+```{r summary-crop}
+cat("\n## Crop Information\n\n")
+if ("crop_type" %in% names(data)) {
+  cat("- **Crop type(s):** ", paste(unique(data$crop_type), collapse = ", "), "\n")
+}
+if ("crop_stage" %in% names(data)) {
+  cat("- **Crop stage(s):** ", paste(unique(data$crop_stage), collapse = ", "), "\n")
+}
+if ("biomass" %in% names(data)) {
+  biomass_table <- table(data$biomass)
+  cat("- **Biomass levels:** ", paste(names(biomass_table), "=", biomass_table, collapse = ", "), "\n")
+}
+```
+
+```{r summary-burrows}
+cat("\n## Active Burrow Transects\n\n")
+burrow_cols <- paste0("active_burrows_t", 1:4)
+burrow_cols <- burrow_cols[burrow_cols %in% names(data)]
+
+if (length(burrow_cols) > 0) {
+  burrow_data <- data %>% select(all_of(burrow_cols))
+
+  transects_surveyed <- rowSums(!is.na(burrow_data))
+  cat("- **Transects per site:** min = ", min(transects_surveyed),
+      ", max = ", max(transects_surveyed),
+      ", mean = ", round(mean(transects_surveyed), 1), "\n", sep = "")
+
+  total_burrows <- rowSums(burrow_data, na.rm = TRUE)
+  cat("- **Total active burrows per site:**\n")
+  cat("  - Range: ", min(total_burrows), " - ", max(total_burrows), "\n", sep = "")
+  cat("  - Mean: ", round(mean(total_burrows), 1), "\n", sep = "")
+  cat("  - Median: ", median(total_burrows), "\n", sep = "")
+  cat("- **Sites with 0 burrows:** ", sum(total_burrows == 0), "\n", sep = "")
+}
+```
+
+```{r summary-chewcards}
+cat("\n## Chewcard Results\n\n")
+chewcard_cols <- paste0("chewcard_percent_", 1:40)
+chewcard_cols <- chewcard_cols[chewcard_cols %in% names(data)]
+
+if (length(chewcard_cols) > 0) {
+  chewcard_data <- data %>% select(all_of(chewcard_cols))
+
+  cards_deployed <- rowSums(!is.na(chewcard_data))
+  cat("- **Chewcards deployed per site:** min = ", min(cards_deployed),
+      ", max = ", max(cards_deployed),
+      ", mean = ", round(mean(cards_deployed), 1), "\n", sep = "")
+
+  cards_chewed <- rowSums(chewcard_data > 0, na.rm = TRUE)
+  cat("- **Cards with chewing per site:**\n")
+  cat("  - Range: ", min(cards_chewed), " - ", max(cards_chewed), "\n", sep = "")
+  cat("  - Mean: ", round(mean(cards_chewed), 1), "\n", sep = "")
+
+  all_percentages <- unlist(chewcard_data)
+  all_percentages <- all_percentages[!is.na(all_percentages)]
+
+  if (length(all_percentages) > 0) {
+    cat("- **Chewing percentage across all cards:**\n")
+    cat("  - Range: ", min(all_percentages), " - ", max(all_percentages), "%\n", sep = "")
+    cat("  - Mean: ", round(mean(all_percentages), 1), "%\n", sep = "")
+    cat("  - Median: ", median(all_percentages), "%\n", sep = "")
+    cat("  - Cards with >0% chewing: ", sum(all_percentages > 0),
+        " (", round(100 * sum(all_percentages > 0) / length(all_percentages), 1), "%)\n", sep = "")
+  }
+}
+```
+

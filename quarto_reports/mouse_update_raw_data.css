@@ -1,0 +1,20 @@
+/* Title block banner: left = CSIRO, right = GRDC (matches styles.css) */
+.quarto-title-block .quarto-title-banner {
+  background-image: url(images/logo_csiro.png), url(images/logo_grdc.png);
+  /* Logos scale with viewport width so they don't overlap the title on narrow
+     screens; clamped between a sensible minimum and the original maximum sizes */
+  background-size: clamp(50px, 8vw, 130px), clamp(90px, 15vw, 250px);
+  background-position: right 16vw center, right center;
+  background-repeat: no-repeat;
+  padding-left: 25px;
+  padding-right: 25px;
+  background-origin: content-box;
+}
+
+/* Footer logo area */
+.doc-footer {
+  margin-top: 60px;
+  padding-top: 20px;
+  border-top: 1px solid #dee2e6;
+  text-align: center;
+}

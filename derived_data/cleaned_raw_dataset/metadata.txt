@@ -1,0 +1,400 @@
+================================================================================
+METADATA DOCUMENTATION: Mouse Monitoring Data
+================================================================================
+Generated: 
+2026-03-05 15:04:19
+
+ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
+
+CONTACT: Dr Matthew Rees - matt.rees@csiro.au
+
+OVERVIEW:
+This document describes data collected as part of CSIRO / Grains Research and Development Corporation house mouse monitoring projects (from 2013).
+The purpose of these projects is to predict house mouse abundance across grain growing regions to provide early warning of potential mouse plagues.
+This data has been collected by CSIRO and subcontractors, CSIRO has collated and cleaned this data into this joint dataset.
+House mice are surveyed in crops using three different methods: live-traps, active burrow counts and chewcards.
+Live-trapping currently only occurs at three properties (two paddocks are monitored simultaneously). Active burrow counts and chewcards (i.e., rapid assessment) surveys are also conducted in each paddock simultaneously over one night.
+In all other sites, only rapid assessment surveys are conducted. In some instances, active burrow counts are not conducted as visibility of the burrows is too low due to dense crops or because of prolific soil cracks.
+In these cases chewcards are still deployed, sometimes with higher effort.
+Each data type is provided as a separate CSV file, which contains a series of common variables denoting sites and times, as well as dataset-specific columns describing effort and results.
+Each row is for survey data at the night-level (burrows and chewcards only survey one night).
+================================================================================
+
+################################################################################
+COMMON VARIABLES (present in all datasets)
+################################################################################
+
+These variables are present in all datasets (traps, burrows, chewcards) and have
+consistent definitions across all data types.
+Note that unique combinations of region, site and subsite variables are used to denote each survey location, as there may be instances where site or subsite names are repeated in other locations, but not both.
+
+VARIABLES:
+----------------------------------------------------------------------------
+
+data_source
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+region
+  Description: Broad geographic region within state where cropping systems are similar and mouse populations are assumed to follow similar trajectories (after accounting for site-level variables)
+  Type: Character
+  Values: Various regions (e.g., Yorke Mid North, Wimmera, Coleambally)
+  Source: Field data, condensed and standardized using data_fix_regions_add_state()
+
+farmer
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+site
+  Description: Farm or monitoring site name
+  Type: Character
+  Values: Site-specific identifiers
+  Source: Field data from database
+
+subsite
+  Description: Specific paddock within the farm name
+  Type: Character
+  Values: Subsite-specific identifiers
+  Source: Field data from database
+
+longitude
+  Description: Longitude coordinate of monitoring location
+  Type: Numeric
+  Values: Decimal degrees (EPSG:4326)
+  Source: Field data from GPS coordinates
+
+latitude
+  Description: Latitude coordinate of monitoring location
+  Type: Numeric
+  Values: Decimal degrees (EPSG:4326)
+  Source: Field data from GPS coordinates
+
+session_start_date
+  Description: Start date of survey session
+  Type: Date
+  Values: YYYY-MM-DD format
+  Source: Field data (dateset or first capture date)
+
+session_end_date
+  Description: End date of survey session
+  Type: Date
+  Values: YYYY-MM-DD format
+  Source: Field data (daterecovered or last capture date)
+
+session_length_days
+  Description: Duration of survey session in days
+  Type: Integer
+  Values: Typically 1-5 days
+  Source: Calculated as: session_end_date - session_start_date + 1
+
+year_adj
+  Description: Adjusted year for seasonal analyses (December → next year)
+  Type: Integer
+  Values: Four-digit year
+  Source: Calculated: if month==12 then year+1 else year
+
+month
+  Description: Month of session start
+  Type: Integer
+  Values: 1-12
+  Source: Extracted from session_start_date
+
+season
+  Description: Austral season based on session midpoint
+  Type: Ordered factor
+  Values: Summer (Dec-Feb), Autumn (Mar-May), Winter (Jun-Aug), Spring (Sep-Nov)
+  Source: Calculated from session midpoint date
+
+crop_type
+  Description: Specific crop type at monitoring location
+  Type: Character
+  Values: Various crop names (lowercase)
+  Source: Field data (cropname), standardized to lowercase
+
+crop_stage
+  Description: Growth stage of crop at time of monitoring
+  Type: Character
+  Values: e.g., tillering, seedling, flowering, mature, stubble, fallow
+  Source: Field data (cropstageold), standardized to lowercase
+
+date
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+survey_night
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+biomass
+  Description: Qualitative assessment of vegetation biomass
+  Type: Character
+  Values: Low, Medium, High
+  Source: Field assessment (biomassnew)
+
+ground_cover_percent
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+crop_category
+  Description: Broad crop category for analysis
+  Type: Character
+  Values: wheat, coarse_grains, pulses, oilseeds, fallow_stubble, fence, grass
+  Source: Derived from crop_type and crop_stage using pattern matching
+
+crop_age
+  Description: Simplified crop age classification
+  Type: Character
+  Values: young, old, NA (for non-crop habitats)
+  Source: Derived from crop_stage patterns; NA for fence/grass/fallow_stubble
+
+state
+  Description: Australian state where monitoring occurred
+  Type: Character
+  Values: NSW, VIC, SA, QLD, WA
+  Source: Derived from spatial join with Australian state boundaries
+
+year
+  Description: Calendar year of session start
+  Type: Integer
+  Values: Four-digit year
+  Source: Extracted from session_start_date
+
+month_year
+  Description: Combined month and year of session start
+  Type: Ordered factor
+  Values: Format: 'M_YYYY' (e.g., '1_2013', '12_2014')
+  Source: Extracted from session_start_date
+
+season_year_adj
+  Description: Combined season and adjusted year (ordered factor)
+  Type: Ordered factor
+  Values: Format: 'Season-YYYY' (e.g., 'Summer-2013', 'Autumn-2014')
+  Source: Calculated from session midpoint; December assigned to following year
+
+
+################################################################################
+DATAFRAME: traps
+################################################################################
+
+DESCRIPTION:
+Live-capture trapping data using Longworth, Elliott, or snapback traps.
+Data is aggregated at individual survey nights, except for sex ratios and breeding indicators which is summarised over the 3-night trapping session at the site (farm).
+Generally, at a site (farm), two subsites (adjacent paddocks within the farm) are surveyed over 3 nights.
+36-traps are deployed in a grid formation with 10 metre spacing within each subsite
+Traps are baited with wheat, checked daily, and animals are marked with ear punches for capture-mark-recapture analysis (no individual identification however).
+Active burrow counts and chewcards are also surveyed at each subsite, approximately 100 metres away (these are linked with the same site, subsite variables.
+
+DATA STRUCTURE:
+  Number of rows: 2557
+  Number of columns: 36
+
+UNIQUE VARIABLES (specific to traps dataset):
+----------------------------------------------------------------------------
+
+town
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+session
+  Description: Unique session identifier within site
+  Type: Character/Integer
+  Values: Session-specific identifier
+  Source: Field data from database
+
+trap_type
+  Description: Type of live trap used for monitoring
+  Type: Character
+  Values: longworth, elliott, snapback
+  Source: Field data, recoded from numeric (1=longworth, 2=elliott, 3=snapback)
+
+number_traps_set
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+number_phantoms
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+number_functional_traps
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+number_mice_caught
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+n_males_site
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+n_females_site
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+number_unique_individuals_session
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+number_functional_traps_session
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+
+################################################################################
+DATAFRAME: burrows
+################################################################################
+
+DESCRIPTION:
+Rapid assessment data type based on active burrow counts along fixed transects.
+This provides a quick index of mouse activity without requiring live capture.
+Burrows are searched in 100 metre transects, generally 4 transects at a subsite are searched with 10 metre spacing.
+Counts of active burrows are recorded in four 25m segments for each transect in the raw data sheet (here derived to counts in each transect).
+Transects are searched twice: first to cover any identified potential burrows with flour, second the next day to look for signs of mouse activity (fresh digging, tracks, etc.) at each burrow to determine whether it was active the previous night.
+Only burrows with signs of activity are recorded.
+Active burrow searches are not conducted when detectability is considered too low due to ground cover obscuring the view. In this case the site is still monitored using chewcards.
+DATA STRUCTURE:
+  Number of rows: 3898
+  Number of columns: 35
+
+UNIQUE VARIABLES (specific to burrows dataset):
+----------------------------------------------------------------------------
+
+active_burrows_t1
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+active_burrows_t2
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+active_burrows_t3
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+active_burrows_t4
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+burrow_transects_searched
+  Description: Number of transects successfully surveyed
+  Type: Integer
+  Values: Typically 4-7, NA if no transects surveyed
+  Source: Count of non-NA activeburrow_tX columns
+
+burrow_transects_present
+  Description: Number of transects with at least one active burrow
+  Type: Integer
+  Values: 0 to burrow_transects_searched, NA if all transects NA
+  Source: Count of activeburrow_tX columns where value > 0
+
+burrow_total_metres
+  Description: Total transect distance surveyed (meters)
+  Type: Numeric
+  Values: Typically 400-700m (100m per transect)
+  Source: Calculated as: burrow_transects_searched × 100
+
+burrow_total_count
+  Description: Total active burrows across all transects
+  Type: Numeric
+  Values: >= 0, NA if all transects NA
+  Source: Sum of all activeburrow_tX values
+
+burrow_site_present
+  Description: Binary presence/absence of active burrows at the site
+  Type: Integer
+  Values: 0 (absent), 1 (present)
+  Source: Derived: 1 if burrow_total_count > 0, else 0
+
+comments
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+
+################################################################################
+DATAFRAME: chewcards
+################################################################################
+
+DESCRIPTION:
+Rapid assessment data based on chewcard activity. Chewcards are paper cards
+soaked in vegetable oil and pegged to the ground. Rodents chew the cards,
+providing an index of activity. The percentage of each card eaten is recorded.
+
+COLLECTION METHOD:
+Oil-soaked paper cards (10×10cm with 1cm grid) are pegged to ground, typically
+in lines or grids with 10m spacing. Cards are checked the next day and
+the percentage eaten is estimated using the grid pattern.
+
+DATA STRUCTURE:
+  Number of rows: 4342
+  Number of columns: 29
+
+UNIQUE VARIABLES (specific to chewcards dataset):
+----------------------------------------------------------------------------
+
+chewcards_deployed
+  Description: Total number of chewcards deployed and recovered
+  Type: Integer
+  Values: Typically 5-20 per site
+  Source: Count of non-NA values across chewcard columns
+
+chewcards_chewed
+  Description: Number of chewcards with evidence of chewing (>0% eaten)
+  Type: Integer
+  Values: 0 to chewcards_deployed
+  Source: Count of cards with any chewing detected across all chewcard columns
+
+chewcard_site_present
+  Description: Binary presence/absence of mice at the whole site based on chewcards
+  Type: Integer
+  Values: 0 (absent), 1 (present)
+  Source: Derived: 1 if any chewcards were chewed, else 0
+
+comments
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+
+================================================================================
+END OF METADATA DOCUMENTATION
+================================================================================
+

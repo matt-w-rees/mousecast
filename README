@@ -1,0 +1,4 @@
+NOTES
+
+1) Extract tables from microsoft access databases
+This project uses the 'Hmisc' R-package which can be used on a mac (previous versions used the 'RODBC' package which could only be used on windows). This required extra installation steps on mac (terminal, homebrew) to get access drivers. I followed the instructions here: https://github.com/ethoinformatics/r-database-connections/blob/master/Access-from-R-Mac.md, except I could not install gnome-doc-utils with homebrew. I therefore installed it with macports using the command 'sudo port install gnome-doc-utils'. I could not complete the config instructions for mdbtools, so i just installed it using homebrew and that worked fine. 

@@ -1,0 +1,413 @@
+---
+title: "CSIRO Mouse Surveillance"
+subtitle: "`r params$season` Seasonal Summary"
+date: last-modified
+params:
+  season: "Summer-2025"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    number-sections: false
+    toc: false
+crossref:
+  fig-title: "Figure"
+  tbl-title: "Table"
+  fig-prefix: "Figure"
+  tbl-prefix: "Table"
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages - this doc needs to be standalone from targets pipeline
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(ggh4x)
+library(leaflet)
+library(sf)
+library(flextable)
+library(gt)
+library(patchwork)
+library(scales)
+
+## load targets (handle rendering from project root or quarto_reports/ directory)
+store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+targets::tar_load(c(data, aus_shp), store = store_path)
+
+## filter data to the target season
+data_season <- purrr::map(data, dplyr::filter, season_year_adj == params$season)
+
+## make dataframes spatial (only when rows exist)
+data_season_sf <- purrr::map(
+  data_season[c("traps", "burrows", "chewcards")],
+  ~ if (nrow(.x) > 0) sf::st_as_sf(.x, coords = c("longitude", "latitude"), crs = 4326) else .x
+)
+
+## create tbl_traps: one row per site/subsite/session for Table 1
+## trap_success_pct = mean nightly (mice caught / traps set) across all nights in the session
+## subsites with multiple sessions in the season appear as separate rows
+tbl_traps <- data_season$traps |>
+  group_by(state, region, site, subsite, session_start_date, session_end_date,
+           number_functional_traps_session, number_unique_individuals_session) |>
+  summarise(
+    trap_success_pct = round(
+      mean(pmin(1, pmax(0, number_mice_caught / number_functional_traps)), na.rm = TRUE) * 100, 1
+    ),
+    .groups = "drop"
+  ) |>
+  arrange(state, region, site, subsite, session_start_date) |>
+  dplyr::select(state, region, subsite, session_start_date,
+                number_functional_traps_session,
+                number_unique_individuals_session, trap_success_pct) |>
+  distinct()
+
+## spatial datasets for Figure 1: one point per subsite, averaged across sessions
+## (when a subsite has multiple sessions in the season, values are averaged)
+
+## individuals caught: get one row per session first (values are session-level aggregates
+## repeated across nights), then average across sessions per subsite
+data_fig1_individuals <- data_season$traps |>
+  group_by(state, region, site, subsite, longitude, latitude,
+           session_start_date, session_end_date, number_unique_individuals_session) |>
+  summarise(.groups = "drop") |>
+  group_by(state, region, site, subsite, longitude, latitude) |>
+  summarise(
+    number_unique_individuals_session = mean(number_unique_individuals_session, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+## trap success (%): average per session across nights, then average across sessions per subsite
+data_fig1_trap_success <- data_season$traps |>
+  group_by(state, region, site, subsite, longitude, latitude,
+           session_start_date, session_end_date) |>
+  summarise(
+    trap_success_pct = round(
+      mean(pmin(1, pmax(0, number_mice_caught / number_functional_traps)), na.rm = TRUE) * 100, 1
+    ),
+    .groups = "drop"
+  ) |>
+  group_by(state, region, site, subsite, longitude, latitude) |>
+  summarise(
+    trap_success_pct = mean(trap_success_pct, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+## helper: derive xlim/ylim from one or more sf objects with a degree buffer
+## skips any inputs that are not valid sf objects (e.g. empty data frames returned
+## when a season has no data for a given survey type)
+bbox_with_buffer <- function(..., buffer = 2,
+                             fallback = list(xlim = c(113, 155), ylim = c(-40, -26))) {
+  inputs <- list(...)
+  sf_inputs <- Filter(function(x) inherits(x, "sf") && nrow(x) > 0, inputs)
+  if (length(sf_inputs) == 0) return(fallback)
+  coords <- do.call(rbind, lapply(sf_inputs, sf::st_coordinates))
+  if (nrow(coords) == 0) return(fallback)
+  list(
+    xlim = c(min(coords[, 1]) - buffer, max(coords[, 1]) + buffer),
+    ylim = c(min(coords[, 2]) - buffer, max(coords[, 2]) + buffer)
+  )
+}
+
+## map crop limits derived from the season's data extent (2-degree buffer)
+traps_lims <- bbox_with_buffer(data_season_sf$traps)
+rapid_lims <- bbox_with_buffer(data_season_sf$burrows, data_season_sf$chewcards)
+
+## flextable defaults
+set_flextable_defaults(
+  digits = 2,
+  font.size = 10,
+  na_str = "NA",
+  theme_fun = theme_vanilla,
+  padding = 6,
+  background.color = "#EFEFEF")
+
+## compute global colour scale domains from the full dataset so colours are
+## comparable across all seasonal reports (not rescaled to each season's range)
+
+# Table 1: max individuals caught per session across all seasons
+global_max_individuals <- max(data$traps$number_unique_individuals_session, na.rm = TRUE)
+
+# Table 1: max nightly trap success (%) across all seasons
+global_max_trap_success <- data$traps |>
+  dplyr::mutate(ts = pmin(1, pmax(0, number_mice_caught / number_functional_traps)) * 100) |>
+  dplyr::pull(ts) |>
+  max(na.rm = TRUE)
+
+# Table 2: burrow / chewcard proportions are bounded [0, 1] by definition
+global_burrow_domain   <- c(0, 1)
+global_chewcard_domain <- c(0, 1)
+
+```
+
+
+```{r}
+#| label: summary-stats
+#| include: FALSE
+
+## calculate summary statistics for dynamic inline text
+
+total_individuals <- sum(tbl_traps$number_unique_individuals_session, na.rm = TRUE)
+total_trap_nights <- sum(tbl_traps$number_functional_traps_session, na.rm = TRUE)
+
+n_regions_traps <- data_season$traps |>
+  summarise(n = n_distinct(region)) |> pull(n)
+
+n_sites_traps <- data_season$traps |>
+  summarise(n = n_distinct(site)) |> pull(n)
+
+n_states_traps <- data_season$traps |>
+  summarise(n = n_distinct(state)) |> pull(n)
+
+n_regions_rapid <- data_season$chewcards |>
+  summarise(n = n_distinct(region)) |> pull(n)
+
+n_sites_chewcards <- data_season$chewcards |>
+  summarise(n = n_distinct(site)) |> pull(n)
+
+n_sites_burrows <- data_season$burrows |>
+  summarise(n = n_distinct(site)) |> pull(n)
+
+total_chewcards <- data_season$chewcards |>
+  summarise(total = sum(chewcards_deployed, na.rm = TRUE)) |> pull(total)
+
+chewcards_chewed <- data_season$chewcards |>
+  summarise(total = sum(chewcards_chewed, na.rm = TRUE)) |> pull(total)
+
+pct_chewed <- if (total_chewcards > 0) round((chewcards_chewed / total_chewcards) * 100, 1) else 0
+
+total_transects <- data_season$burrows |>
+  summarise(total = sum(burrow_transects_searched, na.rm = TRUE)) |> pull(total)
+
+transects_with_burrows <- data_season$burrows |>
+  summarise(total = sum(burrow_transects_present, na.rm = TRUE)) |> pull(total)
+
+total_active_burrows <- data_season$burrows |>
+  summarise(total = sum(burrow_total_count, na.rm = TRUE)) |> pull(total)
+
+pct_transects_burrows <- if (total_transects > 0) round((transects_with_burrows / total_transects) * 100, 1) else 0
+
+## date ranges
+date_range_traps <- data_season$traps |>
+  summarise(
+    min = min(session_start_date, na.rm = TRUE),
+    max = max(session_end_date, na.rm = TRUE)
+  )
+
+date_range_rapid <- bind_rows(
+  data_season$chewcards |> select(session_start_date, session_end_date),
+  data_season$burrows |> select(session_start_date, session_end_date)
+) |>
+  summarise(
+    min = min(session_start_date, na.rm = TRUE),
+    max = max(session_end_date, na.rm = TRUE)
+  )
+
+```
+
+## Overview
+
+This report summarizes house mouse monitoring activities conducted during the **`r params$season`** season across Australian grain-growing regions. Mouse abundance was assessed using three complementary survey methods: live-trapping at benchmark sites, and rapid assessments using chew cards and active burrow counts.
+
+**Live-trap Surveys:** A total of `r format(total_trap_nights, big.mark = ",")` trap nights (1 trap night = 1 trap set for 1 night) were conducted across `r n_sites_traps` benchmark sites in `r n_regions_traps` regions spanning `r n_states_traps` states (survey period: `r format(date_range_traps$min, "%B %Y")` to `r format(date_range_traps$max, "%B %Y")`). These surveys captured `r total_individuals` individual house mice, allowing abundance estimates at these monitoring locations.
+
+**Rapid Assessment Surveys:** Rapid assessments were conducted across `r n_regions_rapid` regions using two methods. Chew card surveys deployed `r format(total_chewcards, big.mark = ",")` cards across `r n_sites_chewcards` sites, with `r pct_chewed`% showing evidence of mouse activity (`r chewcards_chewed` cards chewed). Active burrow surveys searched `r total_transects` transects across `r n_sites_burrows` sites (survey period: `r format(date_range_rapid$min, "%B %Y")` to `r format(date_range_rapid$max, "%B %Y")`), detecting active burrows in `r pct_transects_burrows`% of transects (total: `r total_active_burrows` active burrows).
+
+<br>
+
+## Live-Trap Surveys
+
+::: {.panel-tabset}
+
+### Individuals caught
+
+```{r}
+#| label: fig-map-traps-individuals
+#| fig-height: 7
+#| fig-cap: "Benchmark sites coloured by number of unique individuals caught. Colour scale is fixed to the global maximum across all seasons."
+
+ggplot() +
+  geom_sf(data = aus_shp, fill = "white") +
+  geom_sf(data = data_fig1_individuals, aes(color = number_unique_individuals_session), size = 3) +
+  # limits fixed to global max so colours compare across seasons
+  scale_color_viridis_c(option = "viridis", limits = c(0, global_max_individuals)) +
+  geom_sf_text(data = data_fig1_individuals, aes(label = region),
+               size = 2.5, nudge_y = 1.5, check_overlap = TRUE) +
+  # crop to data extent with 2-degree buffer
+  coord_sf(xlim = traps_lims$xlim, ylim = traps_lims$ylim, expand = FALSE) +
+  labs(color = "Individuals", y = "", x = "", subtitle = "Live-trapping") +
+  theme(legend.position = "bottom")
+```
+
+### Trap success (%)
+
+```{r}
+#| label: fig-map-traps-success
+#| fig-height: 7
+#| fig-cap: "Benchmark sites coloured by average nightly trap success (% of traps catching a mouse, averaged across all survey nights in the session). Colour scale is fixed to the global maximum across all seasons."
+
+ggplot() +
+  geom_sf(data = aus_shp, fill = "white") +
+  geom_sf(data = data_fig1_trap_success, aes(color = trap_success_pct), size = 3) +
+  # limits fixed to global max so colours compare across seasons
+  scale_color_viridis_c(option = "viridis", limits = c(0, global_max_trap_success)) +
+  geom_sf_text(data = data_fig1_trap_success, aes(label = region),
+               size = 2.5, nudge_y = 1.5, check_overlap = TRUE) +
+  # crop to data extent with 2-degree buffer
+  coord_sf(xlim = traps_lims$xlim, ylim = traps_lims$ylim, expand = FALSE) +
+  labs(color = "Trap success (%)", y = "", x = "", subtitle = "Live-trapping") +
+  theme(legend.position = "bottom")
+```
+
+:::
+
+<br>
+
+```{r}
+#| label: tbl-traps
+#| tbl-cap: "Summary of live-trap survey results for this season. Colour gradients reflect abundance relative to the full dataset: white = zero/low, yellow = moderate, red = high."
+
+## colour scale for trap success — domain fixed to global max across all seasons
+color_scale_trap_success <- scales::col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = c(0, global_max_trap_success)
+)
+
+flextable(tbl_traps) |>
+  set_header_labels(
+    state = "State",
+    region = "Region",
+    subsite = "Subsite",
+    session_start_date = "Session start",
+    number_functional_traps_session = "Trap Nights",
+    number_unique_individuals_session = "Individuals caught",
+    trap_success_pct = "Trap success (%)"
+  ) |>
+  # colour coding based on trap success only
+  bg(j = "trap_success_pct",
+     bg = color_scale_trap_success, source = "trap_success_pct") |>
+  autofit()
+
+```
+
+<br>
+
+## Rapid Assessment Surveys
+
+```{r}
+#| label: fig-map-rapid
+#| fig-width: 8
+#| fig-height: 12
+#| fig-cap: "Location of rapid assessment sites where house mice were surveyed using (a) active burrow counts, and (b) chew cards this season. Blue dots represent sites which did not detect any mice; red dots represent sites which detected mice."
+
+## active burrow map
+burrow_map <- ggplot() +
+  geom_sf(data = aus_shp, fill = "white") +
+  geom_sf(data = data_season_sf$burrows, aes(color = factor(burrow_site_present)), size = 0.5, alpha = 0.75) +
+  scale_color_manual(values = c("0" = "cornflowerblue", "1" = "red"), labels = c("Absent", "Present")) +
+  # crop to combined rapid assessment data extent with 2-degree buffer
+  coord_sf(xlim = rapid_lims$xlim, ylim = rapid_lims$ylim, expand = FALSE) +
+  labs(color = "Active burrows", y = "", x = "", subtitle = "Active burrow counts") +
+  theme(legend.position = "bottom")
+
+## chew card map
+chewcard_map <- ggplot() +
+  geom_sf(data = aus_shp, fill = "white") +
+  geom_sf(data = data_season_sf$chewcards, aes(color = factor(chewcard_site_present)), size = 0.5, alpha = 0.75) +
+  scale_color_manual(values = c("0" = "cornflowerblue", "1" = "red"), labels = c("Absent", "Present")) +
+  coord_sf(xlim = rapid_lims$xlim, ylim = rapid_lims$ylim, expand = FALSE) +
+  labs(color = "Chew cards", y = "", x = "", subtitle = "Chewcards") +
+  theme(legend.position = "bottom")
+
+burrow_map / chewcard_map + plot_annotation(tag_levels = "a")
+
+```
+
+<br>
+
+```{r}
+#| label: tbl-rapid
+#| tbl-cap: "Rapid assessment survey results summarised within each region. Colour gradients based on proportion of sites surveyed which detected any sign of mice (white = 0, yellow = low, orange = moderate, red = 1)."
+
+## summary table for burrows
+table_burrows <- as_tibble(data_season_sf$burrows) |>
+  group_by(state, region) |>
+  transmute(
+    burrow_sites_region = n(),
+    burrow_site_present_region = sum(burrow_site_present, na.rm = TRUE),
+    burrow_proportion = round(burrow_site_present_region / burrow_sites_region, 2)
+  ) |>
+  ungroup() |>
+  distinct()
+
+## summary table for chewcards
+table_chewcards <- as_tibble(data_season_sf$chewcards) |>
+  group_by(state, region) |>
+  transmute(
+    chewcard_sites_region = n(),
+    chewcard_site_present_region = sum(chewcard_site_present, na.rm = TRUE),
+    chewcard_proportion = round(chewcard_site_present_region / chewcard_sites_region, 2)
+  ) |>
+  ungroup() |>
+  distinct()
+
+## join burrow and chewcard summaries
+table_both <- full_join(table_burrows, table_chewcards, by = c("state", "region")) |>
+  arrange(state, region)
+
+## colour scales fixed to global [0, 1] domain — proportions are bounded by definition,
+## so this is identical to the full-dataset range and keeps colours consistent across seasons
+color_scale_burrows <- scales::col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = global_burrow_domain
+)
+
+color_scale_chewcards <- scales::col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = global_chewcard_domain
+)
+
+flextable(table_both) |>
+
+  # merge repeated state cells
+  merge_v(j = "state") |>
+
+  # colour burrow columns by burrow proportion
+  bg(j = c("burrow_site_present_region", "burrow_sites_region", "burrow_proportion"),
+     bg = color_scale_burrows, source = "burrow_proportion") |>
+
+  # colour chewcard columns by chewcard proportion
+  bg(j = c("chewcard_site_present_region", "chewcard_sites_region", "chewcard_proportion"),
+     bg = color_scale_chewcards, source = "chewcard_proportion") |>
+
+  set_header_labels(
+    state = "State",
+    region = "Region",
+    burrow_sites_region = "Sites",
+    burrow_site_present_region = "Presences",
+    burrow_proportion = "Proportion",
+    chewcard_sites_region = "Sites",
+    chewcard_site_present_region = "Presences",
+    chewcard_proportion = "Proportion"
+  ) |>
+
+  add_header_row(values = c("", "Burrows", "Chewcards"),
+                 colwidths = c(2, 3, 3), top = TRUE) |>
+
+  align(align = "center", part = "all")
+
+```
+

@@ -1,0 +1,336 @@
+---
+title: "Mouse hindcast"
+subtitle: Autumn 2025
+description: "Regional seasonal hindcasts of house mouse abundance in the Australian grainbelt"
+#date: last-modified
+title-block-banner: "white"
+#title-block-banner-color: "black" # title font colour
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8  
+    fig-height: 20
+css: styles.css
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: TRUE
+---
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages
+library(targets)
+library(dplyr)
+library(sf)
+library(ggplot2)
+library(flextable)
+library(scico)
+library(viridis)
+
+# set the default theme for ggplot objects 
+theme_update(panel.grid = element_blank(), 
+            legend.position = "bottom")
+```
+
+```{r}
+#| label: load
+#| message: false
+#| include: FALSE
+
+## load targets 
+targets::tar_load(
+  c(model_data,
+    model_predictions_trend,
+    model_predictions_region, 
+    model_predictions_ae_zone))
+
+# read in australian outline shapefile and adjust depending on how data has been filtered 
+aus_shp = sf::read_sf("raw_data/predictor_variables/australian_borders/aus_outline_states.shp") |> 
+    sf::st_transform(crs = "EPSG:4326") |> 
+    dplyr::filter(ST_NAME != "WA")
+  
+# town / city centres for labelling
+town_labels = sf::st_as_sf(read.csv("raw_data/town_labels.csv"), coords = c("longitude", "latitude"), crs = "EPSG:4326", remove = FALSE)
+```
+
+
+```{r}
+#| label: site_data
+
+site_data_for_plot <- model_data |>
+  
+  # remove unsurveyed seasons for each site
+  filter(!(is.na(mice_prop))) |>
+  
+  # take relevant columns 
+  dplyr::select(longitude, latitude, season, season_year_adj, mice_prop) |>
+  
+  # new column for whether any mice signs were detected
+  group_by(longitude, latitude, season_year_adj) %>%
+  mutate(mice01 = if_else(sum(mice_prop) > (0.001 * n()), "yes", "no")) |> 
+  ungroup() |>
+  
+  # just one row per site, subsite, season_year_adj
+  unique() %>%
+  
+  # make spatial for plotting
+  sf::st_as_sf(., coords = c("longitude", "latitude"), crs = "EPSG:4326") %>%
+  
+  # make factor
+  dplyr::mutate(season_year_adj = factor(season_year_adj, levels = levels(model_predictions_ae_zone$season_year_adj))) 
+  
+
+```
+
+
+
+
+```{r}
+#| label: fig_3cat
+#| layout-ncol: 1
+#| fig-cap: 
+#|   - "Predicted relative abundance of house mice in the current and future season, across modified GRDC agroecological zones. Black dots represents sites monitored during that season."
+
+model_predictions_ae_zone |>
+  
+  ggplot() + 
+  
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") + 
+  
+  # remove axis labels (long, lat)
+  labs(y = "", x = "") +
+  
+  # plot predictions within each ae zone
+  geom_sf(aes(fill = factor(cat3, levels = c("Low", "Moderate", "High"), ordered = TRUE)), show.legend = TRUE) +
+  
+  # new colour scale for predictions
+  scale_fill_manual(values = c("Low" = "#91cf60", "Moderate" = "#ffeda0", "High" = "#f03b20"), 
+                      breaks = c("Low", "Moderate", "High"),
+                      name = "Relative abundance",
+                      drop = FALSE) + # don't drop missing levels - always have low med and high
+  
+  # add site data (after filter to match times in prediction data)
+  geom_sf(data = filter(site_data_for_plot, season_year_adj %in% unique(model_predictions_ae_zone$season_year_adj)), shape = 16, size = 0.7) +
+
+  # crop map 
+  coord_sf(xlim = c(128, 155), ylim = c(-40, -24), expand = FALSE) +
+  
+  # if multiple plots
+  facet_wrap(~season_year_adj, ncol = 4)
+
+```
+
+
+
+### Predicted current situation
+
+```{r}
+#| label: plot_mean_predictions
+#| fig-cap: 
+#|   - "Predicted relative abundance of house mice in the current and future season, across modified GRDC agroecological zones. Grey dots represents sites monitored during that season."
+  
+  model_predictions_ae_zone |>
+    
+  ggplot() + 
+  
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") + 
+  
+  # remove axis labels (long, lat)
+  labs(y = "", x = "") +
+  
+  # plot predictions within each ae zone
+  geom_sf(aes(fill = log(pred_mean))) +
+  
+  # new colour scale for predictions (NOTE GETTING SCALE FROM PREDS FOR ALL TIMES!)
+  scale_fill_viridis_c(
+    limits=c(log(min(model_predictions_ae_zone$pred_mean)), log(max(model_predictions_ae_zone$pred_mean))),
+    breaks=c(log(min(model_predictions_ae_zone$pred_mean)), log(max(model_predictions_ae_zone$pred_mean))), 
+    labels=c("Low", "High"), name = "Relative abundance\n(log-scaled)") +
+  
+  # add site data (after filter to match times in prediction data)
+  geom_sf(data = filter(site_data_for_plot, season_year_adj %in% unique(model_predictions_ae_zone$season_year_adj)), shape = 16, size = 0.7, col = "grey75") +
+  
+  # crop map 
+  coord_sf(xlim = c(128, 155), ylim = c(-40, -24), expand = FALSE) +
+  
+  facet_wrap(~season_year_adj, ncol = 4)
+```
+
+
+
+
+### Probability of mouse plague
+```{r}
+#| label: plot_prob_threshold
+#| fig-cap:
+#|   - "Predicted probability of mouse abundance being in a high state, across modified GRDC agroecological zones. Grey dots represents sites monitored during that season."
+
+  model_predictions_ae_zone %>%
+
+  ggplot() +
+
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") +
+
+  # remove axis labels (long, lat)
+  labs(y = "", x = "") +
+
+  # plot predictions within each ae zone
+  geom_sf(aes(fill = pr_threshold * 100)) + # change to percentage
+
+  # new colour scale for predictions
+  scale_fill_scico(
+    palette = "vik",
+    limits = c(0, 100),
+    breaks = c(0, 25, 50, 75, 100),
+    name = "Outbreak probability (%)") +
+
+  # add site data (after filter to match times in prediction data)
+  geom_sf(data = filter(site_data_for_plot, season_year_adj %in% unique(model_predictions_ae_zone$season_year_adj)), shape = 16, size = 0.7, col = "grey75") +
+
+  # crop map
+  coord_sf(xlim = c(128, 155), ylim = c(-40, -24), expand = FALSE) +
+
+  # facet by season
+  facet_wrap(~season_year_adj, ncol = 4)
+
+```
+
+
+### Predicted time series by agroecological zone
+
+```{r}
+#| label: plot_timeseries_aez
+#| fig-height: 14
+#| fig-cap:
+#|   - "Mean prediction (line) and 95% credible interval (ribbon) of relative mouse abundance for each agroecological zone over time. Points show the mean observed proportion of detections per ae_zone and season."
+
+# use the factor levels from the full prediction object so the x-axis is
+# ordered chronologically and both datasets share the same scale.
+# ae_zone predictions span the full training period so their levels are the
+# most complete — used as the reference in all three time-series plots below
+sy_levels <- levels(model_predictions_ae_zone$season_year_adj)
+
+# aggregate observed detections to ae_zone × season level, applying the
+# same factor levels as the predictions so geom_point positions correctly
+obs_aez <- model_data |>
+  dplyr::filter(!is.na(mice_prop)) |>
+  dplyr::group_by(ae_zone, season_year_adj) |>
+  dplyr::summarise(obs_mean = mean(mice_prop, na.rm = TRUE), .groups = "drop") |>
+  dplyr::mutate(season_year_adj = factor(season_year_adj, levels = sy_levels, ordered = TRUE))
+
+# drop sf geometry — not needed for a line plot
+model_predictions_ae_zone |>
+  sf::st_drop_geometry() |>
+  ggplot(aes(x = season_year_adj, group = ae_zone)) +
+
+  # 95% credible interval ribbon
+  geom_ribbon(aes(ymin = pred_lower, ymax = pred_upper),
+              fill = "steelblue", alpha = 0.25) +
+
+  # mean prediction line
+  geom_line(aes(y = pred_mean), colour = "steelblue", linewidth = 0.7) +
+
+  # observed mean detection rate per ae_zone-season
+  geom_point(data = obs_aez,
+             aes(x = season_year_adj, y = obs_mean),
+             colour = "black", size = 1.2, inherit.aes = FALSE) +
+
+  labs(y = "Relative abundance", x = "") +
+
+  # rotate season labels to avoid overlap on a long time axis
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 6)) +
+
+  # one panel per ae_zone, 2 columns
+  facet_wrap(~ ae_zone, ncol = 2)
+```
+
+
+### Predicted time series by region
+
+```{r}
+#| label: plot_timeseries_region
+#| fig-height: 18
+#| fig-cap:
+#|   - "Mean prediction (line) and 95% credible interval (ribbon) of relative mouse abundance for each region over time. Points show the mean observed proportion of detections per region and season."
+
+# aggregate observed detections to region × season, aligned to reference levels
+obs_region <- model_data |>
+  dplyr::filter(!is.na(mice_prop)) |>
+  dplyr::group_by(region, ae_zone, season_year_adj) |>
+  dplyr::summarise(obs_mean = mean(mice_prop, na.rm = TRUE), .groups = "drop") |>
+  dplyr::mutate(season_year_adj = factor(season_year_adj, levels = sy_levels, ordered = TRUE))
+
+model_predictions_region |>
+  sf::st_drop_geometry() |>
+  ggplot(aes(x = season_year_adj, group = region)) +
+
+  # 95% credible interval ribbon
+  geom_ribbon(aes(ymin = pred_lower, ymax = pred_upper),
+              fill = "steelblue", alpha = 0.25) +
+
+  # mean prediction line
+  geom_line(aes(y = pred_mean), colour = "steelblue", linewidth = 0.7) +
+
+  # observed mean detection rate per region-season
+  geom_point(data = obs_region,
+             aes(x = season_year_adj, y = obs_mean),
+             colour = "black", size = 1.0, inherit.aes = FALSE) +
+
+  labs(y = "Relative abundance", x = "") +
+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 5)) +
+
+  # one panel per region, 3 columns
+  facet_wrap(~ region, ncol = 3)
+```
+
+
+### Predicted time series by site
+
+```{r}
+#| label: plot_timeseries_site
+#| fig-height: 18
+#| fig-cap:
+#|   - "Mean prediction (line) and 95% credible interval (ribbon) of relative mouse abundance for each site over time, grouped within region. Points show the mean observed proportion of detections per site and season."
+
+# aggregate observed detections to site × season (multiple survey nights per
+# site-season are averaged), aligned to reference factor levels
+obs_site <- model_data |>
+  dplyr::filter(!is.na(mice_prop)) |>
+  dplyr::group_by(region, site, subsite, season_year_adj) |>
+  dplyr::summarise(obs_mean = mean(mice_prop, na.rm = TRUE), .groups = "drop") |>
+  dplyr::mutate(season_year_adj = factor(season_year_adj, levels = sy_levels, ordered = TRUE))
+
+model_predictions_trend |>
+  sf::st_drop_geometry() |>
+  ggplot(aes(x = season_year_adj, group = trend)) +
+
+  # 95% credible interval ribbon — use high transparency because many sites overlap
+  geom_ribbon(aes(ymin = pred_lower, ymax = pred_upper),
+              fill = "steelblue", alpha = 0.08) +
+
+  # mean prediction line per site
+  geom_line(aes(y = pred_mean), colour = "steelblue", linewidth = 0.4, alpha = 0.7) +
+
+  # observed mean detection rate per site-season
+  geom_point(data = obs_site,
+             aes(x = season_year_adj, y = obs_mean, group = paste(site, subsite)),
+             colour = "black", size = 0.6, alpha = 0.5, inherit.aes = FALSE) +
+
+  labs(y = "Relative abundance", x = "") +
+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 5)) +
+
+  # facet by region so sites within the same region are shown together
+  facet_wrap(~ region, ncol = 3)
+```

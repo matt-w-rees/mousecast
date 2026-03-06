@@ -1,0 +1,147 @@
+---
+title: "Mouse modelling data"
+subtitle: Autumn 2025
+date: last-modified
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8  
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: true
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages
+library(targets)
+library(dplyr)
+library(purrr)
+library(mvgam)
+library(tibble)
+library(gt)
+library(scales)    # for col_bin()
+library(ggplot2)
+#library(tidyr)
+#library(lubridate)
+#library(ggh4x)
+#library(sf)
+
+## load targets 
+targets::tar_load(
+  c(model_data,
+    aez_adj)
+)
+
+
+```
+
+
+
+```{r}
+#| label: covs_cor
+
+## 1. compute correlation matrix (pairwise complete obs)
+#corr_mat <- model_data %>%
+#  select(
+#    soil_moisture_lag, rainfall_lag, evapotranspiration_lag,
+#    frost_days_lag, heat_days_lag, degree_days_lag
+#  ) %>%
+#  cor(use = "pairwise.complete.obs") %>%
+#  round(digits = 2)
+#
+## 2. replace exact 1.0 (within a small tolerance) with NA
+#tol <- 1e-8
+#corr_mat[abs(corr_mat - 1) < tol] <- NA
+#
+## 3. df for gt
+#corr_df <- as.data.frame(corr_mat) %>%
+#  rownames_to_column("Variable")
+#
+## 4. build the gt table
+#corr_df %>%
+#  gt() %>%
+#
+#  # colour the cell backgrounds (na.color sets background for NAs)
+#  data_color(
+#    columns = -Variable,
+#    colors = col_bin(
+#      bins = c(-1, -0.5, 0.5, 1),
+#      palette = c("darkred", "white", "limegreen"),
+#      na.color = "lightgrey"
+#    )
+#  ) 
+```
+
+
+
+## Plots by state, region, farmer and site
+
+
+```{r}
+#| label: plot_by_subsite
+#| results: asis
+
+# Sort data for consistent heading order
+plot_data <- model_data %>%
+  arrange(state, region, farmer, site, subsite)
+
+# Global time range so all plots share the same x-axis scale
+time_range <- range(model_data$time, na.rm = TRUE)
+
+# Iterate over states
+walk(unique(as.character(plot_data$state)), function(st) {
+
+  cat("\n## ", st, "\n\n")
+  st_data <- filter(plot_data, as.character(state) == st)
+
+  # Iterate over regions within state
+  walk(unique(as.character(st_data$region)), function(reg) {
+
+    cat("\n### ", reg, "\n\n")
+    reg_data <- filter(st_data, as.character(region) == reg)
+
+    # Iterate over farmers within region (skip NA farmer rows)
+    walk(na.omit(unique(as.character(reg_data$farmer))), function(farm) {
+
+      cat("\n#### ", farm, "\n\n")
+      farm_data <- filter(reg_data, as.character(farmer) == farm)
+
+      # Iterate over sites within farmer
+      walk(unique(as.character(farm_data$site)), function(si) {
+
+        cat("\n##### ", si, "\n\n")
+        site_data <- filter(farm_data, as.character(site) == si)
+
+        message("Plotting: ", reg, " / ", farm, " / ", si)
+
+        # One plot per site, faceted by subsite, coloured by survey method
+        p <- site_data %>%
+          filter(!is.na(mice_prop)) %>%
+          ggplot(aes(x = time, y = mice_prop, colour = survey_method, group = series)) +
+          geom_line(linetype = "dashed", alpha = 0.3) +
+          geom_point() +
+          scale_x_continuous(limits = time_range) +
+          scale_y_continuous(limits = c(0, 1)) +
+          facet_wrap(~subsite, ncol = 1) +
+          labs(x = "Time", y = "Mice proportion", colour = "Survey method") +
+          theme_bw() +
+          theme(legend.position = "bottom", strip.background = element_blank())
+
+        print(p)
+        cat("\n\n")  # reset markdown context after figure output
+      })
+    })
+  })
+})
+
+```
+

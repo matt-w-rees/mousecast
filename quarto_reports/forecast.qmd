@@ -1,0 +1,615 @@
+---
+title: "House mouse forecast"
+subtitle: Winter 2025
+description: "Regional seasonal forecast of house mouse abundance in the Australian grainbelt"
+#date: last-modified
+title-block-banner: "white"
+#title-block-banner-color: "black" # title font colour
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8  
+    fig-asp: 0.8 # fig-height = fig-width * fig-asp
+css: styles.css
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: TRUE
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages
+library(targets)
+library(dplyr)
+library(sf)
+library(ggplot2)
+library(flextable)
+library(scico)
+library(viridis)
+
+# set the default theme for ggplot objects
+theme_update(panel.grid = element_blank(),
+            legend.position = "bottom")
+```
+
+```{r}
+#| label: load
+#| message: false
+#| include: FALSE
+
+## load targets
+targets::tar_load(
+  c(model_data,
+    model_predictions_ae_zone,
+    model_predictions_region,
+    model_predictions_trend,
+    recent_survey_stats_preds))
+
+# read in australian outline shapefile and adjust depending on how data has been filtered 
+aus_shp = sf::read_sf("raw_data/predictor_variables/australian_borders/aus_outline_states.shp") |> 
+    sf::st_transform(crs = "EPSG:4326") |> 
+    dplyr::filter(ST_NAME != "WA")
+  
+# town / city centres for labelling
+town_labels = sf::st_as_sf(read.csv("raw_data/town_labels.csv"), coords = c("longitude", "latitude"), crs = "EPSG:4326", remove = FALSE)
+```
+
+```{r}
+#| label: split_season_summaries
+#| message: false
+#| include: FALSE
+
+# recent_survey_stats_preds is a list with $ae_zone and $region level summaries
+# use ae_zone level for the "In short" overview, region level for detailed tables
+df_aez <- recent_survey_stats_preds$ae_zone
+df_region <- recent_survey_stats_preds$region
+
+# split into current and next season using season_year_adj ordering
+all_seasons <- sort(unique(df_aez$season_year_adj))
+current_season <- all_seasons[length(all_seasons) - 1]
+next_season <- all_seasons[length(all_seasons)]
+
+df_current <- filter(df_aez, season_year_adj == current_season)
+df_next <- filter(df_aez, season_year_adj == next_season)
+
+```
+
+
+```{r}
+#| label: site_data
+
+site_data_for_plot <- model_data |>
+
+  # remove unsurveyed seasons for each site
+  filter(!(is.na(mice_prop))) |>
+
+  # take relevant columns
+  dplyr::select(longitude, latitude, season, season_year_adj, mice_prop) |>
+
+  # new column for whether any mice signs were detected
+  group_by(longitude, latitude, season_year_adj) %>%
+  mutate(mice01 = if_else(sum(mice_prop) > (0.001 * n()), "yes", "no")) |>
+  ungroup() |>
+
+  # just one row per site, subsite, season_year_adj
+  unique() %>%
+
+  # make spatial for plotting
+  sf::st_as_sf(., coords = c("longitude", "latitude"), crs = "EPSG:4326") %>%
+
+  # align season_year_adj factor levels with prediction data
+  dplyr::mutate(season_year_adj = factor(season_year_adj, levels = levels(model_predictions_ae_zone$season_year_adj)))
+
+```
+
+
+
+```{r}
+#| label: prediction_data
+
+# filter prediction data to the most recent 2 seasons (current + forecast) at each level
+prediction_data_aez <- model_predictions_ae_zone |>
+   filter(time %in% (max(time)-1):(max(time)))
+
+prediction_data_region <- model_predictions_region |>
+   filter(time %in% (max(time)-1):(max(time)))
+
+prediction_data_trend <- model_predictions_trend |>
+   filter(time %in% (max(time)-1):(max(time)))
+
+# helper: build a map with layers in correct order:
+#   1. Australian outline (background)  2. prediction data  3. town labels  4. map crop
+# data_layer should be a geom_sf call + scale, which gets sandwiched between background and labels
+build_map <- function(data_layer) {
+  ggplot() +
+    # background
+    geom_sf(data = aus_shp, fill = "white") +
+    labs(y = "", x = "") +
+    # prediction polygons (added in the middle so they sit on top of outline but below labels)
+    data_layer +
+    # town labels on top
+    geom_sf(data = town_labels, size = 0.75) +
+    ggrepel::geom_text_repel(
+      data = town_labels, aes(longitude, latitude, label = name), size = 2.5,
+      #Ceduna Jamestown Yorketown Adelaide Horsham Birchip Melbourne Bendigo Albury Wagga Sydney Griffith Dubbo Walgett Gunnedah Goondiwindi Brisbane Dalby  St George
+      nudge_x = c(0.0, 0.0, -3.2, -0.5, -2.0, -1.5, -1.0, 1.0, 1.0, 0.0, 1.5, -1.0, -3.0, -3.0, 0.0, -8.0, 0.0, -2.0, -5.0),
+      nudge_y = c(1.5, 2.0, -1.0, -2.0, -4.0, 1.0, -2.0, -1.0, -1.5, 1.5, -1.1, -1.0, 1.0, 0.0, 1.5, 0.0, -1.5, 3.0, 1.5)) +
+    coord_sf(xlim = c(128, 155), ylim = c(-40, -24), expand = FALSE)
+}
+```
+
+## In short
+
++ `r {
+  levels_present <- unique(df_current$cat3[df_current$cat3 %in% c("Low", "Moderate", "High")])
+  ordered_levels <- c("Low", "Moderate", "High")
+  present_ordered <- ordered_levels[ordered_levels %in% levels_present]
+  
+  if (length(present_ordered) == 1) {
+    paste0("The model predicts current mouse abundance to be ", tolower(present_ordered), ".")
+  } else if (length(present_ordered) == 2) {
+    paste0("The model predicts current mouse abundance to range from ", 
+           tolower(present_ordered[1]), " to ", tolower(present_ordered[2]), ".")
+  } else if (length(present_ordered) == 3) {
+    "The model predicts current mouse abundance to range from low to high."
+  } else {
+    "Mouse abundance predictions are not available."
+  }
+}`
+
+
++ `r {
+  moderate_zones <- df_current$ae_zone[df_current$cat3 == "Moderate"]
+  high_zones <- df_current$ae_zone[df_current$cat3 == "High"]
+
+  list_zones <- function(zones) {
+    if (length(zones) == 0) return(NULL)
+    if (length(zones) == 1) return(zones)
+    paste(paste(zones[-length(zones)], collapse = ", "), "and", zones[length(zones)])
+  }
+
+  parts <- c()
+  if (length(moderate_zones) > 0) {
+    parts <- c(parts, paste0("moderate in ", list_zones(moderate_zones)))
+  }
+  if (length(high_zones) > 0) {
+    parts <- c(parts, paste0("high in ", list_zones(high_zones)))
+  }
+
+  if (length(parts) > 0) {
+    paste0("Mouse abundance is predicted to currently be ", paste(parts, collapse = " and "), ".")
+  } else {
+    "No agroecological zones are predicted to currently have moderate or high mouse abundance."
+  }
+}`
+
+
++ `r {
+  increase_df <- df_next[df_next$Prop_Change > 1.25, c("ae_zone", "Prop_Change")]
+
+  if (nrow(increase_df) == 0) {
+    "Mouse abundance is not forecasted to increase in any zones next season."
+  } else {
+    # Format with integer % (no decimals)
+    increase_df$label <- paste0(
+      increase_df$ae_zone,
+      " (by ",
+      round((increase_df$Prop_Change - 1) * 100, 0),  # Round to whole number
+      "%)"
+    )
+
+    # Join with commas and 'and'
+    if (nrow(increase_df) == 1) {
+      sentence <- increase_df$label
+    } else {
+      sentence <- paste(
+        paste(increase_df$label[-nrow(increase_df)], collapse = ", "),
+        "and",
+        increase_df$label[nrow(increase_df)]
+      )
+    }
+
+    paste0(
+      "Mouse abundance is forecasted to increase next season in ",
+      sentence, "."
+    )
+  }
+}`
+`r {
+  decrease_df <- df_next[df_next$Prop_Change < 0.75, c("ae_zone", "Prop_Change")]
+
+  if (nrow(decrease_df) == 0) {
+    "Mouse abundance is not forecasted to decrease in any zones next season."
+  } else {
+    # Format zone names with integer % decrease
+    decrease_df$label <- paste0(
+      decrease_df$ae_zone,
+      " (by ",
+      abs(round((1 - decrease_df$Prop_Change) * 100, 0)),
+      "%)"
+    )
+
+    # Join zones with commas and "and"
+    if (nrow(decrease_df) == 1) {
+      sentence <- decrease_df$label
+    } else {
+      sentence <- paste(
+        paste(decrease_df$label[-nrow(decrease_df)], collapse = ", "),
+        "and",
+        decrease_df$label[nrow(decrease_df)]
+      )
+    }
+
+    paste0(
+      "Mouse abundance is forecasted to decrease next season in ",
+      sentence, "."
+    )
+  }
+}`
+
+
++ `r {
+  min_prob <- min(df_next$pr_threshold, na.rm = TRUE)
+  max_prob <- max(df_next$pr_threshold, na.rm = TRUE)
+  paste0("The probability of a mouse plague next season ranges from ",
+         round(min_prob * 100), "% to ", round(max_prob * 100), "% across agroecological zones.")
+}`
+
+
+```{r}
+#| label: plot_3cat_helper
+#| include: false
+
+# helper: 3-category abundance map (Low / Moderate / High)
+plot_3cat <- function(data, alpha = 1) {
+  build_map(list(
+    geom_sf(data = data,
+            aes(fill = factor(cat3, levels = c("Low", "Moderate", "High"), ordered = TRUE)),
+            alpha = alpha, show.legend = TRUE),
+    scale_fill_manual(values = c("Low" = "#91cf60", "Moderate" = "#ffeda0", "High" = "#f03b20"),
+                      breaks = c("Low", "Moderate", "High"),
+                      name = "Relative abundance",
+                      drop = FALSE)
+  ))
+}
+```
+
+::: {.panel-tabset}
+
+#### AE zone
+
+```{r}
+#| label: fig_3cat_aez
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, across modified GRDC agroecological zones."
+
+plot_3cat(filter(prediction_data_aez, time == max(time) - 1))
+```
+
+#### Region
+
+```{r}
+#| label: fig_3cat_region
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, by region."
+
+plot_3cat(filter(prediction_data_region, time == max(time) - 1))
+```
+
+#### Site
+
+```{r}
+#| label: fig_3cat_trend
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, by site (shared latent trend)."
+
+plot_3cat(filter(prediction_data_trend, time == max(time) - 1), alpha = 0.7)
+```
+
+:::
+
+
+### Management reccomendations
+
+Mouse numbers are moderate to high in many areas (highly patchy). Given the excellent conditions across many
+areas of southern Queensland, northern NSW and parts of WA, and in parts of Eyre Peninsula (SA; which was
+affected by hail), mice have been breeding through summer and autumn, which will peak in March/April at the time
+of sowing winter crops. See GRDC Mouse Control website for more details about control options. Be aware that
+only ZnP25 baits are currently available (Emergency Permits previously issued for ZnP50 have expired).
+
+1. Actively gauge mouse numbers by walking through paddocks (mouse chew cards and active burrow counts are
+useful tools at this time of year).
+2. At 6 weeks prior to sowing (now): If mouse activity is high and there is plenty of background food, reduce the
+background food through light tillage or sheep grazing, and strategically bait with ZnP25 as the only currently
+registered ZnP bait available. If mice are still a problem at sowing, be prepared to bait again at that time,
+ensuring a 6-week gap to overcome any behavioural aversion from ingesting a sub-lethal dose.
+3. At sowing: If mice remain a problem at sowing, apply bait off the back of the seeder to prevent damage to the
+freshly sown crop.
+4. Baiting at sowing is most effective if no other food sources are available.
+5. Talk to bait suppliers early to ensure timely supply. As with any agricultural chemical, use the product in
+accordance with the label instructions, and report any adverse or off target effects via the APVMA website.
+
+
+```{r}
+#| label: plot_helpers
+#| include: false
+
+# shared viridis colour scale limits across all spatial levels (for comparable maps)
+pred_range <- range(log(c(model_predictions_ae_zone$pred_mean,
+                          model_predictions_region$pred_mean,
+                          model_predictions_trend$pred_mean)), na.rm = TRUE)
+
+# helper: continuous abundance map
+plot_abundance <- function(data, alpha = 1) {
+  build_map(list(
+    geom_sf(data = data, aes(fill = log(pred_mean)), alpha = alpha),
+    scale_fill_viridis_c(
+      limits = pred_range,
+      breaks = pred_range,
+      labels = c("Low", "High"),
+      name = "Relative abundance\n(log-scaled)")
+  ))
+}
+
+# helper: proportional change map
+plot_change <- function(data, alpha = 1) {
+  build_map(list(
+    geom_sf(data = data, aes(fill = Prop_Change), alpha = alpha),
+    scale_fill_scico(palette = "vik", midpoint = 1, name = "Proportional change\nfrom current season")
+  ))
+}
+
+# helper: outbreak probability map
+plot_probability <- function(data, alpha = 1) {
+  build_map(list(
+    geom_sf(data = data, aes(fill = pr_threshold * 100), alpha = alpha),
+    scale_fill_scico(
+      palette = "vik",
+      limits = c(0, 100),
+      breaks = c(0, 25, 50, 75, 100),
+      name = "Outbreak probability (%)")
+  ))
+}
+```
+
+
+## In detail
+
+### Predicted current situation
+
+::: {.panel-tabset}
+
+#### AE zone
+
+```{r}
+#| label: plot_current_aez
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, across modified GRDC agroecological zones."
+
+plot_abundance(filter(prediction_data_aez, time == max(time) - 1))
+```
+
+#### Region
+
+```{r}
+#| label: plot_current_region
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, by region."
+
+plot_abundance(filter(prediction_data_region, time == max(time) - 1))
+```
+
+#### Site
+
+```{r}
+#| label: plot_current_trend
+#| fig-cap:
+#|   - "Predicted relative abundance of house mice in the current season, by site (shared latent trend)."
+
+plot_abundance(filter(prediction_data_trend, time == max(time) - 1), alpha = 0.7)
+```
+
+:::
+
+
+### Forecasted change next season
+
+::: {.panel-tabset}
+
+#### AE zone
+
+```{r}
+#| label: plot_change_aez
+#| fig-cap:
+#|   - "Predicted change in relative abundance of house mice from the current to the future season, across modified GRDC agroecological zones."
+
+plot_change(filter(prediction_data_aez, time == max(time)))
+```
+
+#### Region
+
+```{r}
+#| label: plot_change_region
+#| fig-cap:
+#|   - "Predicted change in relative abundance by region."
+
+plot_change(filter(prediction_data_region, time == max(time)))
+```
+
+#### Site
+
+```{r}
+#| label: plot_change_trend
+#| fig-cap:
+#|   - "Predicted change in relative abundance by site (shared latent trend)."
+
+plot_change(filter(prediction_data_trend, time == max(time)), alpha = 0.7)
+```
+
+:::
+
+
+### Probability of plague event
+
+::: {.panel-tabset}
+
+#### AE zone
+
+```{r}
+#| label: plot_prob_aez
+#| fig-cap:
+#|   - "Predicted probability of mouse abundance being in a high state, across modified GRDC agroecological zones."
+
+plot_probability(prediction_data_aez) + facet_wrap(~season)
+```
+
+#### Region
+
+```{r}
+#| label: plot_prob_region
+#| fig-cap:
+#|   - "Predicted probability of mouse abundance being in a high state, by region."
+
+plot_probability(prediction_data_region) + facet_wrap(~season)
+```
+
+#### Site
+
+```{r}
+#| label: plot_prob_trend
+#| fig-cap:
+#|   - "Predicted probability of mouse abundance being in a high state, by site (shared latent trend)."
+
+plot_probability(prediction_data_trend, alpha = 0.7) + facet_wrap(~season)
+```
+
+:::
+
+
+
+### Data summary
+
+::: {.panel-tabset}
+
+#### AE zone
+
+```{r}
+#| label: data_tbl_aez
+#| tbl-cap:
+#|   - "Summary table of raw data and model predictions per agroecological zone."
+
+# prepare ae_zone level data for display, newest season first then by ae_zone
+tbl_aez <- df_aez |>
+  dplyr::arrange(desc(season_year_adj), ae_zone) |>
+  dplyr::select(-any_of(c("season_year_adj", "pred_median")))
+
+  # change defaults
+  set_flextable_defaults(
+    digits = 2,
+    font.size = 10,
+    na_str = "NA",
+    theme_fun = theme_vanilla,
+    padding = 6,
+    background.color = "#EFEFEF")
+
+
+  ft_aez <- flextable(tbl_aez) |>
+
+    # merge cells for year, season, and ae_zone so not repeated
+    merge_v(j = c("year_adj", "season", "ae_zone")) |>
+
+    # centre all values
+    align(align = "center", part = "all") |>
+
+    # limit to 2 decimal points for these numeric columns
+    colformat_double(j = c("prop_traps", "pred_mean", "pred_lower", "pred_upper", "Prop_Change", "pr_threshold"), digits = 2) |>
+
+    # rename columns
+    set_header_labels(
+      year_adj = "Year",
+      season = "Season",
+      ae_zone = "AE zone",
+      sites_surveyed_burrows = "Sites",
+      sites_1burrow = "Active sites",
+      sites_surveyed_chew = "Sites",
+      sites_1chew = "Active sites",
+      sites_surveyed_traps = "Sites",
+      prop_traps = "Proportion captures",
+      pred_mean = "Mean",
+      pred_lower = "Lower 95% CI",
+      pred_upper = "Upper 95% CI",
+      Prop_Change = "Change",
+      pr_threshold = "Pr(plague)",
+      cat3 = "Abundance") |>
+
+    # add another header above column names (colwidths must sum to total number of columns)
+    add_header_row(values = c("", "Burrows", "Chewcards", "Live-traps", "Model Predictions"),
+                          colwidths = c(3, 2, 2, 2, 6), top = TRUE)
+
+  # display table
+  autofit(ft_aez)
+
+```
+
+#### Region
+
+```{r}
+#| label: data_tbl_region
+#| tbl-cap:
+#|   - "Summary table of raw data and model predictions per region within each agroecological zone."
+
+# prepare region level data for display, newest season first then by ae_zone / region
+tbl_region <- df_region |>
+  dplyr::arrange(desc(season_year_adj), ae_zone, region) |>
+  dplyr::select(-any_of(c("season_year_adj", "pred_median")))
+
+
+  ft_region <- flextable(tbl_region) |>
+
+    # merge cells for year, season, ae_zone, region so not repeated
+    merge_v(j = c("year_adj", "season", "ae_zone", "region")) |>
+
+    # centre all values
+    align(align = "center", part = "all") |>
+
+    # limit to 2 decimal points for these numeric columns
+    colformat_double(j = c("prop_traps", "pred_mean", "pred_lower", "pred_upper", "Prop_Change", "pr_threshold"), digits = 2) |>
+
+    # rename columns
+    set_header_labels(
+      year_adj = "Year",
+      season = "Season",
+      ae_zone = "AE zone",
+      region = "Region",
+      sites_surveyed_burrows = "Sites",
+      sites_1burrow = "Active sites",
+      sites_surveyed_chew = "Sites",
+      sites_1chew = "Active sites",
+      sites_surveyed_traps = "Sites",
+      prop_traps = "Proportion captures",
+      pred_mean = "Mean",
+      pred_lower = "Lower 95% CI",
+      pred_upper = "Upper 95% CI",
+      Prop_Change = "Change",
+      pr_threshold = "Pr(plague)",
+      cat3 = "Abundance") |>
+
+    # add another header above column names (colwidths must sum to total number of columns)
+    add_header_row(values = c("", "Burrows", "Chewcards", "Live-traps", "Model Predictions"),
+                          colwidths = c(4, 2, 2, 2, 6), top = TRUE)
+
+  # display table
+  autofit(ft_region)
+
+```
+
+:::
+

@@ -1,0 +1,9 @@
+.quarto-title-block .quarto-title-banner {
+  background-image: url(images/logo_csiro.png), url(images/logo_grdc.png);
+  background-size: 130px, 250px;
+  background-position: left, right;
+  background-repeat: no-repeat;
+  padding-left: 25px;
+  padding-right: 25px;
+  background-origin: content-box;
+}

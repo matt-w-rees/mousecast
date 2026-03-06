@@ -1,0 +1,446 @@
+---
+title: "CSIRO Mouse Survelliance"
+subtitle: "2025 report"
+date: last-modified
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    number-sections: false
+    toc: false
+crossref:
+  fig-title: "Figure"
+  tbl-title: "Table"
+  fig-prefix: "Figure"
+  tbl-prefix: "Table"
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages - this doc needs to be standalone from targets pipeline
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(ggh4x)
+library(leaflet)
+library(sf)
+library(flextable)
+library(gt)
+library(patchwork)
+
+## load targets
+targets::tar_load(c(
+  data,
+  aus_shp
+  ))
+
+## load compare_monitoring_schedule function
+source("r/compare_monitoring_schedule.R")
+
+## create monitoring comparison table
+monitoring_comparison <- compare_monitoring_schedule(
+  data_list = data,
+  start_season_year = "summer-2025",
+  end_season_year = "spring-2025"
+)
+
+  # change flextable defaults
+  set_flextable_defaults(
+    digits = 2,
+    font.size = 10,
+    na_str = "NA",
+    theme_fun = theme_vanilla,
+    padding = 6,
+    background.color = "#EFEFEF")
+  
+
+```
+
+
+```{r}
+
+#| label: data_manip
+
+# filter data to current year
+data_year <- purrr::map(data, dplyr::filter, year_adj == 2025)
+
+# make dataframes spatial
+data_year_sf <- purrr::map(data_year, st_as_sf,  coords = c("longitude", "latitude"), crs = 4326)
+
+# Create tbl_traps dataframe 
+tbl_traps <- data_year$traps |>
+  # arrange by time first
+  arrange(season_year_adj, state, region, site, subsite) |>
+  # keep just these columns
+  dplyr::select(season_year_adj, state, region, number_functional_traps_session, number_unique_individuals_session) |>
+  distinct()
+
+
+```
+
+## Overview
+
+This report summarizes house mouse monitoring activities conducted during the 2025 survey year across Australian grain-growing regions. Mouse abundance was assessed using three complementary survey methods: live-trapping at benchmark sites, and rapid assessments using chew cards and active burrow counts.
+
+```{r}
+#| label: summary-stats
+#| include: FALSE
+
+
+# Calculate summary statistics for dynamic text using tbl_traps
+total_individuals <- sum(tbl_traps$number_unique_individuals_session) 
+total_trap_nights <- sum(tbl_traps$number_functional_traps_session) 
+
+n_regions_traps <- data_year$traps %>%
+  summarise(n = n_distinct(region)) %>%
+  pull(n)
+
+n_sites_traps <- data_year$traps %>%
+  summarise(n = n_distinct(site)) %>%
+  pull(n)
+
+n_states_traps <- data_year$traps %>%
+  summarise(n = n_distinct(state)) %>%
+  pull(n)
+
+n_regions_rapid <- data_year$chewcards %>%
+  summarise(n = n_distinct(region)) %>%
+  pull(n)
+
+n_sites_chewcards <- data_year$chewcards %>%
+  summarise(n = n_distinct(site)) %>%
+  pull(n)
+
+n_sites_burrows <- data_year$burrows %>%
+  summarise(n = n_distinct(site)) %>%
+  pull(n)
+
+total_chewcards <- data_year$chewcards %>%
+  summarise(total = sum(chewcards_deployed, na.rm = TRUE)) %>%
+  pull(total)
+
+chewcards_chewed <- data_year$chewcards %>%
+  summarise(total = sum(chewcards_chewed, na.rm = TRUE)) %>%
+  pull(total)
+
+pct_chewed <- round((chewcards_chewed / total_chewcards) * 100, 1)
+
+total_transects <- data_year$burrows %>%
+  summarise(total = sum(burrow_transects_searched, na.rm = TRUE)) %>%
+  pull(total)
+
+transects_with_burrows <- data_year$burrows %>%
+  summarise(total = sum(burrow_transects_present, na.rm = TRUE)) %>%
+  pull(total)
+
+total_active_burrows <- data_year$burrows %>%
+  summarise(total = sum(burrow_total_count, na.rm = TRUE)) %>%
+  pull(total)
+
+pct_transects_burrows <- round((transects_with_burrows / total_transects) * 100, 1)
+
+# Date ranges
+date_range_traps <- data_year$traps %>%
+  summarise(
+    min = min(session_start_date, na.rm = TRUE),
+    max = max(session_end_date, na.rm = TRUE)
+  )
+
+date_range_rapid <- bind_rows(
+  data_year$chewcards %>% select(session_start_date, session_end_date),
+  data_year$burrows %>% select(session_start_date, session_end_date)
+) %>%
+  summarise(
+    min = min(session_start_date, na.rm = TRUE),
+    max = max(session_end_date, na.rm = TRUE)
+  )
+```
+
+**Live-trap Surveys:** A total of `r format(total_trap_nights, big.mark = ",")` trap nights (1 trap night = 1 trap set for 1 night) were conducted across `r n_sites_traps` benchmark sites in `r n_regions_traps` regions spanning `r n_states_traps` states (survey period: `r format(date_range_traps$min, "%B %Y")` to `r format(date_range_traps$max, "%B %Y")`). These surveys captured `r total_individuals` individual house mice, allowing abundance estimates at these monitoring locations.
+
+**Rapid Assessment Surveys:** Rapid assessments were conducted across `r n_regions_rapid` regions using two methods. Chew card surveys deployed `r format(total_chewcards, big.mark = ",")` cards across `r n_sites_chewcards` sites, with `r pct_chewed`% showing evidence of mouse activity (`r chewcards_chewed` cards chewed). Active burrow surveys searched `r total_transects` transects across `r n_sites_burrows` sites (survey period: `r format(date_range_rapid$min, "%B %Y")` to `r format(date_range_rapid$max, "%B %Y")`), detecting active burrows in `r pct_transects_burrows`% of transects (total: `r total_active_burrows` active burrows).
+
+<br>
+
+## Live-Trap Surveys
+
+```{r}
+#| label: fig-map-traps
+#| fig-height: 9
+#| fig-cap: "Location of benchmark sites where house mouse were surveyed using live-traps over seasons in the current year, with colour gradient reflecting number of unique individuals caught across all subsites within the benchmark site."
+
+# plot 
+ggplot() +
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") + 
+  # Points colored by mice
+  geom_sf(data = data_year_sf$traps, aes(color = number_unique_individuals_session), size = 3) +
+  # Add viridis color scale
+  scale_color_viridis_c(option = "viridis") +
+  # Labels
+  geom_sf_text(data = data_year_sf$traps, aes(label = region), 
+               size = 2.5, nudge_y = 1.5, check_overlap = TRUE) +
+  # crop map 
+  coord_sf(xlim = c(128, 155), ylim = c(-40, -26), expand = FALSE) +
+  # facet plot for each season 
+  facet_wrap(~season_year_adj, ncol = 1) +
+  # styling
+  labs(color = "Individuals", y = "", x = "", subtitle = "Live-trapping") +
+  theme(legend.position = "right")
+
+```
+
+<br>
+
+```{r}
+#| label: tbl-traps
+#| tbl-cap: "Summary of live-trap survey results over seasons in the current year."
+
+# Create a nicer formatted table (tbl_traps created in summary-stats chunk)
+table_gt <- flextable(tbl_traps) %>%
+   # merge cells for year and season so not repeated
+  merge_v(j = "season_year_adj") |> 
+  set_header_labels(
+    state = "State",
+    region = "Region",
+    season_year_adj = "Season",
+    number_functional_traps_session = "Trap Nights",
+    number_unique_individuals_session = "Individuals caught"
+  ) 
+
+autofit(table_gt)
+
+```
+
+<br>
+
+## Rapid Assessment Surveys
+
+```{r}
+#| label: fig-map-rapid
+#| fig-width: 10
+#| fig-height: 9
+#| fig-cap: "Location of rapid assessment sites where house mouse were surveyed using (a) active burrow counts, and (b) chew cards in the current year. Blue dots represent sites which did not detect any mice, red dots represent sites which detected mice."
+
+
+# plot active burrow counts
+burrow_map = ggplot() +
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") + 
+  # Points colored by binary presence/absence
+  geom_sf(data = data_year_sf$burrows, aes(color = factor(burrow_site_present)), size = 0.5, alpha = 0.75) +
+  # Add discrete color scale
+  scale_color_manual(values = c("0" = "cornflowerblue", "1" = "red"), labels = c("Absent", "Present")) +
+  # crop map 
+  coord_sf(xlim = c(113, 155), ylim = c(-40, -26), expand = FALSE) +
+  # facet plot for each season 
+  facet_wrap(~season_year_adj, ncol = 1) +
+  # styling
+  labs(color = "Active burrows", y = "", x = "", subtitle = "Active burrow counts") +
+  theme(legend.position = "bottom")
+
+
+# plot chewcards
+chewcard_map = ggplot() +
+  # first plot Australian states as outline in the background
+  geom_sf(data = aus_shp, fill = "white") + 
+  # Points colored by binary presence/absence
+  geom_sf(data = data_year_sf$chewcards, aes(color = factor(chewcard_site_present)), size = 0.5, alpha = 0.75) +
+  # Add discrete color scale
+  scale_color_manual(values = c("0" = "cornflowerblue", "1" = "red"), labels = c("Absent", "Present")) +
+  # crop map 
+  coord_sf(xlim = c(113, 155), ylim = c(-40, -26), expand = FALSE) +
+  # facet plot for each season 
+  facet_wrap(~season_year_adj, ncol = 1) +
+  # styling
+  labs(color = "Chew cards", y = "", x = "", subtitle = "Chewcards") +
+  theme(legend.position = "bottom")
+
+# plot together using patchwork
+ burrow_map + chewcard_map + plot_annotation(tag_levels = "a")
+
+```
+
+<br>
+
+```{r}
+#| label: tbl-rapid
+#| tbl-cap: "Rapid assessment survey results summarised within each region. Colour gradients based on proportion of sites surveyed which detected any sign of mice (white = 0, yellow = low, orange = moderate, red = 1)."
+
+
+# summary table for burrows
+table_burrows <- as_tibble(data_year_sf$burrows) |>
+  # summarise trapping effort per site / season
+  group_by(season_year_adj, state, region) |>
+  transmute(
+    burrow_sites_region = n(),
+    burrow_site_present_region = sum(burrow_site_present, na.rm = TRUE),
+    burrow_proportion = round(burrow_site_present_region / burrow_sites_region, 2)) |>
+  ungroup() |>
+  distinct()
+
+# summary table for chewcards
+table_chewcards <- as_tibble(data_year_sf$chewcards) |>
+  # summarise trapping effort per site / season
+  group_by(season_year_adj, state, region) |>
+  transmute(
+    chewcard_sites_region = n(),
+    chewcard_site_present_region = sum(chewcard_site_present, na.rm = TRUE),
+    chewcard_proportion = round(chewcard_site_present_region / chewcard_sites_region, 2)) |>
+    ungroup() |>
+  distinct()
+
+# join tables together
+table_both <- full_join(table_burrows, table_chewcards,
+                        by = c("state", "region", "season_year_adj")) |>
+  # arrange by time first
+  arrange(season_year_adj, state, region)
+
+# Create separate color mapping functions with automatic domains
+color_scale_burrows <- scales::col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = range(table_both$burrow_proportion, na.rm = TRUE)
+)
+
+color_scale_chewcards <- scales::col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = range(table_both$chewcard_proportion, na.rm = TRUE)
+)
+
+
+
+
+# Create a nicer formatted table
+table_gt <- flextable(table_both) |>
+  
+  # merge cells for year and season so not repeated
+  merge_v(j = c("state", "season_year_adj")) |> 
+
+    # Color burrow columns based on burrow proportion
+  bg(j = c("burrow_site_present_region", "burrow_sites_region", "burrow_proportion"),
+     bg = color_scale_burrows,
+     source = "burrow_proportion") |>
+  
+  # Color chewcard columns based on chewcard proportion
+  bg(j = c("chewcard_site_present_region", "chewcard_sites_region", "chewcard_proportion"),
+     bg = color_scale_chewcards,
+     source = "chewcard_proportion") |>
+  
+  # new headings
+   set_header_labels(
+    state = "State",
+    region = "Region",
+    season_year_adj = "Season",
+    burrow_sites_region = "Sites",
+    burrow_site_present_region = "Presences",
+    burrow_proportion = "Proportion",
+    chewcard_sites_region = "Sites",
+    chewcard_site_present_region = "Presences",
+    chewcard_proportion = "Proportion") |>
+  
+   # add another header above column names
+   add_header_row(values = c("", "Burrows", "Chewcards"),
+                         colwidths = c(3, 3, 3), top = TRUE) |>
+
+  # Hide the proportion columns if you don't want to display them
+  #delete_columns(j = c("burrow_proportion", "chewcard_proportion")) |>
+  
+  # centre all values
+   align(align = "center", part = "all")
+
+
+table_gt
+
+```
+
+<br>
+
+## Monitoring Schedule Compliance
+
+```{r}
+#| label: tbl-monitoring
+#| tbl-cap: "Monitoring schedule compliance showing expected vs actual sites surveyed by region and season. Color gradients indicate performance: red = shortfall (fewer sites than expected), white = on target, green = exceeded expectations."
+
+# Filter out rows where expected_sites = 0 and no sites were actually surveyed
+# Keep rows where: expected_sites > 0 OR burrows_sites > 0 OR chewcards_sites > 0
+monitoring_comparison_filtered <- monitoring_comparison |>
+  dplyr::filter(expected_sites > 0 | burrows_sites > 0 | chewcards_sites > 0) |>
+  # Calculate proportions for color scaling (actual / expected)
+  # If expected = 0 but sites were surveyed, treat as proportion > 1 (e.g., 2)
+  dplyr::mutate(
+    burrows_proportion = ifelse(expected_sites == 0, 2, burrows_sites / expected_sites),
+    chewcards_proportion = ifelse(expected_sites == 0, 2, chewcards_sites / expected_sites)
+  ) |>
+  # Arrange by season, then lead, then region to ensure proper cell merging
+  dplyr::arrange(season_year_adj, lead, region) |>
+  # Reorder columns: season, lead, region, expected, burrows (actual, diff), chewcards (actual, diff)
+  dplyr::select(season_year_adj, lead, region, expected_sites,
+         burrows_sites, burrows_difference, burrows_proportion,
+         chewcards_sites, chewcards_difference, chewcards_proportion)
+
+# Create separate color mapping functions for burrows and chewcards
+# Each uses its own proportion range for independent color scaling
+color_scale_burrows <- scales::col_numeric(
+  palette = c("red", "white", "green"),
+  domain = range(monitoring_comparison_filtered$burrows_proportion, na.rm = TRUE)
+)
+
+color_scale_chewcards <- scales::col_numeric(
+  palette = c("red", "white", "green"),
+  domain = range(monitoring_comparison_filtered$chewcards_proportion, na.rm = TRUE)
+)
+
+# Create flextable
+monitoring_table <- flextable(monitoring_comparison_filtered) |>
+
+  # Color burrow columns based on burrow proportion
+  bg(j = c("burrows_sites", "burrows_difference", "burrows_proportion"),
+     bg = color_scale_burrows,
+     source = "burrows_proportion") |>
+
+  # Color chewcard columns based on chewcard proportion
+  bg(j = c("chewcards_sites", "chewcards_difference", "chewcards_proportion"),
+     bg = color_scale_chewcards,
+     source = "chewcards_proportion") |>
+
+  # Set column headers (including proportion columns)
+  set_header_labels(
+    season_year_adj = "Season",
+    lead = "Lead",
+    region = "Region",
+    expected_sites = "Expected",
+    burrows_sites = "Actual",
+    burrows_difference = "Difference",
+    burrows_proportion = "Proportion",
+    chewcards_sites = "Actual",
+    chewcards_difference = "Difference",
+    chewcards_proportion = "Proportion"
+  ) |>
+
+  # Add header row for survey types (with all 10 columns)
+  add_header_row(values = c("", "", "Burrows", "Chewcards"),
+                 colwidths = c(3, 1, 3, 3), top = TRUE) |>
+
+  # Hide the proportion columns (used only for coloring)
+  delete_columns(j = c("burrows_proportion", "chewcards_proportion")) |>
+
+  # Merge cells for season and lead so not repeated
+  merge_v(j = c("season_year_adj", "lead")) |>
+
+  # Centre all values
+  align(align = "center", part = "all")
+
+monitoring_table
+
+```

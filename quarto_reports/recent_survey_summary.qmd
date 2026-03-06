@@ -1,0 +1,532 @@
+---
+title: "2025-6 Mouse surveys"
+subtitle: "CSIRO / GRDC / NSW DPIRD"
+date: last-modified
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+
+## load packages - this doc needs to be standalone from targets pipeline
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(leaflet)
+library(sf)
+library(flextable)
+library(patchwork)
+library(forcats)
+library(scales)
+library(stringr)
+library(ggrepel)
+library(ggh4x)
+
+## load targets (handle both pipeline and standalone rendering)
+store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
+targets::tar_load(c(data, aus_shp, aez_adj), store = store_path)
+
+# Attach ae_zone to each dataset via spatial extraction
+attach_aez <- function(df, aez) {
+  df_vect <- terra::vect(sf::st_as_sf(df, coords = c("longitude", "latitude"), crs = "epsg:4326"))
+  x <- terra::extract(terra::vect(aez), df_vect)
+  df$ae_zone <- as.factor(ifelse(is.na(x$ae_zone), "NSW N Qld S", x$ae_zone))
+  df
+}
+
+# flextable defaults
+set_flextable_defaults(
+  digits = 2,
+  font.size = 10,
+  na_str = "\u2014",
+  theme_fun = theme_vanilla,
+  padding = 6,
+  background.color = "#EFEFEF")
+
+# ---------- Calculate mice_prop for each data type ----------
+
+## Traps: proportion of traps which caught a mouse
+data_traps <- data$traps |>
+  dplyr::mutate(
+    # adjust cases when more mice than traps
+    number_mice_caught = if_else(number_mice_caught > number_functional_traps, number_functional_traps, number_mice_caught),
+    # calculate proportion
+    mice_prop = pmin(1, pmax(0, number_mice_caught / number_functional_traps)),
+    survey_method = "traps") |>
+  # only show highest proportion per session
+  group_by(region, site, subsite, session_start_date, session_end_date) |>
+  slice_max(mice_prop, with_ties = FALSE) |>
+  ungroup() |>
+  attach_aez(aez_adj)
+
+## Burrows: proportion of transects with active burrows
+data_burrows <- data$burrows |>
+  dplyr::mutate(
+    mice_prop = pmin(1, pmax(0, burrow_transects_present / burrow_transects_searched)),
+    survey_method = "burrows") |>
+  attach_aez(aez_adj)
+
+## Chewcards: proportion chewed
+data_chewcards <- data$chewcards |>
+  dplyr::mutate(
+    mice_prop = pmin(1, pmax(0, chewcards_chewed / chewcards_deployed)),
+    survey_method = "chewcards") |>
+  attach_aez(aez_adj)
+
+# ---------- Detect current year and recent seasons ----------
+
+current_year <- max(data_traps$year_adj, na.rm = TRUE)
+
+# Get ordered season_year_adj levels that have data in any dataset
+seasons_with_data <- union(
+  union(
+    as.character(unique(data_traps$season_year_adj)),
+    as.character(unique(data_burrows$season_year_adj))
+  ),
+  as.character(unique(data_chewcards$season_year_adj))
+)
+
+all_levels <- levels(data_traps$season_year_adj)
+seasons_ordered <- all_levels[all_levels %in% seasons_with_data]
+
+# Most recent 2 seasons (for highlighting in plots)
+recent_seasons <- tail(seasons_ordered, 2)
+recent_season_label <- recent_seasons[length(recent_seasons)]
+
+# Most recent season alias (used in table and interpretation)
+latest <- recent_season_label
+
+# Regional averages for traps (for trend plots)
+data_traps_regional <- data_traps |>
+  group_by(region, state, ae_zone, season, season_year_adj, year_adj) |>
+  summarise(
+    mice_prop = mean(mice_prop, na.rm = TRUE),
+    session_start_date = min(session_start_date, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Regional averages for burrows and chewcards (for trend plots)
+data_burrows_regional <- data_burrows |>
+  group_by(region, state, ae_zone, season, season_year_adj, year_adj) |>
+  summarise(
+    mice_prop = mean(mice_prop, na.rm = TRUE),
+    session_start_date = min(session_start_date, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+data_chewcards_regional <- data_chewcards |>
+  group_by(region, state, ae_zone, season, season_year_adj, year_adj) |>
+  summarise(
+    mice_prop = mean(mice_prop, na.rm = TRUE),
+    session_start_date = min(session_start_date, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+
+
+## Introduction
+
+This report summarises raw data the most recent house mouse survey results from the national monitoring network across Australian grain-growing regions. It is designed to help farmers, agronomists, and growers understand current mouse activity in their region and how it compares to previous years.
+
+:::{.callout-tip}
+## How are mice surveyed?
+
+**Live traps** are set at benchmark sites overnight. *Trap success* is the proportion of traps that catch a mouse --- higher values mean more mice.
+
+![Live traps set in the field and captured mice.](images/traps.png){width=80%}
+
+**Rapid assessments** use two quick methods: *chew cards* (cards placed in paddocks that mice chew on) and *active burrow counts* (walking set transects and looking for burrows with fresh signs of mouse activity). For both, the result is presented as the proportion of cards chewed or transects with active burrows (averaged across sites for clean presentation).
+
+![Active mouse burrows (top) and a chewed chew card (bottom).](images/rapid_assessment.png){width=40%}
+:::
+
+
+## Survey locations
+
+::: {.panel-tabset}
+
+### Live-Trap Sites
+
+```{r}
+#| label: map-traps
+
+# Get most recent survey per site for popup info
+trap_sites <- data_traps |>
+  group_by(state, region, site, longitude, latitude) |>
+  filter(session_start_date == max(session_start_date, na.rm = TRUE)) |>
+  summarise(
+    last_survey = format(max(session_start_date, na.rm = TRUE), "%d %b %Y"),
+    last_trap_success = round(mean(mice_prop, na.rm = TRUE) * 100, 1),
+    .groups = "drop"
+  ) |>
+  distinct()
+
+leaflet(trap_sites, width = "100%") |>
+  addProviderTiles("OpenStreetMap", group = "Street") |>
+  addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+  addCircleMarkers(
+    lng = ~longitude, lat = ~latitude,
+    color = "red",
+    fillColor = "red",
+    fillOpacity = 0.8, radius = 7, stroke = TRUE, weight = 1,
+    popup = ~paste0(
+      "<b>", site, "</b><br>",
+      "Region: ", region, "<br>",
+      "State: ", state, "<br>",
+      "Last survey: ", last_survey, "<br>",
+      "Trap success: ", last_trap_success, "%"
+    )
+  ) |>
+  addLayersControl(
+    baseGroups = c("Street", "Satellite"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "topright", options = scaleBarOptions(imperial = FALSE))
+
+```
+
+### Rapid Assessment Sites
+
+```{r}
+#| label: map-rapid
+
+# Combine burrow and chewcard sites
+rapid_sites <- bind_rows(
+  data_burrows |> mutate(method = "Burrows"),
+  data_chewcards |> mutate(method = "Chewcards")
+) |>
+  group_by(state, region, site, longitude, latitude) |>
+  summarise(
+    methods_used = paste(sort(unique(method)), collapse = " & "),
+    last_survey = format(max(session_start_date, na.rm = TRUE), "%d %b %Y"),
+    last_activity = round(
+      mean(mice_prop[session_start_date == max(session_start_date, na.rm = TRUE)], na.rm = TRUE) * 100, 1),
+    .groups = "drop"
+  ) |>
+  distinct()
+
+leaflet(rapid_sites, width = "100%") |>
+  addProviderTiles("OpenStreetMap", group = "Street") |>
+  addProviderTiles("Esri.WorldImagery", group = "Satellite") |>
+  addCircleMarkers(
+    lng = ~longitude, lat = ~latitude,
+    color = "red",
+    fillColor = "red",
+    fillOpacity = 0.8, radius = 7, stroke = TRUE, weight = 1,
+    popup = ~paste0(
+      "<b>", site, "</b><br>",
+      "Region: ", region, "<br>",
+      "State: ", state, "<br>",
+      "Methods: ", methods_used, "<br>",
+      "Last survey: ", last_survey, "<br>",
+      "Last activity: ", last_activity, "%"
+    )
+  ) |>
+  addLayersControl(
+    baseGroups = c("Street", "Satellite"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  addScaleBar(position = "topright", options = scaleBarOptions(imperial = FALSE))
+
+```
+
+:::
+
+
+## Mouse Population Trends
+
+### Live-Trap Results
+
+```{r}
+#| label: fig-traps-history
+#| fig-width: 10
+#| fig-height: 14
+#| fig-cap: "Average trap success per region across all monitoring years. Values are averaged across all sites and subsites within each region."
+
+data_traps_regional |>
+  ggplot(aes(x = ymd(session_start_date), y = mice_prop)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  geom_line(linewidth = 0.5) +
+  geom_point(size = 1) +
+  facet_nested_wrap(vars(region), ncol = 1, axes = "all") +
+  xlab("") +
+  ylab("Proportion trap success") +
+  theme(strip.background = element_blank())
+
+```
+
+### Rapid Assessment Results
+
+Burrow and chew card data are averaged within each region for clarity. Each coloured line represents a different region.
+
+#### Active Burrow Counts
+
+```{r}
+#| label: fig-burrows-history
+#| fig-width: 10
+#| fig-height: 14
+#| fig-cap: "Average burrow detection rates per agroecological zone across all monitoring years. Values are averaged across all sites within each zone."
+
+data_burrows_regional |>
+  group_by(ae_zone, season, season_year_adj, year_adj) |>
+  summarise(
+    mice_prop = mean(mice_prop, na.rm = TRUE),
+    session_start_date = min(session_start_date, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = ymd(session_start_date), y = mice_prop)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  geom_line(linewidth = 0.5) +
+  geom_point(size = 1) +
+  facet_wrap(~ ae_zone, ncol = 2) +
+  labs(x = NULL, y = "Proportion burrow detection") +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    strip.background = element_blank()
+  )
+
+```
+
+#### Chew Cards
+
+```{r}
+#| label: fig-chewcards-history
+#| fig-width: 10
+#| fig-height: 14
+#| fig-cap: "Average chew card detection rates per agroecological zone across all monitoring years. Values are averaged across all sites within each zone."
+
+data_chewcards_regional |>
+  group_by(ae_zone, season, season_year_adj, year_adj) |>
+  summarise(
+    mice_prop = mean(mice_prop, na.rm = TRUE),
+    session_start_date = min(session_start_date, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = ymd(session_start_date), y = mice_prop)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  geom_line(linewidth = 0.5) +
+  geom_point(size = 1) +
+  facet_wrap(~ ae_zone, ncol = 2) +
+  labs(x = NULL, y = "Proportion chew card detection") +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    strip.background = element_blank()
+  )
+
+```
+
+
+## Regional Summary
+
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "Regional summary for recent seasons. Colour gradients: white = no/low activity, yellow = moderate, red = high activity."
+
+# Summaries for both recent seasons
+summary_seasons <- recent_seasons
+
+# Trap summary
+tbl_trap <- data_traps |>
+  filter(season_year_adj %in% summary_seasons) |>
+  group_by(season_year_adj, ae_zone) |>
+  summarise(trap_success_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+# Burrow summary
+tbl_burrow <- data_burrows |>
+  filter(season_year_adj %in% summary_seasons) |>
+  group_by(season_year_adj, ae_zone) |>
+  summarise(burrow_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+# Chewcard summary
+tbl_chew <- data_chewcards |>
+  filter(season_year_adj %in% summary_seasons) |>
+  group_by(season_year_adj, ae_zone) |>
+  summarise(chewcard_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+# Join all summaries
+tbl_summary <- tbl_trap |>
+  full_join(tbl_burrow, by = c("season_year_adj", "ae_zone")) |>
+  full_join(tbl_chew, by = c("season_year_adj", "ae_zone")) |>
+  arrange(season_year_adj, ae_zone) |>
+  # Classify overall activity based on the maximum across available methods
+  rowwise() |>
+  mutate(
+    max_activity = max(c_across(c(trap_success_pct, burrow_pct, chewcard_pct)), na.rm = TRUE),
+    activity_level = case_when(
+      is.infinite(max_activity) ~ "No data",
+      max_activity >= 25 ~ "High",
+      max_activity >= 5  ~ "Moderate",
+      TRUE               ~ "Low"
+    )
+  ) |>
+  ungroup() |>
+  select(-max_activity)
+
+# Build colour scales for each metric
+col_trap <- col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = c(0, max(tbl_summary$trap_success_pct, 1, na.rm = TRUE)),
+  na.color = "#EFEFEF")
+
+col_burrow <- col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = c(0, max(tbl_summary$burrow_pct, 1, na.rm = TRUE)),
+  na.color = "#EFEFEF")
+
+col_chew <- col_numeric(
+  palette = c("white", "yellow", "orange", "red"),
+  domain = c(0, max(tbl_summary$chewcard_pct, 1, na.rm = TRUE)),
+  na.color = "#EFEFEF")
+
+flextable(tbl_summary) |>
+  merge_v(j = c("season_year_adj")) |>
+  set_header_labels(
+    season_year_adj = "Season",
+    ae_zone = "Agroecological zone",
+    trap_success_pct = "Trap success (%)",
+    burrow_pct = "Burrow detection (%)",
+    chewcard_pct = "Chew card detection (%)",
+    activity_level = "Overall activity"
+  ) |>
+  bg(j = "trap_success_pct", bg = col_trap, source = "trap_success_pct") |>
+  bg(j = "burrow_pct", bg = col_burrow, source = "burrow_pct") |>
+  bg(j = "chewcard_pct", bg = col_chew, source = "chewcard_pct") |>
+  # colour-code the activity level column
+  bg(i = ~ activity_level == "High", j = "activity_level", bg = "#d73027") |>
+  bg(i = ~ activity_level == "Moderate", j = "activity_level", bg = "#fee08b") |>
+  bg(i = ~ activity_level == "Low", j = "activity_level", bg = "#b8e186") |>
+  bg(i = ~ activity_level == "No data", j = "activity_level", bg = "#EFEFEF") |>
+  align(align = "center", part = "all") |>
+  autofit()
+
+```
+
+### Regional Summary Map
+
+The map below shows the geographic distribution of mouse activity across regions for each of the last four seasons. The metrics shown on the map are summarised as follows:
+
+- **Trap success (T)**: The average proportion of live traps that caught a mouse, calculated across all sites and trapping sessions within each region for that season. For example, T: 5.2% means that on average 5.2% of traps set in that region caught a mouse.
+- **Burrow detection (B)**: The average proportion of walked transects that had active mouse burrows, averaged across all sites within the region for that season.
+- **Chew card detection (C)**: The average proportion of deployed chew cards that showed signs of mouse gnawing, averaged across all sites within the region for that season.
+- **Activity level**: Classified based on the highest value among the three metrics --- Low (below 5%), Moderate (5--25%), or High (above 25%).
+
+```{r}
+#| label: fig-summary-map
+#| fig-width: 10
+#| fig-height: 35
+#| fig-cap: "Geographic overview of regional mouse activity. Point colour indicates overall activity level; labels show trap success (T), burrow detection (B), and chew card detection (C) where available."
+
+# Define seasons for the map: Summer-2025 through the 2 most recent
+map_seasons <- unique(c("Summer-2025", "Autumn-2025", "Winter-2025", recent_seasons))
+# keep only seasons that exist in the data and maintain proper order
+map_seasons <- all_levels[all_levels %in% map_seasons]
+
+# Compute summaries for these seasons
+map_trap <- data_traps |>
+  filter(season_year_adj %in% map_seasons) |>
+  group_by(season_year_adj, state, region) |>
+  summarise(trap_success_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+map_burrow <- data_burrows |>
+  filter(season_year_adj %in% map_seasons) |>
+  group_by(season_year_adj, state, region) |>
+  summarise(burrow_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+map_chew <- data_chewcards |>
+  filter(season_year_adj %in% map_seasons) |>
+  group_by(season_year_adj, state, region) |>
+  summarise(chewcard_pct = round(mean(mice_prop, na.rm = TRUE) * 100, 1), .groups = "drop")
+
+map_summary <- map_trap |>
+  full_join(map_burrow, by = c("season_year_adj", "state", "region")) |>
+  full_join(map_chew, by = c("season_year_adj", "state", "region")) |>
+  rowwise() |>
+  mutate(
+    max_activity = max(c_across(c(trap_success_pct, burrow_pct, chewcard_pct)), na.rm = TRUE),
+    activity_level = case_when(
+      is.infinite(max_activity) ~ "No data",
+      max_activity >= 25 ~ "High",
+      max_activity >= 5  ~ "Moderate",
+      TRUE               ~ "Low"
+    )
+  ) |>
+  ungroup() |>
+  select(-max_activity)
+
+# Compute region centroids from all site coordinates
+region_coords <- bind_rows(
+  data_traps |> select(region, state, longitude, latitude),
+  data_burrows |> select(region, state, longitude, latitude),
+  data_chewcards |> select(region, state, longitude, latitude)
+) |>
+  group_by(region, state) |>
+  summarise(
+    longitude = mean(longitude, na.rm = TRUE),
+    latitude = mean(latitude, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join spatial coordinates with map summary
+map_summary_spatial <- map_summary |>
+  left_join(region_coords, by = c("state", "region")) |>
+  # build a concise label: trap% / burrow% / chewcard%
+  mutate(
+    metric_label = paste0(
+      ifelse(is.na(trap_success_pct), "", paste0("T:", trap_success_pct, "%")),
+      ifelse(is.na(burrow_pct), "", paste0(" B:", burrow_pct, "%")),
+      ifelse(is.na(chewcard_pct), "", paste0(" C:", chewcard_pct, "%"))
+    ),
+    metric_label = trimws(metric_label),
+    # ensure proper season ordering for facets
+    season_year_adj = factor(season_year_adj, levels = all_levels)
+  )
+
+ggplot() +
+  geom_sf(data = aus_shp, fill = "white", colour = "grey70") +
+  geom_point(
+    data = map_summary_spatial,
+    aes(x = longitude, y = latitude, colour = activity_level),
+    size = 5
+  ) +
+  geom_text_repel(
+    data = map_summary_spatial,
+    aes(x = longitude, y = latitude,
+        label = paste0(str_to_title(region), "\n", metric_label)),
+    size = 2.2, lineheight = 0.85, max.overlaps = 20,
+    segment.colour = "grey60", segment.size = 0.3,
+    box.padding = 0.4, point.padding = 0.3
+  ) +
+  scale_colour_manual(
+    values = c("Low" = "#b8e186", "Moderate" = "#fee08b", "High" = "#d73027", "No data" = "grey80"),
+    name = "Activity level"
+  ) +
+  coord_sf(xlim = c(113, 155), ylim = c(-40, -25), expand = FALSE) +
+  facet_wrap(~ season_year_adj, ncol = 1) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold", size = 12),
+    legend.position = "bottom",
+    axis.text = element_text(size = 7)
+  )
+
+```
+
+
