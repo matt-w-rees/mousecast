@@ -29,6 +29,7 @@ derived_data/model_fits/
 derived_data/data_vis/
 raw_data/predictor_variables/
 raw_data/mouse_updates/
+raw_data/raw_data/survey_data/
 tmp/
 
 
