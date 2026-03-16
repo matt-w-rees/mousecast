@@ -2,7 +2,7 @@
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
 Generated: 
-2026-03-05 15:04:19
+2026-03-16 15:21:59
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -281,7 +281,7 @@ Transects are searched twice: first to cover any identified potential burrows wi
 Only burrows with signs of activity are recorded.
 Active burrow searches are not conducted when detectability is considered too low due to ground cover obscuring the view. In this case the site is still monitored using chewcards.
 DATA STRUCTURE:
-  Number of rows: 3898
+  Number of rows: 3926
   Number of columns: 35
 
 UNIQUE VARIABLES (specific to burrows dataset):
@@ -363,7 +363,7 @@ in lines or grids with 10m spacing. Cards are checked the next day and
 the percentage eaten is estimated using the grid pattern.
 
 DATA STRUCTURE:
-  Number of rows: 4342
+  Number of rows: 4370
   Number of columns: 29
 
 UNIQUE VARIABLES (specific to chewcards dataset):

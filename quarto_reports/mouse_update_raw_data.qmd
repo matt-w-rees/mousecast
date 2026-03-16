@@ -34,11 +34,22 @@ library(sf)
 library(terra)
 library(stringr)
 library(ggrepel)
+library(ggpattern)   # hatched polygon overlays
+library(ggnewscale)  # second fill scale for farmer-report layer
 
 ## Load targets — handle both pipeline rendering (from project root) and
 ## standalone rendering (from inside quarto_reports/)
 store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
 targets::tar_load(c(data_filtered, aez_adj, aus_shp), store = store_path)
+
+## Load anecdotal high-abundance farmer-report polygons.
+## Path resolves whether rendering from the project root or quarto_reports/.
+anecdotal_path <- if (file.exists("raw_data/anecdotal_data/high_abundance_reports.gpkg")) {
+  "raw_data/anecdotal_data/high_abundance_reports.gpkg"
+} else {
+  "../raw_data/anecdotal_data/high_abundance_reports.gpkg"
+}
+high_abundance_reports <- sf::st_read(anecdotal_path, layer = "polygons", quiet = TRUE)
 
 ## Town / city labels for map orientation (used as landmarks)
 town_labels <- sf::st_as_sf(
@@ -99,9 +110,10 @@ seasons_with_data <- union(
   as.character(na.omit(data_chewcards$season_year_adj))
 )
 
-seasons_ordered <- all_levels[all_levels %in% seasons_with_data]
-latest_season   <- tail(seasons_ordered, 1)
-prev_season     <- if (length(seasons_ordered) >= 2) tail(seasons_ordered, 2)[1] else NA_character_
+seasons_ordered  <- all_levels[all_levels %in% seasons_with_data]
+latest_season    <- tail(seasons_ordered, 1)
+prev_season      <- if (length(seasons_ordered) >= 2) tail(seasons_ordered, 2)[1] else NA_character_
+prev_prev_season <- if (length(seasons_ordered) >= 3) tail(seasons_ordered, 3)[1] else NA_character_
 ```
 
 ```{r}
@@ -243,39 +255,42 @@ recent_regions <- hist_region |>
   distinct()
 
 ## Helper: for each spatial unit in `hist`, return the best available
-## activity category — current season first, previous season as fallback.
+## activity category — current season first, then up to two older seasons as
+## fallbacks for units that still have no data.
 ## Adds two extra columns:
 ##   is_current  – TRUE if data come from the latest season
 ##   data_season – name of the season the data come from
-best_season_data <- function(hist, id_col, latest_s, prev_s) {
+best_season_data <- function(hist, id_col, latest_s, prev_s, prev_prev_s = NA_character_) {
   current <- hist |>
     filter(as.character(season_year_adj) == latest_s) |>
     select(all_of(id_col), prop_detected) |>
     mutate(data_season = latest_s, is_current = TRUE)
 
-  fallback <- if (!is.na(prev_s)) {
+  ## Helper to build a fallback frame, or an empty frame if the season is NA
+  make_fallback <- function(s) {
+    if (is.na(s)) return(current[0, ])
     hist |>
-      filter(as.character(season_year_adj) == prev_s) |>
+      filter(as.character(season_year_adj) == s) |>
       select(all_of(id_col), prop_detected) |>
-      mutate(data_season = prev_s, is_current = FALSE)
-  } else {
-    ## Empty frame with the right structure when no previous season exists
-    current[0, ]
+      mutate(data_season = s, is_current = FALSE)
   }
+
+  fallback      <- make_fallback(prev_s)
+  fallback2     <- make_fallback(prev_prev_s)
 
   ## All units ever surveyed
   all_units <- hist |> select(all_of(id_col)) |> distinct()
 
   all_units |>
-    left_join(current,   by = id_col) |>
-    ## Suffix fallback columns so we can coalesce without name clashes
-    left_join(fallback |> rename_with(~paste0(.x, "_fb"), -all_of(id_col)),
-              by = id_col) |>
+    left_join(current,  by = id_col) |>
+    ## Suffix each fallback to avoid column name clashes during coalesce
+    left_join(fallback  |> rename_with(~paste0(.x, "_fb"),  -all_of(id_col)), by = id_col) |>
+    left_join(fallback2 |> rename_with(~paste0(.x, "_fb2"), -all_of(id_col)), by = id_col) |>
     mutate(
-      prop_detected = dplyr::coalesce(prop_detected, prop_detected_fb),
-      data_season   = dplyr::coalesce(data_season,   data_season_fb),
-      is_current    = dplyr::coalesce(is_current,    is_current_fb),
-      ## Units with no data in either season: treat as current (full opacity grey)
+      prop_detected = dplyr::coalesce(prop_detected, prop_detected_fb, prop_detected_fb2),
+      data_season   = dplyr::coalesce(data_season,   data_season_fb,   data_season_fb2),
+      is_current    = dplyr::coalesce(is_current,    is_current_fb,    is_current_fb2),
+      ## Units with no data in any season: treat as current (full opacity grey)
       is_current    = dplyr::coalesce(is_current,  TRUE),
       data_season   = dplyr::coalesce(data_season, latest_s)
     ) |>
@@ -284,37 +299,27 @@ best_season_data <- function(hist, id_col, latest_s, prev_s) {
 }
 
 ## AE zone — best available data; all ever-surveyed zones retained
-display_aez <- best_season_data(hist_aez, "ae_zone", latest_season, prev_season)
+display_aez <- best_season_data(hist_aez, "ae_zone", latest_season, prev_season, prev_prev_season)
 
 ## Region — best available data; restricted to recently-surveyed regions
-display_region <- best_season_data(hist_region, "region", latest_season, prev_season) |>
+display_region <- best_season_data(hist_region, "region", latest_season, prev_season, prev_prev_season) |>
   dplyr::semi_join(recent_regions, by = "region")
 
-## Add cat_display: encodes both the season name and the activity level into a
-## single factor so the fill scale legend can show one clearly labelled row per
-## season.  Factor levels are ordered so current-season items appear first
-## (legend row 1) and previous-season items appear second (legend row 2).
-add_cat_display <- function(df, latest_s, prev_s) {
-  lvls <- c(
-    paste0(c("Low", "Medium", "High"), " \u2014 ", latest_s),
-    "No data",
-    if (!is.na(prev_s)) paste0(c("Low", "Medium", "High"), " \u2014 ", prev_s)
-  )
+## Add cat_display: a plain Low / Medium / High / No data factor used by the
+## fill scale.  Previous-season polygons are shown with the same colours as
+## current-season polygons, so no season suffix is needed in the label.
+add_cat_display <- function(df) {
   df |>
     dplyr::mutate(
       cat_display = factor(
-        dplyr::if_else(
-          cat_combined == "No data",
-          "No data",
-          paste0(as.character(cat_combined), " \u2014 ", data_season)
-        ),
-        levels = lvls
+        as.character(cat_combined),
+        levels = c("Low", "Medium", "High", "No data")
       )
     )
 }
 
-display_aez    <- display_aez    |> add_cat_display(latest_season, prev_season)
-display_region <- display_region |> add_cat_display(latest_season, prev_season)
+display_aez    <- display_aez    |> add_cat_display()
+display_region <- display_region |> add_cat_display()
 ```
 
 ```{r}
@@ -375,11 +380,10 @@ region_map <- region_buffers |>
     lat = sf::st_coordinates(sf::st_centroid(geometry))[, 2]
   )
 
-## dplyr joins can silently drop unused factor levels from joined columns.
-## Re-apply the full level set from display_aez (same levels used by both maps)
-## so that scale_fill_manual(drop = FALSE) sees every level and keeps all
-## legend keys, even for categories absent from the current map.
-cat_display_levels <- levels(display_aez$cat_display)
+## Enforce the full four-level factor on both map objects so that
+## scale_fill_manual(drop = FALSE) keeps all legend keys even when some
+## categories are absent from the current map.
+cat_display_levels <- c("Low", "Medium", "High", "No data")
 aez_map    <- aez_map    |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
 region_map <- region_map |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
 
@@ -392,19 +396,32 @@ region_map <- region_map |> dplyr::mutate(cat_display = factor(cat_display, leve
 ## Pre-compute values used in the inline "In short" text.
 ## Summaries are expressed at the region level (not AE zone level).
 
-## Helper: format a character vector as natural-language prose
-list_names <- function(x) {
+## Formatter for AE zone names: apply title case then uppercase the leading
+## state abbreviation (e.g. "sa central" → "SA Central", "nsw n qld s" → "NSW N Qld S").
+## Uses a Perl back-reference \\U to uppercase the first captured word.
+fmt_aez <- function(x) {
   x <- stringr::str_to_title(as.character(x))
+  gsub("^([A-Z][a-z]+)(?=\\s|$)", "\\U\\1", x, perl = TRUE)
+}
+
+## Helper: format a character vector as natural-language prose.
+## fmt is applied to each element before joining (default: title case).
+list_names <- function(x, fmt = stringr::str_to_title) {
+  x <- fmt(as.character(x))
   if (length(x) == 0) return(NULL)
   if (length(x) == 1) return(x)
   paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
 }
 
-## Region-level activity categories for "In short" bullet points
+## Region-level activity categories
 reg_high   <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "High"]
 reg_med    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Medium"]
 reg_low    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Low"]
 reg_nodata <- display_region$region[display_region$cat_combined == "No data"]
+
+## AE zone-level activity categories (used in the AE zone figure caption)
+aez_high <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "High"]
+aez_med  <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "Medium"]
 
 ## Regions / zones whose displayed data come from the previous season
 reg_prev_season <- display_region$region[!display_region$is_current]
@@ -414,29 +431,50 @@ n_reg_total <- nrow(display_region)
 n_reg_high  <- length(reg_high)
 n_reg_data  <- sum(display_region$cat_combined != "No data")
 
+## Build two key-results sentences (high then medium) for use in figure captions.
+## unit_label is the singular noun used when no items are present (e.g. "zone").
+## fmt is passed through to list_names for name formatting (use fmt_aez for zones).
+make_key_results <- function(high_items, med_items, unit_label, fmt = stringr::str_to_title) {
+  high_sent <- if (length(high_items) == 0) {
+    paste0("No ", unit_label, "s currently show high mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **high** in ", list_names(high_items, fmt), ".")
+  }
+  med_sent <- if (length(med_items) == 0) {
+    paste0("No ", unit_label, "s currently show moderate mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **moderate** in ", list_names(med_items, fmt), ".")
+  }
+  paste(high_sent, med_sent)
+}
+
 ## Build a suffix note for figure captions when any fallback data are shown.
 ## The note names the previous season so readers know how old the data are.
-make_prev_note <- function(prev_items, prev_s) {
-  if (length(prev_items) == 0 || is.na(prev_s)) return("")
-  paste0(
-    "<br>Faded polygons show data from the previous season (",
-    prev_s,
-    ") where current-season surveys are not yet available",
-    " \u2014 *interpret with caution as mouse populations can change",
-    " substantially between seasons*."
-  )
-}
+## Polygons are shown at full opacity regardless of season.
+#make_prev_note <- function(prev_items, prev_s) {
+#  if (length(prev_items) == 0 || is.na(prev_s)) return("")
+#  paste0(
+#    "<br>Some polygons show data from the previous season (",
+#    prev_s,
+#    ") where current-season surveys are not yet available",
+#    " \u2014 *interpret with caution as mouse populations can change",
+#    " substantially between seasons*."
+#  )
+#}
 
 ## Pre-compute figure captions.
 ## The legend-key explanation appears on its own line; a fallback note is
 ## appended when at least one polygon uses previous-season data.
 cap_aez <- paste0(
-  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zones with mice presence (Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%).",
-  make_prev_note(aez_prev_season, prev_season)
+  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zone with mice presence (Low = mice detected at 33% of sites or less; Medium = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
+  "<br><br>",
+  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
 )
 cap_region <- paste0(
-  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = < 33% of sites; Medium = 33 \u2013 67%, High = > 67%).",
-  make_prev_note(reg_prev_season, prev_season)
+  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = mice detected at 33% of sites or less; Medium = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  "<br><br>",
+  make_key_results(reg_high, reg_med, "region")
 )
 
 ```
@@ -478,47 +516,32 @@ build_map <- function(data_layer, show_towns = TRUE) {
     p <- p +
       geom_sf(data = town_labels_crop, size = 0.75) +
       ggrepel::geom_text_repel(
-        data         = town_labels_crop,
+        data               = town_labels_crop,
         aes(longitude, latitude, label = name),
-        size         = 2.5,
-        max.overlaps = 20,
-        box.padding  = 0.4
+        size               = 2.5,
+        max.overlaps       = 20,
+        box.padding        = 0.4,
+        min.segment.length = 0   # always draw a line from dot to label
       )
   }
 
-  p + coord_sf(xlim = map_xlim, ylim = map_ylim, expand = FALSE)
+  p +
+    coord_sf(xlim = map_xlim, ylim = map_ylim, expand = FALSE) +
+    ## Stack multiple legends vertically (activity row first, farmer reports below)
+    theme(legend.box = "vertical", legend.box.just = "left")
 }
 
-## Pre-compute all possible cat_display level names once, shared by the scale
-## and the phantom layer helper below.
+## Colour palette for the four activity categories.
+## Previous-season polygons are shown at full opacity (same colours as current
+## season), so no faded variants are needed.
 base_cols <- c(Low = "#91cf60", Medium = "#ffeda0", High = "#f03b20")
 
-## Pre-blend a colour against white at alpha so the result is a fully-opaque
-## colour that looks identical to the transparent version on a white background.
-blend_white <- function(hex, a) {
-  m <- col2rgb(hex) / 255
-  grDevices::rgb(a * m[1] + (1 - a), a * m[2] + (1 - a), a * m[3] + (1 - a))
-}
-faded_cols <- sapply(base_cols, blend_white, a = 0.25)
-
-## All level names in legend order (row 1 = current, row 2 = previous)
-activity_levels <- c(
-  paste0(names(base_cols), " \u2014 ", latest_season),
-  "No data",
-  if (!is.na(prev_season)) paste0(names(base_cols), " \u2014 ", prev_season)
-)
-## Colour lookup for every level
-activity_colours <- c(
-  setNames(base_cols,  paste0(names(base_cols), " \u2014 ", latest_season)),
-  "No data" = "grey80",
-  if (!is.na(prev_season)) setNames(
-    faded_cols, paste0(names(base_cols), " \u2014 ", prev_season))
-)
+## Colour lookup: Low / Medium / High / No data
+activity_colours <- c(base_cols, "No data" = "grey80")
 
 ## Fill scale for AE zone / region maps.
-## cat_display levels are guaranteed to be complete after the explicit
-## factor() call in spatial_objects, so drop = FALSE reliably keeps every
-## level in the legend even when some are absent from the current map.
+## cat_display has four levels (Low/Medium/High/No data); drop = FALSE keeps
+## all legend keys even when some categories are absent from the current map.
 ## has_nodata: pass TRUE only when "No data" polygons are present in the figure.
 make_activity_fill <- function(has_nodata = FALSE) {
   shown_levels <- if (has_nodata) cat_display_levels
@@ -528,30 +551,72 @@ make_activity_fill <- function(has_nodata = FALSE) {
     limits   = shown_levels,
     drop     = FALSE,
     na.value = "grey80",
-    name  = "Expected mouse abundance derived from survey data",
-    guide = guide_legend(
-      title.position = "top",
-      nrow  = if (!is.na(prev_season)) 2L else 1L,
-      byrow = TRUE
+    name     = "Expected mouse abundance",
+    guide    = guide_legend(title.position = "top", nrow = 1L, byrow = TRUE, order = 1)
+  )
+}
+
+## Farmer-report overlay: white-filled polygons with a diagonal red stripe
+## pattern and red border.  ggnewscale::new_scale_fill() resets the fill
+## aesthetic so this layer carries its own legend entry ("High - Farmer
+## Reports") without clashing with the activity fill scale above it.
+farmer_reports_layer <- function() {
+  list(
+    ggnewscale::new_scale_fill(),
+    ggpattern::geom_sf_pattern(
+      data            = high_abundance_reports,
+      aes(fill        = "High (based on farmer reports)"),
+      pattern         = "stripe",
+      pattern_colour  = "red",   # hatch line colour
+      pattern_fill    = "white", # hatch background
+      pattern_angle   = 45,
+      pattern_density = 0.3,
+      pattern_spacing = 0.025,
+      colour          = "red",   # polygon border
+      linewidth       = 0.7
+    ),
+    ## Fill scale for the farmer-report layer: white polygon background,
+    ## legend key shows the hatching via override.aes.
+    scale_fill_manual(
+      values = c("High (based on farmer reports)" = "white"),
+      name   = NULL,
+      guide  = guide_legend(
+        title.position = "top",
+        order          = 2,
+        override.aes   = list(
+          pattern         = "stripe",
+          pattern_colour  = "red",
+          pattern_fill    = "white",
+          colour          = "red",
+          pattern_density = 0.3,
+          pattern_spacing = 0.025
+        )
+      )
     )
   )
 }
 
 ## AE zone map: filled polygons; all legend entries appear because cat_display
 ## is a complete factor (set in spatial_objects) and drop = FALSE is used.
+## The farmer-report overlay is drawn on top via farmer_reports_layer().
 plot_aez_map <- function() {
   build_map(list(
     geom_sf(data = aez_map, aes(fill = cat_display),
             colour = "grey50", linewidth = 0.25),
-    make_activity_fill(has_nodata = "No data" %in% aez_map$cat_display)
+    make_activity_fill(has_nodata = "No data" %in% aez_map$cat_display),
+    farmer_reports_layer()
   ))
 }
 
 ## Region map: as above but with region-name labels and town labels suppressed.
+## The farmer-report overlay is drawn on top via farmer_reports_layer().
 plot_region_map <- function() {
   build_map(list(
     geom_sf(data = region_map, aes(fill = cat_display),
             colour = "grey50", linewidth = 0.2),
+    make_activity_fill(has_nodata = "No data" %in% region_map$cat_display),
+    farmer_reports_layer(),
+    ## Region labels drawn last so they sit above all polygon layers
     ggrepel::geom_text_repel(
       data               = region_map,
       aes(x = lon, y = lat, label = stringr::str_to_title(region)),
@@ -561,8 +626,7 @@ plot_region_map <- function() {
       point.padding      = 0.5,
       min.segment.length = 0.2,
       force              = 2
-    ),
-    make_activity_fill(has_nodata = "No data" %in% region_map$cat_display)
+    )
   ), show_towns = FALSE)
 }
 
@@ -574,18 +638,17 @@ plot_region_map <- function() {
 ### In short
 + [Geraldton and Kwinana regions (WA): **PREPARE TO ACT AT SOWING**]{style="color: red;"}
 + Adelaide Plains (SA): **WATCH AND ACT AT SOWING**
-+ [Northern NSW and southern QLD: **KEEP WATCH**]{style="color: grey;"}
++ [Southern QLD: **WATCH**]{style="color: grey;"}
 
 ### In detail
 
-+ Western Australia: we are receiving concerning reports of very high mouse numbers, primarily around Geraldton, suggesting an outbreak could be underway. 
++ Western Australia: we are receiving concerning reports of very high mouse numbers, primarily around Geraldton, suggesting outbreaks could be occuring in these locations (shown by red hatching in the map below). 
 Recent rapid assessment monitoring suggests this extends to the Kwinana West region. 
-We are currently uncertain about other regions in the state. 
 
-+ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data. 
++ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent monitoring data. 
 There is some potential for an outbreak here depending on future conditions.
 
-+ Northern NSW and southern QLD: Low-moderate numbers seen here from recent rapid assessment monitoring. 
++ Northern NSW and southern QLD: Generally low, although moderate mouse activity recorded across Goondiwindi and the northern Darling Downs through recent rapid assessment monitoring. 
 
 + Victoria, southern & central west NSW: mouse numbers likely remain low. 
 
@@ -594,7 +657,7 @@ There is some potential for an outbreak here depending on future conditions.
 
 ::: {.panel-tabset}
 
-#### AE zone
+#### Agro-ecological zone
 
 ```{r}
 #| label: fig_aez
@@ -603,7 +666,7 @@ There is some potential for an outbreak here depending on future conditions.
 plot_aez_map()
 ```
 
-#### Region
+#### Survey regions
 
 ```{r}
 #| label: fig_region
@@ -614,54 +677,35 @@ plot_region_map()
 
 :::
 
-#### Key results from recent mouse surveys
-
-+ `r {
-  # High-activity regions
-  if (length(reg_high) == 0) {
-    "No monitoring regions currently show high mouse activity based on the combined survey index."
-  } else {
-    paste0("Survey data shows mouse activity to be **high** in ", list_names(reg_high), ".")
-  }
-}`
-
-
-+ `r {
-  # Medium-activity regions
-  if (length(reg_med) == 0) {
-    "No monitoring regions currently show moderate mouse activity."
-  } else {
-    paste0("Survey data shows mouse activity to be **moderate** in ", list_names(reg_med), ".")
-  }
-}`
 
 
 
 
+## Management recomendations
 
-## Management reccomendations
+1. Monitor mouse activity by walking through paddocks and [searching for active burrows (chew cards could also be used)](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/know-your-mouse-numbers). Two or three active burrows per 100 square metres are cause for concern prior to sowing. 
 
-1. Monitor mice activity by walking through paddocks and [searching for active burrows (chew cards are also useful at this time of the year)](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/know-your-mouse-numbers). Two or three active burrows per 100 square metres are cause for concern prior to sowing. 
+2. Where you have identified high mouse activity, [consider applying mouse bait](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/mouse-baiting) at seeding to prevent damage to the
+freshly sown crop. Monitor mouse activity following baiting after application to assess effectiveness of the application. ZnP25 is the only currently registered bait available; use in
+accordance with the label instructions and report any adverse effects (including a lack of efficacy) via the [APVMA website](https://www.apvma.gov.au/regulation/adverse-experience-reporting-program). 
 
-2. Where mouse activity is high, [strategically apply bait](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/mouse-baiting) off the back of the seeder to prevent damage to the
-freshly sown crop. ZnP25 is the only currently registered bait available; use in
-accordance with the label instructions and report any adverse effects (including a lack of efficacy) via the [APVMA website](https://www.apvma.gov.au/regulation/adverse-experience-reporting-program). Wait at least 6 weeks before baiting again, as mice could otherwise develop bait-aversion.
+3. Reduce available mouse food (e.g., spilt grain) where possible. High rates of background food directly reduces the effectiveness of poison baiting  (as mice are less likely to consume the baits). 
 
-3. Reduce available mouse food (e.g., spilt grain). High rates of background food directly reduces baiting effectiveness (as mice are less likely to consume the baits). 
+
 
 
 ## About
 
-Mouse forecasts are enabled through a [GRDC AND CSIRO investment](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). 
+Mouse forecasts are enabled through a [GRDC and CSIRO investment](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). 
 
-Forecasts will be updated seasonally and as new data comes available. We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. 
+Forecasts will be updated seasonally or as new data comes available. We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. 
 
 Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
 Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
 
-Mouse survey data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Rural Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Rural Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
 
-We also receive reports from farmers and agronomists, both directly and through the National Mouse Group. This is key information we consider when providing advice given we cannot feasibly survey across the entire grain growing region. The National Mouse Group is a grower-led group comprising farmers, industry representatives, state government, GRDC and CSIRO.  The group meet 3x a year to discuss the current mouse management, and review these forecast communications. 
+We also receive reports from farmers and agronomists, both directly and through the National Mouse Group. This is key information we consider when providing advice given we cannot feasibly survey across the entire grain growing region. The National Mouse Group is a grower-led group comprising farmers, industry representatives, state government, GRDC and CSIRO.  The group meet three times a year to discuss the current mouse management, and also review these communications. 
 
 
 

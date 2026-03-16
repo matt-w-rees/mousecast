@@ -11,7 +11,7 @@ data_fix_regions_add_state <- function(data, aus_shp){
         # Condense regions that are close together
         #region %in% c("Yorke Peninsula", "Adelaide Plains") ~ "Yorke Mid North",
         region == "condobolin" ~ "central west",
-        region %in% c("trangie", "cw gin gin") ~ "narromine",
+        region %in% c("trangie", "cw gin gin", "gin gin") ~ "narromine",
 
         # Rename for consistency / correctness / remove state
         region == "cia" ~ "coleambally",

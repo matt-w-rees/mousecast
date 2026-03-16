@@ -318,7 +318,7 @@ if (all(c("longitude", "latitude") %in% names(data)) &&
 # survey data). Also check that coordinates are close to the recorded location
 # (within 0.05 degrees, ~5 km) to catch accidental coordinate edits.
 
-if ("new_site" %in% names(data) && all(c("farmer", "site", "subsite") %in% names(data))) {
+if ("new_site" %in% names(data) && all(c("region", "farmer", "site", "subsite") %in% names(data))) {
 
   tryCatch({
     # prefer the RDS passed in via params (set by the targets pipeline to avoid
@@ -332,37 +332,44 @@ if ("new_site" %in% names(data) && all(c("farmer", "site", "subsite") %in% names
     }
 
     # only check rows marked as existing sites
-    existing        <- data[!is.na(data$new_site) & data$new_site == FALSE, ]
+    existing <- data[!is.na(data$new_site) & data$new_site == FALSE, ]
 
     if (nrow(existing) == 0) {
       cat("ℹ️ No rows marked as existing sites (new_site == FALSE)\n\n")
     } else {
 
-      ## 1. Check that the farmer/site/subsite combination is recognised
-      # join case-insensitively using lower-case keys
-      existing_key  <- tolower(trimws(paste(existing$farmer, existing$site, existing$subsite)))
-      known_key     <- tolower(trimws(paste(site_info$farmer, site_info$site, site_info$subsite)))
-      unrecognised  <- !existing_key %in% known_key
+      ## 1. Check that the region/farmer/site/subsite combination is recognised.
+      ## All four columns must match exactly (case-insensitive) against the
+      ## site database — a mismatch in any one field is flagged as unrecognised.
+      existing_key <- tolower(trimws(paste(existing$region, existing$farmer,
+                                           existing$site,   existing$subsite)))
+      known_key    <- tolower(trimws(paste(site_info$region, site_info$farmer,
+                                           site_info$site,   site_info$subsite)))
+      unrecognised <- !existing_key %in% known_key
 
       if (any(unrecognised)) {
         validation_errors <- c(validation_errors,
-          list(paste(sum(unrecognised), "existing site(s) not found in site information database")))
+          list(paste(sum(unrecognised),
+               "existing site(s) not found in site information database")))
         validation_passed <- FALSE
         cat("❌", sum(unrecognised),
-            "row(s) marked new_site = FALSE but farmer/site/subsite not found in the site database\n\n")
-        kable(existing[unrecognised, c("farmer", "site", "subsite", "state", "region", "longitude", "latitude")],
-              caption = "Unrecognised existing sites")
+            "row(s) marked new_site = FALSE but region/farmer/site/subsite",
+            "not found in the site database\n\n")
+        kable(existing[unrecognised,
+                       c("region", "farmer", "site", "subsite", "state", "longitude", "latitude")],
+              caption = "Unrecognised existing sites (region/farmer/site/subsite not matched)")
       } else {
-        cat("✓ All existing sites (new_site = FALSE) are recognised in the site database\n\n")
+        cat("✓ All existing sites (new_site = FALSE) have a matching region/farmer/site/subsite in the site database\n\n")
       }
 
-      ## 2. For recognised sites, check that coordinates are close to the stored values
+      ## 2. For recognised sites, check that coordinates are close to the stored values.
+      ## Uses the same four-column key so the correct stored record is matched.
       if (all(c("longitude", "latitude") %in% names(existing))) {
-        recognised    <- existing[!unrecognised, ]
+        recognised <- existing[!unrecognised, ]
 
         if (nrow(recognised) > 0) {
-          # join to get stored coordinates
-          recognised_key <- tolower(trimws(paste(recognised$farmer, recognised$site, recognised$subsite)))
+          recognised_key <- tolower(trimws(paste(recognised$region, recognised$farmer,
+                                                 recognised$site,   recognised$subsite)))
           matched_info   <- site_info[match(recognised_key, known_key), ]
 
           lon_diff <- abs(recognised$longitude - matched_info$longitude)
@@ -374,7 +381,7 @@ if ("new_site" %in% names(data) && all(c("farmer", "site", "subsite") %in% names
             cat("⚠️", sum(coord_changed),
                 "existing site(s) have coordinates that differ from stored values by > 0.05°\n\n")
             coord_check_rows <- cbind(
-              recognised[coord_changed, c("farmer", "site", "subsite", "longitude", "latitude")],
+              recognised[coord_changed, c("region", "farmer", "site", "subsite", "longitude", "latitude")],
               stored_longitude = round(matched_info$longitude[coord_changed], 6),
               stored_latitude  = round(matched_info$latitude[coord_changed],  6),
               lon_diff         = round(lon_diff[coord_changed], 6),
@@ -393,7 +400,7 @@ if ("new_site" %in% names(data) && all(c("farmer", "site", "subsite") %in% names
   })
 
 } else {
-  cat("ℹ️ Skipped: new_site, farmer, site, or subsite column not present\n\n")
+  cat("ℹ️ Skipped: new_site, region, farmer, site, or subsite column not present\n\n")
 }
 ```
 

@@ -1,3 +1,8 @@
+# TO-DO ------------------------------------------------------------------
+
+#Update RA checks so it aligns to region, site, subset
+#Update seasonal summaries so it reruns when data changes
+#Update mouse updates so it reruns when data changes
 
 # SET-UP ------------------------------------------------------------------
 
@@ -188,37 +193,40 @@ tar_plan(
   
   # render a verification HTML report alongside each CSV file (one per file, reruns when CSV changes)
   # output is placed next to the source CSV: same directory, same filename stem, .html extension
+  # maps over data_rapid_new_files directly — tar_files tracks file content via hashing so
+  # branches are invalidated whenever a CSV is added, removed, or its content changes
   tar_target(
     rapid_assessment_reports,
     {
-      # derive the absolute CSV path from the source_file column attached by data_rapid_new_csvs
-      # mapping over data_rapid_new_csvs (rather than data_rapid_new_files) ensures the branch
-      # is invalidated when CSV *content* changes, not just when the file path changes
-      abs_csv  <- normalizePath(unique(data_rapid_new_csvs$source_file), mustWork = TRUE)
-      out_file <- paste0(tools::file_path_sans_ext(basename(abs_csv)), ".html")
-      dest     <- file.path(dirname(abs_csv), out_file)
+      abs_csv        <- normalizePath(data_rapid_new_files, mustWork = TRUE)
+      out_file       <- paste0(tools::file_path_sans_ext(basename(abs_csv)), ".html")
+      dest           <- file.path(dirname(abs_csv), out_file)
       # serialise data_site_information to a temp RDS so the QMD can read it without
       # calling tar_read() mid-pipeline (which causes metadata race conditions)
       site_info_path <- tempfile(fileext = ".rds")
       saveRDS(data_site_information, site_info_path)
-      # render from quarto_reports/ so the QMD's store path guards and resource refs work
       withr::with_dir("quarto_reports", {
         quarto::quarto_render(
           "verify_new_rapid_assessment_data.qmd",
-          output_file  = out_file,
+          output_file    = out_file,
           execute_params = list(csv_path = abs_csv, site_info_path = site_info_path),
-          quiet = TRUE
+          quiet          = TRUE
         )
         file.rename(out_file, dest)
       })
       dest
     },
-    pattern = map(data_rapid_new_csvs),
+    pattern = map(data_rapid_new_files),
     format  = "file"
   ),
   
+  # TEMPORARY: overwrite coordinates in new rapid assessment data with historical
+  # values for existing sites — delete this target and update data_rapid below once
+  # coordinate consistency is enforced upstream
+  data_rapid_new_coords_fixed = data_rapid_new_fix_coords(data_rapid_new, data_monitoring_rapid),
+
   ## combine old monitoring rapid assessment and new, summarise, then split by survey type
-  data_rapid = bind_rows(data_monitoring_rapid, data_rapid_new) |>
+  data_rapid = bind_rows(data_monitoring_rapid, data_rapid_new_coords_fixed) |>
     data_rapid_summarise() |>
     data_rapid_split_types(),
   
@@ -376,9 +384,15 @@ tar_plan(
   tar_quarto(cleaned_raw_dataset_filtered_plots, path = "quarto_reports/cleaned_raw_dataset_filtered_plots.qmd", quiet = TRUE),
   
   # quarto report: mouse update using this raw data
-  # rendered HTML is also copied to docs/index.html so GitHub Pages stays up to date
-  tar_target(mouse_update_raw_data, {
-    quarto::quarto_render("quarto_reports/mouse_update_raw_data.qmd", quiet = TRUE)
+  # tar_quarto (unlike tar_target) scans the QMD for tar_load()/tar_read() calls and
+  # automatically adds those targets (data_filtered, aez_adj, aus_shp) as dependencies,
+  # so the report re-renders whenever the underlying data changes
+  tar_quarto(mouse_update_report, path = "quarto_reports/mouse_update_raw_data.qmd", quiet = TRUE),
+
+  # copy the rendered HTML to docs/index.html so GitHub Pages stays up to date;
+  # explicitly references mouse_update_report so this target re-runs after each render
+  tar_target(mouse_update_docs, {
+    mouse_update_report  # dependency: re-copy whenever the report is re-rendered
     file.copy("quarto_reports/mouse_update_raw_data.html", "docs/index.html", overwrite = TRUE)
     "docs/index.html"
   }, format = "file"),
