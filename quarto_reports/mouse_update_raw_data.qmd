@@ -643,7 +643,7 @@ plot_region_map <- function() {
 
 ### In detail
 
-+ Western Australia: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be underway across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region. 
++ Western Australia: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be under way across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region. 
 
 + Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data. 
 There is some potential for an outbreak here depending on future conditions.
