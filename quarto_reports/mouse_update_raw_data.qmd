@@ -636,19 +636,19 @@ plot_region_map <- function() {
 ## Overview 
 
 ### In short
-+ [Geraldton and Kwinana regions (WA): **PREPARE TO ACT AT SOWING**]{style="color: red;"}
++ [Geraldton, Central Wheatbelt, Esperance (WA): **PREPARE TO ACT AT SOWING**]{style="color: red;"}
 + Adelaide Plains (SA): **WATCH AND ACT AT SOWING**
 + [Southern QLD: **WATCH**]{style="color: grey;"}
 
+
 ### In detail
 
-+ Western Australia: we are receiving concerning reports of very high mouse numbers, primarily around Geraldton, suggesting outbreaks could be occuring in these locations (shown by red hatching in the map below). 
-Recent rapid assessment monitoring suggests this extends to the Kwinana West region. 
++ Western Australia: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be underway across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region. 
 
-+ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent monitoring data. 
++ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data. 
 There is some potential for an outbreak here depending on future conditions.
 
-+ Northern NSW and southern QLD: Generally low, although moderate mouse activity recorded across Goondiwindi and the northern Darling Downs through recent rapid assessment monitoring. 
++ Northern NSW and southern QLD: Generally low activity, although moderate activity seen across Goondiwindi and northern Darling Downs with recent rapid assessment monitoring. 
 
 + Victoria, southern & central west NSW: mouse numbers likely remain low. 
 
