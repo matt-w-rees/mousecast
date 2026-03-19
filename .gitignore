@@ -24,7 +24,8 @@ _targets/
 # other folders
 quarto_reports/images/
 quarto_reports/seasonal_summaries/
-quarto_reports/*.html 
+quarto_reports/*.html
+raw_data/survey_data/rapid_assessment_data_2026_onwards/**/*.html
 derived_data/predictor_variables/
 derived_data/model_fits/
 derived_data/data_vis/
