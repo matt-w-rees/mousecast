@@ -178,7 +178,12 @@ tar_plan(
   
   ## New rapid assessment data 2026 onwards  
   # track CSV files in directory (one branch per file, re-runs when files change or new files added)
-  tar_files(data_rapid_new_files, list.files("raw_data/survey_data/rapid_assessment_data_2026_onwards", pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)),
+  tar_files(data_rapid_new_files, {
+    # list all CSVs recursively but exclude site_information.csv, which has a
+    # different schema (site metadata only, no date_in/date_out survey columns)
+    all_csvs <- list.files("raw_data/survey_data/rapid_assessment_data_2026_onwards", pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
+    all_csvs[basename(all_csvs) != "site_information.csv"]
+  }),
   
   # read each CSV file (one branch per file), parse d/m/Y dates to Date class
   tar_target(data_rapid_new_csvs,
@@ -195,30 +200,10 @@ tar_plan(
   # output is placed next to the source CSV: same directory, same filename stem, .html extension
   # maps over data_rapid_new_files directly — tar_files tracks file content via hashing so
   # branches are invalidated whenever a CSV is added, removed, or its content changes
-  tar_target(
-    rapid_assessment_reports,
-    {
-      abs_csv        <- normalizePath(data_rapid_new_files, mustWork = TRUE)
-      out_file       <- paste0(tools::file_path_sans_ext(basename(abs_csv)), ".html")
-      dest           <- file.path(dirname(abs_csv), out_file)
-      # serialise data_site_information to a temp RDS so the QMD can read it without
-      # calling tar_read() mid-pipeline (which causes metadata race conditions)
-      site_info_path <- tempfile(fileext = ".rds")
-      saveRDS(data_site_information, site_info_path)
-      withr::with_dir("quarto_reports", {
-        quarto::quarto_render(
-          "verify_new_rapid_assessment_data.qmd",
-          output_file    = out_file,
-          execute_params = list(csv_path = abs_csv, site_info_path = site_info_path),
-          quiet          = TRUE
-        )
-        file.rename(out_file, dest)
-      })
-      dest
-    },
-    pattern = map(data_rapid_new_files),
-    format  = "file"
-  ),
+  tar_target(rapid_assessment_reports,
+             verify_and_render_rapid_assessment(data_rapid_new_files, data_site_information),
+             pattern = map(data_rapid_new_files),
+             format  = "file"),
   
   # TEMPORARY: overwrite coordinates in new rapid assessment data with historical
   # values for existing sites — delete this target and update data_rapid below once
@@ -309,7 +294,7 @@ tar_plan(
   # Reports: create data summaries ---------------------------------------------------
 
   # reference table of all unique monitoring locations across all survey types
-  data_site_information = data_summarise_site_information(data_filtered, site_id_cols),
+  data_site_information = data_summarise_site_information(data, site_id_cols),
 
   # create table showing difference of what was monitored versus what should be monitored
   monitoring_table = compare_monitoring_schedule(data, start_season_year = "summer-2025", end_season_year = "spring-2025"),
@@ -320,55 +305,16 @@ tar_plan(
   
   ## Quarto reports
   
-  # a report for each season in the data
-  # extract all unique seasons with data (across all three survey types), in chronological order
-  seasonal_summary_seasons = {
-    # get the ordered factor levels from traps (shared across all three datasets)
-    all_factor_levels <- levels(data$traps$season_year_adj)
-    # collect season labels that have at least one row in any dataset
-    seasons_with_data <- unique(c(
-      as.character(na.omit(data$traps$season_year_adj)),
-      as.character(na.omit(data$burrows$season_year_adj)),
-      as.character(na.omit(data$chewcards$season_year_adj))
-    ))
-    # return in chronological order (as determined by the ordered factor levels)
-    all_factor_levels[all_factor_levels %in% seasons_with_data]
-  },
-
-  # integer index for each season — used to build the numbered filename prefix
+  ## Seasonal summaries
+  # unique seasons present in any survey type, in chronological order
+  seasonal_summary_seasons = get_seasonal_summary_seasons(data),
+  # integer index per season — branched in parallel with seasons to build numbered filenames
   seasonal_summary_indices = seq_along(seasonal_summary_seasons),
-
-  # render one seasonal summary HTML per season using dynamic branching;
-  # branches over both seasons and their indices so each file gets a numbered prefix
-  # e.g. 01_Spring_2012.html, 02_Summer_2013.html ... for chronological file ordering
-  tar_target(
-    seasonal_summary_reports,
-    {
-      dir.create("quarto_reports/seasonal_summaries", showWarnings = FALSE, recursive = TRUE)
-      # zero-pad index to 2 digits; replace hyphen in season name with underscore
-      out_file <- paste0(
-        sprintf("%02d", seasonal_summary_indices), "_",
-        gsub("-", "_", seasonal_summary_seasons), ".html"
-      )
-      # resolve output destination as absolute path before changing directory
-      dest <- normalizePath(file.path("quarto_reports/seasonal_summaries", out_file), mustWork = FALSE)
-      # render from quarto_reports/ so Quarto's self-contained bundling finds resources correctly;
-      # the QMD store/script/schedule paths use dir.exists() guards to work from either location
-      withr::with_dir("quarto_reports", {
-        quarto::quarto_render(
-          "seasonal_summary.qmd",
-          output_file = out_file,
-          execute_params = list(season = seasonal_summary_seasons),
-          quiet = TRUE
-        )
-        # move output HTML into the seasonal_summaries subfolder
-        file.rename(out_file, file.path("seasonal_summaries", out_file))
-      })
-      dest
-    },
-    pattern = map(seasonal_summary_seasons, seasonal_summary_indices),
-    format = "file"
-  ),
+  # render one HTML report per season; re-renders whenever data or aus_shp change
+  tar_target(seasonal_summary_reports,
+             render_seasonal_summary(seasonal_summary_seasons, seasonal_summary_indices, data, aus_shp),
+             pattern = map(seasonal_summary_seasons, seasonal_summary_indices),
+             format  = "file"),
 
 
   # quarto report: plots of cleaned data 

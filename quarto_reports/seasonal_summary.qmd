@@ -4,6 +4,10 @@ subtitle: "`r params$season` Seasonal Summary"
 date: last-modified
 params:
   season: "Summer-2025"
+  # RDS paths injected by render_seasonal_summary(); NULL triggers tar_load() fallback
+  # for standalone interactive use (e.g. opening the QMD directly in RStudio)
+  data_path:    NULL
+  aus_shp_path: NULL
 format:
   html:
     self-contained: true
@@ -42,9 +46,15 @@ library(gt)
 library(patchwork)
 library(scales)
 
-## load targets (handle rendering from project root or quarto_reports/ directory)
-store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
-targets::tar_load(c(data, aus_shp), store = store_path)
+## load data: prefer RDS paths injected by render_seasonal_summary() (pipeline mode);
+## fall back to tar_load() when rendering standalone (e.g. from RStudio)
+if (!is.null(params$data_path) && file.exists(params$data_path)) {
+  data    <- readRDS(params$data_path)
+  aus_shp <- readRDS(params$aus_shp_path)
+} else {
+  store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+  targets::tar_load(c(data, aus_shp), store = store_path)
+}
 
 ## filter data to the target season
 data_season <- purrr::map(data, dplyr::filter, season_year_adj == params$season)

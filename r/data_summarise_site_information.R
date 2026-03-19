@@ -1,5 +1,6 @@
 data_summarise_site_information <- function(data,
-                                            site_id_cols = c("state", "region", "farmer", "site", "subsite")) {
+                                            site_id_cols = c("state", "region", "farmer", "site", "subsite"),
+                                            outpath = "raw_data/survey_data/rapid_assessment_data_2026_onwards/") {
 
   # Extract distinct site records from all survey types (traps, burrows, chewcards)
   # and combine into a single reference table of known monitoring locations.
@@ -38,6 +39,10 @@ data_summarise_site_information <- function(data,
     print(dplyr::arrange(na_coords, dplyr::across(dplyr::all_of(site_id_cols))), n = Inf)
     stop(nrow(na_coords), " row(s) have NA coordinates (see above).")
   }
+
+  # Save site information as a CSV to outpath
+  out_file <- file.path(outpath, "site_information.csv")
+  readr::write_csv(all_coords, out_file)
 
   return(all_coords)
 

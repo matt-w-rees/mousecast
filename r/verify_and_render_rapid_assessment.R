@@ -1,93 +1,34 @@
-verify_and_render_rapid_assessment <- function(csv_path) {
-  # Verify and render rapid assessment data quality report
-  #
-  # This function renders a Quarto document that validates rapid assessment data
-  # and produces an HTML report. The report is only generated if all validation
-  # checks pass. The output is saved in the same directory as the input CSV.
-  #
-  # @param csv_path Character; path to the CSV file containing rapid assessment data
-  # @return Path to the rendered HTML file (invisibly), or stops with error if validation fails
+# Render a verification HTML report for a single rapid-assessment CSV file.
+# Designed to be called inside a branched tar_target() that maps over CSV paths.
+#
+# @param csv_file         Character; path to the CSV file (one branch value from tar_files).
+# @param site_information Data frame; site metadata returned by data_summarise_site_information(),
+#                         serialised to a temp RDS so the QMD can read it without calling
+#                         tar_read() mid-pipeline (avoids metadata race conditions).
+# @return Character; absolute path to the rendered HTML file (tracked by targets via format = "file").
+verify_and_render_rapid_assessment <- function(csv_file, site_information) {
 
-  library(quarto)
+  # resolve to absolute path so paths remain valid when working directory changes
+  abs_csv  <- normalizePath(csv_file, mustWork = TRUE)
+  out_file <- paste0(tools::file_path_sans_ext(basename(abs_csv)), ".html")
+  dest     <- file.path(dirname(abs_csv), out_file)
 
-  # Ensure CSV file exists
-  if (!file.exists(csv_path)) {
-    stop("CSV file not found: ", csv_path)
-  }
+  # write site_information to a temp RDS that the QMD reads via readRDS();
+  # avoids calling tar_read() inside a rendered document mid-pipeline
+  site_info_path <- tempfile(fileext = ".rds")
+  saveRDS(site_information, site_info_path)
 
-  # Get absolute paths
-  csv_path_abs <- normalizePath(csv_path, mustWork = TRUE)
-  csv_dir_abs <- dirname(csv_path_abs)
-
-  # Get directory and base name for output
-  csv_basename <- tools::file_path_sans_ext(basename(csv_path_abs))
-  output_file <- paste0(csv_basename, "_verification_report.html")
-  output_path <- file.path(csv_dir_abs, output_file)
-
-  # Path to the Quarto document
-  qmd_path <- "quarto_reports/verify_new_rapid_assessment_data.qmd"
-
-  if (!file.exists(qmd_path)) {
-    stop("Quarto template not found: ", qmd_path)
-  }
-
-  # Create a copy of the .qmd in the target directory with the correct path
-  target_qmd <- file.path(csv_dir_abs, ".temp_verification.qmd")
-  qmd_content <- readLines(qmd_path)
-
-  # Replace the path in the setup chunk with just the basename (since qmd will be in same dir)
-  qmd_content <- gsub(
-    'path <- "raw_data/survey_data/rapid_assessment_data_2026_onwards/adelaide_plains/19_01_2026.csv"',
-    paste0('path <- "', basename(csv_path_abs), '"'),
-    qmd_content,
-    fixed = TRUE
-  )
-
-  writeLines(qmd_content, target_qmd)
-
-  # Render the document
-  cat("Rendering verification report for:", csv_path_abs, "\n")
-  cat("Output will be saved to:", output_path, "\n\n")
-
-  # Save current directory
-  old_wd <- getwd()
-
-  tryCatch({
-    # Change to the CSV directory for rendering
-    setwd(csv_dir_abs)
-
-    # Render the document
+  # render from quarto_reports/ so relative resource paths inside the QMD resolve correctly;
+  # move the output HTML to sit alongside its source CSV when done
+  withr::with_dir("quarto_reports", {
     quarto::quarto_render(
-      input = basename(target_qmd),
-      output_file = output_file,
-      quiet = FALSE
+      "verify_new_rapid_assessment_data.qmd",
+      output_file    = out_file,
+      execute_params = list(csv_path = abs_csv, site_info_path = site_info_path),
+      quiet          = TRUE
     )
-
-    cat("\n✓ Verification report successfully generated!\n")
-    cat("  Report location:", output_path, "\n")
-
-    # Clean up temp qmd file
-    unlink(target_qmd)
-
-    # Restore working directory
-    setwd(old_wd)
-
-    invisible(output_path)
-
-  }, error = function(e) {
-    cat("\n❌ Rendering failed - validation errors detected\n")
-    cat("Error message:", conditionMessage(e), "\n")
-
-    # Clean up temp file
-    if (file.exists(target_qmd)) unlink(target_qmd)
-
-    # Restore working directory
-    setwd(old_wd)
-
-    stop("Verification failed. Please check the data for errors.", call. = FALSE)
+    file.rename(out_file, dest)
   })
+
+  dest
 }
-
-
-# Example usage:
-# verify_and_render_rapid_assessment("raw_data/survey_data/rapid_assessment_data_2026_onwards/adelaide_plains/19_01_2026.csv")
