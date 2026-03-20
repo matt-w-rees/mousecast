@@ -21,6 +21,9 @@
 # targets pipeline
 _targets/
 
+# archived forecast communications
+derived_data/mouse_forecast_communications/
+
 # other folders
 quarto_reports/images/
 quarto_reports/seasonal_summaries/

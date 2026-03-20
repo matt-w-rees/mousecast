@@ -40,9 +40,31 @@ data_summarise_site_information <- function(data,
     stop(nrow(na_coords), " row(s) have NA coordinates (see above).")
   }
 
-  # Save site information as a CSV to outpath
+  # Save all sites ever surveyed
   out_file <- file.path(outpath, "site_information.csv")
   readr::write_csv(all_coords, out_file)
+
+  # Find the most recent survey date per site, restricted to monitoring-project
+  # records only (data_source == "monitoring"). This excludes ecology and DPIRD
+  # sources so that the current-sites CSV reflects the active monitoring network.
+  cutoff_date <- Sys.Date() - lubridate::dmonths(24)
+
+  most_recent <- purrr::map(data, ~ {
+    dplyr::select(.x, dplyr::any_of(c(site_id_cols, "data_source", "session_start_date")))
+  }) |>
+    dplyr::bind_rows() |>
+    dplyr::filter(data_source == "monitoring") |>
+    dplyr::summarise(last_surveyed = max(session_start_date, na.rm = TRUE),
+                     .by = dplyr::all_of(site_id_cols))
+
+  # Save only sites monitored within the last 24 months
+  all_coords_current <- all_coords |>
+    dplyr::left_join(most_recent, by = site_id_cols) |>
+    dplyr::filter(last_surveyed >= cutoff_date) |>
+    dplyr::select(-last_surveyed)
+
+  out_file_current <- file.path(outpath, "site_information_current.csv")
+  readr::write_csv(all_coords_current, out_file_current)
 
   return(all_coords)
 

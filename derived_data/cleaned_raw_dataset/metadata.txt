@@ -2,7 +2,7 @@
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
 Generated: 
-2026-03-19 16:56:30
+2026-03-20 17:05:27
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -195,8 +195,8 @@ Traps are baited with wheat, checked daily, and animals are marked with ear punc
 Active burrow counts and chewcards are also surveyed at each subsite, approximately 100 metres away (these are linked with the same site, subsite variables.
 
 DATA STRUCTURE:
-  Number of rows: 2557
-  Number of columns: 36
+  Number of rows: 2569
+  Number of columns: 37
 
 UNIQUE VARIABLES (specific to traps dataset):
 ----------------------------------------------------------------------------
@@ -238,6 +238,12 @@ number_functional_traps
   Source: [See processing functions]
 
 number_mice_caught
+  Description: [Variable not yet documented]
+  Type: [See data]
+  Values: [See data]
+  Source: [See processing functions]
+
+source_file
   Description: [Variable not yet documented]
   Type: [See data]
   Values: [See data]

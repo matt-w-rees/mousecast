@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Rapid Assessment Data Verification Report</title>
+<title>Trapping Data Verification Report</title>
 <style>
 code{white-space: pre-wrap;}
 span.smallcaps{font-variant: small-caps;}
@@ -7397,14 +7397,13 @@ function asArray(value) {
   <li><a href="#blank-cells" id="toc-blank-cells" class="nav-link" data-scroll-target="#blank-cells">Blank Cells</a></li>
   <li><a href="#required-fields" id="toc-required-fields" class="nav-link" data-scroll-target="#required-fields">Required Fields</a></li>
   <li><a href="#coordinates" id="toc-coordinates" class="nav-link" data-scroll-target="#coordinates">Coordinates</a></li>
-  <li><a href="#existing-sites" id="toc-existing-sites" class="nav-link" data-scroll-target="#existing-sites">Existing Sites</a></li>
-  <li><a href="#ground-cover" id="toc-ground-cover" class="nav-link" data-scroll-target="#ground-cover">Ground Cover</a></li>
-  <li><a href="#burrow-counts" id="toc-burrow-counts" class="nav-link" data-scroll-target="#burrow-counts">Burrow Counts</a></li>
-  <li><a href="#chewcard-percentages" id="toc-chewcard-percentages" class="nav-link" data-scroll-target="#chewcard-percentages">Chewcard Percentages</a></li>
+  <li><a href="#known-sites" id="toc-known-sites" class="nav-link" data-scroll-target="#known-sites">Known Sites</a></li>
   <li><a href="#dates" id="toc-dates" class="nav-link" data-scroll-target="#dates">Dates</a></li>
-  <li><a href="#biomass-values" id="toc-biomass-values" class="nav-link" data-scroll-target="#biomass-values">Biomass Values</a></li>
+  <li><a href="#trap-counts" id="toc-trap-counts" class="nav-link" data-scroll-target="#trap-counts">Trap Counts</a></li>
+  <li><a href="#ground-cover-biomass" id="toc-ground-cover-biomass" class="nav-link" data-scroll-target="#ground-cover-biomass">Ground Cover &amp; Biomass</a></li>
   <li><a href="#data-types" id="toc-data-types" class="nav-link" data-scroll-target="#data-types">Data Types</a></li>
   </ul></li>
+  <li><a href="#data-summary" id="toc-data-summary" class="nav-link" data-scroll-target="#data-summary">Data Summary</a></li>
   </ul>
 </nav>
 </div>
@@ -7412,8 +7411,8 @@ function asArray(value) {
 
 <header id="title-block-header" class="quarto-title-block default">
 <div class="quarto-title">
-<h1 class="title">Rapid Assessment Data Verification Report</h1>
-<p class="subtitle lead">11_03_2026.csv</p>
+<h1 class="title">Trapping Data Verification Report</h1>
+<p class="subtitle lead">13_03_26.csv</p>
 </div>
 
 
@@ -7432,7 +7431,7 @@ function asArray(value) {
 
 <section id="survey-information" class="level2">
 <h2 class="anchored" data-anchor-id="survey-information">Survey Information</h2>
-<p><strong>Data file:</strong> 11_03_2026.csv <strong>Report generated:</strong> 2026-03-20 16:35:44 <strong>Number of records:</strong> 8</p>
+<p><strong>Data file:</strong> 13_03_26.csv <strong>Report generated:</strong> 2026-03-20 17:40:48 <strong>Number of records:</strong> 70</p>
 <hr>
 </section>
 <section id="data-validation-checks" class="level1 tabset">
@@ -7474,9 +7473,7 @@ function asArray(value) {
 <pre><code>✓ No obviously swapped lat/lon detected</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>✓ All points fall within Australian state boundaries
-
-✓ All stated &#39;state&#39; values match the coordinates&#39; location</code></pre>
+<pre><code>✓ All points fall within Australian state boundaries</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
 <pre><code>
@@ -7484,22 +7481,20 @@ function asArray(value) {
 </div>
 <div class="cell-output-display">
 <table class="caption-top table table-sm table-striped small">
-<caption>All site coordinates</caption>
+<caption>Unique site coordinates</caption>
 <colgroup>
-<col style="width: 16%">
-<col style="width: 19%">
-<col style="width: 8%">
-<col style="width: 17%">
-<col style="width: 17%">
-<col style="width: 10%">
-<col style="width: 10%">
+<col style="width: 15%">
+<col style="width: 18%">
+<col style="width: 12%">
+<col style="width: 24%">
+<col style="width: 15%">
+<col style="width: 15%">
 </colgroup>
 <thead>
 <tr class="header">
 <th style="text-align: left;">farmer</th>
 <th style="text-align: left;">site</th>
 <th style="text-align: left;">subsite</th>
-<th style="text-align: left;">state</th>
 <th style="text-align: left;">region</th>
 <th style="text-align: right;">longitude</th>
 <th style="text-align: right;">latitude</th>
@@ -7508,75 +7503,19 @@ function asArray(value) {
 <tbody>
 <tr class="odd">
 <td style="text-align: left;">paul lush</td>
-<td style="text-align: left;">paul lush hb</td>
-<td style="text-align: left;">jlhb</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.6956</td>
-<td style="text-align: right;">-34.35102</td>
-</tr>
-<tr class="even">
-<td style="text-align: left;">paul lush</td>
+<td style="text-align: left;">paul lush m</td>
 <td style="text-align: left;">jla tg</td>
-<td style="text-align: left;">jla tg</td>
-<td style="text-align: left;">south australia</td>
 <td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.5906</td>
-<td style="text-align: right;">-34.37590</td>
-</tr>
-<tr class="odd">
-<td style="text-align: left;">paul lush</td>
-<td style="text-align: left;">jlb tg</td>
-<td style="text-align: left;">jlb tg</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.5927</td>
-<td style="text-align: right;">-34.37595</td>
+<td style="text-align: right;">138.5909</td>
+<td style="text-align: right;">-34.37553</td>
 </tr>
 <tr class="even">
 <td style="text-align: left;">paul lush</td>
-<td style="text-align: left;">john lush c</td>
-<td style="text-align: left;">jlc</td>
-<td style="text-align: left;">south australia</td>
+<td style="text-align: left;">paul lush m</td>
+<td style="text-align: left;">jlb tg</td>
 <td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.5710</td>
-<td style="text-align: right;">-34.39651</td>
-</tr>
-<tr class="odd">
-<td style="text-align: left;">brett roberts</td>
-<td style="text-align: left;">brett roberts lp</td>
-<td style="text-align: left;">bra</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.3706</td>
-<td style="text-align: right;">-34.31261</td>
-</tr>
-<tr class="even">
-<td style="text-align: left;">brett roberts</td>
-<td style="text-align: left;">brett roberts lp</td>
-<td style="text-align: left;">brb</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.3467</td>
-<td style="text-align: right;">-34.31250</td>
-</tr>
-<tr class="odd">
-<td style="text-align: left;">brett roberts</td>
-<td style="text-align: left;">brett roberts whp</td>
-<td style="text-align: left;">brc</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.2790</td>
-<td style="text-align: right;">-34.33876</td>
-</tr>
-<tr class="even">
-<td style="text-align: left;">richard konzag</td>
-<td style="text-align: left;">richard konzag</td>
-<td style="text-align: left;">rkon</td>
-<td style="text-align: left;">south australia</td>
-<td style="text-align: left;">adelaide plains</td>
-<td style="text-align: right;">138.4045</td>
-<td style="text-align: right;">-34.44088</td>
+<td style="text-align: right;">138.5923</td>
+<td style="text-align: right;">-34.37541</td>
 </tr>
 </tbody>
 </table>
@@ -7584,42 +7523,18 @@ function asArray(value) {
 </div>
 <div class="cell">
 <div class="cell-output-display">
-<div class="leaflet html-widget html-fill-item" id="htmlwidget-56c1ffad6184348a9846" style="width:100%;height:390px;"></div>
-<script type="application/json" data-for="htmlwidget-56c1ffad6184348a9846">{"x":{"options":{"crs":{"crsClass":"L.CRS.EPSG3857","code":null,"proj4def":null,"projectedBounds":null,"options":{}}},"calls":[{"method":"addProviderTiles","args":["Esri.WorldImagery",null,"Satellite",{"errorTileUrl":"","noWrap":false,"detectRetina":false}]},{"method":"addProviderTiles","args":["OpenStreetMap",null,"Street Map",{"errorTileUrl":"","noWrap":false,"detectRetina":false}]},{"method":"addCircleMarkers","args":[[-34.35102,-34.375904,-34.37595,-34.39651,-34.31261,-34.3125,-34.338759,-34.440881],[138.69564,138.590565,138.59275,138.571,138.3706,138.34672,138.278967,138.404501],8,null,null,{"interactive":true,"className":"","stroke":true,"color":{"adelaide plains":"#FF0000","adelaide plains.1":"#FF0000","adelaide plains.2":"#FF0000","adelaide plains.3":"#FF0000","adelaide plains.4":"#FF0000","adelaide plains.5":"#FF0000","adelaide plains.6":"#FF0000","adelaide plains.7":"#FF0000"},"weight":2,"opacity":0.5,"fill":true,"fillColor":{"adelaide plains":"#FF0000","adelaide plains.1":"#FF0000","adelaide plains.2":"#FF0000","adelaide plains.3":"#FF0000","adelaide plains.4":"#FF0000","adelaide plains.5":"#FF0000","adelaide plains.6":"#FF0000","adelaide plains.7":"#FF0000"},"fillOpacity":0.8},null,null,["<b>paul lush – paul lush hb<\/b><br>Subsite: jlhb<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.69564  Lat: -34.35102<br>New site: FALSE","<b>paul lush – jla tg<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.590565  Lat: -34.375904<br>New site: FALSE","<b>paul lush – jlb tg<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.59275  Lat: -34.37595<br>New site: FALSE","<b>paul lush – john lush c<\/b><br>Subsite: jlc<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.571  Lat: -34.39651<br>New site: FALSE","<b>brett roberts – brett roberts lp<\/b><br>Subsite: bra<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.3706  Lat: -34.31261<br>New site: FALSE","<b>brett roberts – brett roberts lp<\/b><br>Subsite: brb<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.34672  Lat: -34.3125<br>New site: FALSE","<b>brett roberts – brett roberts whp<\/b><br>Subsite: brc<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.278967  Lat: -34.338759<br>New site: FALSE","<b>richard konzag – richard konzag<\/b><br>Subsite: rkon<br>Region: adelaide plains<br>State: south australia<br>Lon: 138.404501  Lat: -34.440881<br>New site: FALSE"],null,["paul lush / paul lush hb / jlhb","paul lush / jla tg / jla tg","paul lush / jlb tg / jlb tg","paul lush / john lush c / jlc","brett roberts / brett roberts lp / bra","brett roberts / brett roberts lp / brb","brett roberts / brett roberts whp / brc","richard konzag / richard konzag / rkon"],{"interactive":false,"permanent":false,"direction":"auto","opacity":1,"offset":[0,0],"textsize":"10px","textOnly":false,"className":"","sticky":true},null]},{"method":"addScaleBar","args":[{"maxWidth":100,"metric":true,"imperial":false,"updateWhenIdle":true,"position":"bottomleft"}]},{"method":"addLayersControl","args":[["Street Map","Satellite"],[],{"collapsed":false,"autoZIndex":true,"position":"topright"}]},{"method":"addLegend","args":[{"colors":["#FF0000"],"labels":["adelaide plains"],"na_color":null,"na_label":"NA","opacity":0.8,"position":"bottomright","type":"unknown","title":"Region","extra":null,"layerId":null,"className":"info legend","group":null}]}],"limits":{"lat":[-34.440881,-34.3125],"lng":[138.278967,138.69564]}},"evals":[],"jsHooks":[]}</script>
+<div class="leaflet html-widget html-fill-item" id="htmlwidget-1b15b6370ce6ebc558e5" style="width:100%;height:390px;"></div>
+<script type="application/json" data-for="htmlwidget-1b15b6370ce6ebc558e5">{"x":{"options":{"crs":{"crsClass":"L.CRS.EPSG3857","code":null,"proj4def":null,"projectedBounds":null,"options":{}}},"calls":[{"method":"addProviderTiles","args":["Esri.WorldImagery",null,"Satellite",{"errorTileUrl":"","noWrap":false,"detectRetina":false}]},{"method":"addProviderTiles","args":["OpenStreetMap",null,"Street Map",{"errorTileUrl":"","noWrap":false,"detectRetina":false}]},{"method":"addCircleMarkers","args":[[-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37552903,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001,-34.37541001],[138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.590879,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229,138.59229],8,null,null,{"interactive":true,"className":"","stroke":true,"color":{"adelaide plains":"#FF0000","adelaide plains.1":"#FF0000","adelaide plains.2":"#FF0000","adelaide plains.3":"#FF0000","adelaide plains.4":"#FF0000","adelaide plains.5":"#FF0000","adelaide plains.6":"#FF0000","adelaide plains.7":"#FF0000","adelaide plains.8":"#FF0000","adelaide plains.9":"#FF0000","adelaide plains.10":"#FF0000","adelaide plains.11":"#FF0000","adelaide plains.12":"#FF0000","adelaide plains.13":"#FF0000","adelaide plains.14":"#FF0000","adelaide plains.15":"#FF0000","adelaide plains.16":"#FF0000","adelaide plains.17":"#FF0000","adelaide plains.18":"#FF0000","adelaide plains.19":"#FF0000","adelaide plains.20":"#FF0000","adelaide plains.21":"#FF0000","adelaide plains.22":"#FF0000","adelaide plains.23":"#FF0000","adelaide plains.24":"#FF0000","adelaide plains.25":"#FF0000","adelaide plains.26":"#FF0000","adelaide plains.27":"#FF0000","adelaide plains.28":"#FF0000","adelaide plains.29":"#FF0000","adelaide plains.30":"#FF0000","adelaide plains.31":"#FF0000","adelaide plains.32":"#FF0000","adelaide plains.33":"#FF0000","adelaide plains.34":"#FF0000","adelaide plains.35":"#FF0000","adelaide plains.36":"#FF0000","adelaide plains.37":"#FF0000","adelaide plains.38":"#FF0000","adelaide plains.39":"#FF0000","adelaide plains.40":"#FF0000","adelaide plains.41":"#FF0000","adelaide plains.42":"#FF0000","adelaide plains.43":"#FF0000","adelaide plains.44":"#FF0000","adelaide plains.45":"#FF0000","adelaide plains.46":"#FF0000","adelaide plains.47":"#FF0000","adelaide plains.48":"#FF0000","adelaide plains.49":"#FF0000","adelaide plains.50":"#FF0000","adelaide plains.51":"#FF0000","adelaide plains.52":"#FF0000","adelaide plains.53":"#FF0000","adelaide plains.54":"#FF0000","adelaide plains.55":"#FF0000","adelaide plains.56":"#FF0000","adelaide plains.57":"#FF0000","adelaide plains.58":"#FF0000","adelaide plains.59":"#FF0000","adelaide plains.60":"#FF0000","adelaide plains.61":"#FF0000","adelaide plains.62":"#FF0000","adelaide plains.63":"#FF0000","adelaide plains.64":"#FF0000","adelaide plains.65":"#FF0000","adelaide plains.66":"#FF0000","adelaide plains.67":"#FF0000","adelaide plains.68":"#FF0000","adelaide plains.69":"#FF0000"},"weight":2,"opacity":0.5,"fill":true,"fillColor":{"adelaide plains":"#FF0000","adelaide plains.1":"#FF0000","adelaide plains.2":"#FF0000","adelaide plains.3":"#FF0000","adelaide plains.4":"#FF0000","adelaide plains.5":"#FF0000","adelaide plains.6":"#FF0000","adelaide plains.7":"#FF0000","adelaide plains.8":"#FF0000","adelaide plains.9":"#FF0000","adelaide plains.10":"#FF0000","adelaide plains.11":"#FF0000","adelaide plains.12":"#FF0000","adelaide plains.13":"#FF0000","adelaide plains.14":"#FF0000","adelaide plains.15":"#FF0000","adelaide plains.16":"#FF0000","adelaide plains.17":"#FF0000","adelaide plains.18":"#FF0000","adelaide plains.19":"#FF0000","adelaide plains.20":"#FF0000","adelaide plains.21":"#FF0000","adelaide plains.22":"#FF0000","adelaide plains.23":"#FF0000","adelaide plains.24":"#FF0000","adelaide plains.25":"#FF0000","adelaide plains.26":"#FF0000","adelaide plains.27":"#FF0000","adelaide plains.28":"#FF0000","adelaide plains.29":"#FF0000","adelaide plains.30":"#FF0000","adelaide plains.31":"#FF0000","adelaide plains.32":"#FF0000","adelaide plains.33":"#FF0000","adelaide plains.34":"#FF0000","adelaide plains.35":"#FF0000","adelaide plains.36":"#FF0000","adelaide plains.37":"#FF0000","adelaide plains.38":"#FF0000","adelaide plains.39":"#FF0000","adelaide plains.40":"#FF0000","adelaide plains.41":"#FF0000","adelaide plains.42":"#FF0000","adelaide plains.43":"#FF0000","adelaide plains.44":"#FF0000","adelaide plains.45":"#FF0000","adelaide plains.46":"#FF0000","adelaide plains.47":"#FF0000","adelaide plains.48":"#FF0000","adelaide plains.49":"#FF0000","adelaide plains.50":"#FF0000","adelaide plains.51":"#FF0000","adelaide plains.52":"#FF0000","adelaide plains.53":"#FF0000","adelaide plains.54":"#FF0000","adelaide plains.55":"#FF0000","adelaide plains.56":"#FF0000","adelaide plains.57":"#FF0000","adelaide plains.58":"#FF0000","adelaide plains.59":"#FF0000","adelaide plains.60":"#FF0000","adelaide plains.61":"#FF0000","adelaide plains.62":"#FF0000","adelaide plains.63":"#FF0000","adelaide plains.64":"#FF0000","adelaide plains.65":"#FF0000","adelaide plains.66":"#FF0000","adelaide plains.67":"#FF0000","adelaide plains.68":"#FF0000","adelaide plains.69":"#FF0000"},"fillOpacity":0.8},null,null,["<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jla tg<br>Region: adelaide plains<br>Lon: 138.590879  Lat: -34.375529","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541","<b>paul lush – paul lush m<\/b><br>Subsite: jlb tg<br>Region: adelaide plains<br>Lon: 138.59229  Lat: -34.37541"],null,["paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jla tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg","paul lush / paul lush m / jlb tg"],{"interactive":false,"permanent":false,"direction":"auto","opacity":1,"offset":[0,0],"textsize":"10px","textOnly":false,"className":"","sticky":true},null]},{"method":"addScaleBar","args":[{"maxWidth":100,"metric":true,"imperial":false,"updateWhenIdle":true,"position":"bottomleft"}]},{"method":"addLayersControl","args":[["Street Map","Satellite"],[],{"collapsed":false,"autoZIndex":true,"position":"topright"}]},{"method":"addLegend","args":[{"colors":["#FF0000"],"labels":["adelaide plains"],"na_color":null,"na_label":"NA","opacity":0.8,"position":"bottomright","type":"unknown","title":"Region","extra":null,"layerId":null,"className":"info legend","group":null}]}],"limits":{"lat":[-34.37552903,-34.37541001],"lng":[138.590879,138.59229]}},"evals":[],"jsHooks":[]}</script>
 </div>
 </div>
 </section>
-<section id="existing-sites" class="level2">
-<h2 class="anchored" data-anchor-id="existing-sites">Existing Sites</h2>
+<section id="known-sites" class="level2">
+<h2 class="anchored" data-anchor-id="known-sites">Known Sites</h2>
 <div class="cell">
 <div class="cell-output cell-output-stdout">
-<pre><code>❌ 2 row(s) marked new_site = FALSE but region/farmer/site/subsite not found in the site database
+<pre><code>✓ All sites found in site information database
 
-✓ Coordinates for all existing sites are consistent with stored values</code></pre>
-</div>
-</div>
-</section>
-<section id="ground-cover" class="level2">
-<h2 class="anchored" data-anchor-id="ground-cover">Ground Cover</h2>
-<div class="cell">
-<div class="cell-output cell-output-stdout">
-<pre><code>✓ Ground cover percentage values valid</code></pre>
-</div>
-</div>
-</section>
-<section id="burrow-counts" class="level2">
-<h2 class="anchored" data-anchor-id="burrow-counts">Burrow Counts</h2>
-<div class="cell">
-<div class="cell-output cell-output-stdout">
-<pre><code>✓ All burrow counts are ≥ 0</code></pre>
-</div>
-</div>
-</section>
-<section id="chewcard-percentages" class="level2">
-<h2 class="anchored" data-anchor-id="chewcard-percentages">Chewcard Percentages</h2>
-<div class="cell">
-<div class="cell-output cell-output-stdout">
-<pre><code>✓ All chewcard percentages are 0-100</code></pre>
+✓ Coordinates for all recognised sites are consistent with stored values</code></pre>
 </div>
 </div>
 </section>
@@ -7627,23 +7542,36 @@ function asArray(value) {
 <h2 class="anchored" data-anchor-id="dates">Dates</h2>
 <div class="cell">
 <div class="cell-output cell-output-stdout">
-<pre><code>✓ Date ranges are logical (date_out ≥ date_in for all records)
+<pre><code>✓ Session date ranges are logical (session_end_date ≥ session_start_date)
 
-✓ All survey durations are ≤ 6 days
-
-✓ All records have date_out after date_in (overnight soak period present)
+✓ All capture dates fall within their session window
 
 ✓ All date years are consistent with the dominant year ( 2026 )</code></pre>
 </div>
 </div>
 </section>
-<section id="biomass-values" class="level2">
-<h2 class="anchored" data-anchor-id="biomass-values">Biomass Values</h2>
+<section id="trap-counts" class="level2">
+<h2 class="anchored" data-anchor-id="trap-counts">Trap Counts</h2>
 <div class="cell">
 <div class="cell-output cell-output-stdout">
-<pre><code>❌ 5 biomass value(s) not in (low, medium, high)
-
-Unique values found: high, moderate high, low, moderate </code></pre>
+<pre><code>✓ All trap count values are ≥ 0</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>✓ number_functional_traps = number_traps_set − number_phantoms for all records</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>✓ number_mice_caught ≤ number_functional_traps for all records</code></pre>
+</div>
+</div>
+</section>
+<section id="ground-cover-biomass" class="level2">
+<h2 class="anchored" data-anchor-id="ground-cover-biomass">Ground Cover &amp; Biomass</h2>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>✓ Ground cover percentage values valid</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>✓ Biomass values valid</code></pre>
 </div>
 </div>
 </section>
@@ -7655,22 +7583,96 @@ Unique values found: high, moderate high, low, moderate </code></pre>
 </div>
 </div>
 <hr>
+<div class="callout callout-style-simple callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Validation Status
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>✅ <strong>All validation checks passed!</strong> Proceeding with summary.</p>
+</div>
+</div>
+<hr>
+</section>
+</section>
+<section id="data-summary" class="level1">
+<h1>Data Summary</h1>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>## Survey Details</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Data source(s):**  csiro </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Region(s):**  adelaide plains </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Farmer(s):**  paul lush </code></pre>
+</div>
+</div>
 <div class="cell">
 <div class="cell-output cell-output-stdout">
 <pre><code>
-
-# ⚠️ VALIDATION FAILED
-
-**The following errors were found:**
-
-1. 2 existing site(s) not found in site information database
-2. Invalid biomass values
-
-
-**Please correct these issues before proceeding.**</code></pre>
+## Site Information</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Total records:**  70 </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Unique sites:**  1 </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Unique subsites:**  2 </code></pre>
 </div>
 </div>
-</section>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>
+## Session</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Session start:**  2026-03-11 
+- **Session end:**  2026-03-13 
+- **Session length (days):**  3 </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Survey nights:**  1, 2, 3 </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Trap type(s):**  longworth </code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>
+## Captures</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Total functional trap-nights:**  210 </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Total captures (all animals including recaptures):**  70 
+- **Unique individuals (first captures only):**  56 
+- **Overall trap success — % trap-nights catching an animal:**  33.33 </code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="cell-output cell-output-stdout">
+<pre><code>
+## Crop Information</code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Crop type(s):**   canola, wheat </code></pre>
+</div>
+<div class="cell-output cell-output-stdout">
+<pre><code>- **Crop stage(s):**  stubble </code></pre>
+</div>
+</div>
 </section>
 
 </main>

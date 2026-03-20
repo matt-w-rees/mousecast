@@ -1,0 +1,629 @@
+---
+title: "Trapping Data Verification Report"
+subtitle: "`r basename(params$csv_path)`"
+params:
+  csv_path: "raw_data/survey_data/trapping_data_2026_onwards/adelaide_plains/13_03_26.csv"
+  site_info_path: null
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| include: false
+
+# path to the CSV to verify — passed as a parameter when rendered via targets pipeline
+path <- params$csv_path
+
+# Load required packages
+library(dplyr)
+library(leaflet)
+library(sf)
+library(lubridate)
+library(readr)
+library(knitr)
+
+# Load data
+data <- read_csv(path, show_col_types = FALSE)
+
+# Parse date columns (stored as d/m/Y character strings in the CSVs)
+date_cols <- c("session_start_date", "session_end_date", "date")
+for (col in date_cols) {
+  if (col %in% names(data) && is.character(data[[col]])) {
+    data[[col]] <- lubridate::dmy(data[[col]])
+  }
+}
+
+# Initialize error tracking
+validation_errors <- list()
+validation_passed <- TRUE
+```
+
+## Survey Information
+
+**Data file:** `r basename(path)`
+**Report generated:** `r format(Sys.time(), '%Y-%m-%d %H:%M:%S')`
+**Number of records:** `r nrow(data)`
+
+---
+
+# Data Validation Checks {.tabset}
+
+```{r checks-setup}
+# Expected columns and their required R class after read_csv() + date parsing
+expected_cols <- c(
+  "data_source",
+  "region", "farmer", "site", "subsite",
+  "longitude", "latitude",
+  "session_start_date", "session_end_date",
+  "crop_type", "crop_stage", "ground_cover_percent", "biomass",
+  "date", "survey_night", "trap_type",
+  "number_traps_set", "number_phantoms", "number_functional_traps", "number_mice_caught",
+  "grid_location_x", "grid_location_y",
+  "pit_tag_id", "class", "sex", "vagina", "teats", "pregnant",
+  "weight_g", "length_mm", "fate"
+)
+
+expected_classes <- list(
+  longitude                = "numeric",
+  latitude                 = "numeric",
+  session_start_date       = "Date",
+  session_end_date         = "Date",
+  date                     = "Date",
+  survey_night             = "numeric",
+  ground_cover_percent     = "numeric",
+  number_traps_set         = "numeric",
+  number_phantoms          = "numeric",
+  number_functional_traps  = "numeric",
+  number_mice_caught       = "numeric",
+  grid_location_x          = "numeric",
+  grid_location_y          = "numeric",
+  weight_g                 = "numeric",
+  length_mm                = "numeric"
+)
+```
+
+## Column Structure
+
+```{r check-columns}
+missing_cols <- setdiff(expected_cols, names(data))
+extra_cols   <- setdiff(names(data), expected_cols)
+
+if (length(missing_cols) > 0) {
+  validation_errors <- c(validation_errors,
+                         list(paste("Missing columns:", paste(missing_cols, collapse = ", "))))
+  validation_passed <- FALSE
+  cat("❌ **MISSING COLUMNS:**", paste(missing_cols, collapse = ", "), "\n\n")
+} else {
+  cat("✓ All expected columns present\n\n")
+}
+
+if (length(extra_cols) > 0) {
+  cat("⚠️  **UNEXPECTED COLUMNS:**", paste(extra_cols, collapse = ", "), "\n\n")
+}
+```
+
+## Blank Cells
+
+```{r check-blanks}
+blank_issues <- data %>%
+  mutate(across(everything(), as.character)) %>%
+  summarise(across(everything(), ~ sum(.x == "", na.rm = TRUE))) %>%
+  select(where(~ .x > 0))
+
+if (ncol(blank_issues) > 0) {
+  validation_errors <- c(validation_errors,
+                         list("Blank cells found (should be explicit NA)"))
+  validation_passed <- FALSE
+  cat("❌ **BLANK CELLS FOUND** (should be NA):\n\n")
+  kable(blank_issues)
+} else {
+  cat("✓ No blank cells found\n\n")
+}
+```
+
+## Required Fields
+
+```{r check-required}
+required_fields <- c(
+  "data_source", "region", "farmer", "site", "subsite",
+  "longitude", "latitude",
+  "session_start_date", "session_end_date",
+  "date", "survey_night", "trap_type",
+  "number_traps_set", "number_functional_traps", "number_mice_caught"
+)
+
+na_counts <- data %>%
+  select(all_of(required_fields[required_fields %in% names(data)])) %>%
+  summarise(across(everything(), ~ sum(is.na(.x)))) %>%
+  select(where(~ .x > 0))
+
+if (ncol(na_counts) > 0) {
+  validation_errors <- c(validation_errors,
+                         list("Missing values in required fields"))
+  validation_passed <- FALSE
+  cat("❌ **MISSING VALUES IN REQUIRED FIELDS:**\n\n")
+  kable(na_counts)
+} else {
+  cat("✓ All required fields have values\n\n")
+}
+```
+
+## Coordinates
+
+```{r check-coords}
+## 1. Range checks
+if ("longitude" %in% names(data)) {
+  invalid_lon <- sum(data$longitude < 110 | data$longitude > 155, na.rm = TRUE)
+  if (invalid_lon > 0) {
+    validation_errors <- c(validation_errors, list("Invalid longitude values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_lon, "longitude value(s) outside Australian range (110–155)\n\n")
+  } else {
+    cat("✓ Longitude values within Australian range (110–155)\n\n")
+  }
+}
+
+if ("latitude" %in% names(data)) {
+  invalid_lat <- sum(data$latitude < -45 | data$latitude > -10, na.rm = TRUE)
+  if (invalid_lat > 0) {
+    validation_errors <- c(validation_errors, list("Invalid latitude values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_lat, "latitude value(s) outside Australian range (−45 to −10)\n\n")
+  } else {
+    cat("✓ Latitude values within Australian range (−45 to −10)\n\n")
+  }
+}
+
+## 2. Swapped coordinate check
+if (all(c("longitude", "latitude") %in% names(data))) {
+  swapped <- with(data, (longitude < 0 | longitude < 90) & (latitude > 0 | latitude > 100))
+  n_swapped <- sum(swapped, na.rm = TRUE)
+  if (n_swapped > 0) {
+    validation_errors <- c(validation_errors, list("Possibly swapped latitude and longitude"))
+    validation_passed <- FALSE
+    cat("❌", n_swapped, "record(s) where latitude and longitude may be swapped\n\n")
+    kable(data[which(swapped), c("farmer", "site", "subsite", "region", "longitude", "latitude")],
+          caption = "Possibly swapped coordinates")
+  } else {
+    cat("✓ No obviously swapped lat/lon detected\n\n")
+  }
+}
+
+## 3. Spatial validation against Australian state boundaries
+if (all(c("longitude", "latitude") %in% names(data))) {
+  tryCatch({
+    store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+    aus_shp    <- targets::tar_read(aus_shp, store = store_path)
+
+    data_coords <- data[!is.na(data$longitude) & !is.na(data$latitude), ]
+    data_sf     <- sf::st_as_sf(data_coords, coords = c("longitude", "latitude"), crs = 4326)
+    aus_boundary <- sf::st_union(aus_shp)
+
+    within_aus <- as.vector(sf::st_within(data_sf, aus_boundary, sparse = FALSE))
+    n_outside  <- sum(!within_aus)
+    if (n_outside > 0) {
+      validation_errors <- c(validation_errors, list("Point(s) fall outside Australia"))
+      validation_passed <- FALSE
+      cat("❌", n_outside, "point(s) fall outside Australian state boundaries\n\n")
+      kable(data_coords[!within_aus, c("farmer", "site", "subsite", "region", "longitude", "latitude")],
+            caption = "Records outside Australia")
+    } else {
+      cat("✓ All points fall within Australian state boundaries\n\n")
+    }
+
+  }, error = function(e) {
+    cat("⚠️ Spatial validation could not be completed:", conditionMessage(e), "\n\n")
+  })
+}
+
+## 4. Coordinate table for visual inspection
+if (all(c("farmer", "site", "subsite", "region", "longitude", "latitude") %in% names(data))) {
+  cat("\n**All site coordinates (for visual inspection):**\n\n")
+  kable(
+    distinct(data[, c("farmer", "site", "subsite", "region", "longitude", "latitude")]),
+    caption = "Unique site coordinates"
+  )
+}
+```
+
+```{r map-coords}
+#| fig-width: 10
+#| fig-height: 6
+
+if (all(c("longitude", "latitude") %in% names(data)) &&
+    any(!is.na(data$longitude) & !is.na(data$latitude))) {
+
+  popup_text <- paste0(
+    "<b>", data$farmer, " – ", data$site, "</b><br>",
+    "Subsite: ", data$subsite, "<br>",
+    "Region: ", data$region, "<br>",
+    "Lon: ", round(data$longitude, 6), "  Lat: ", round(data$latitude, 6)
+  )
+
+  unique_regions <- unique(data$region)
+  region_colors  <- rainbow(length(unique_regions))
+  names(region_colors) <- unique_regions
+  marker_colors <- region_colors[data$region]
+
+  leaflet(data) |>
+    addProviderTiles(provider = "Esri.WorldImagery", group = "Satellite") |>
+    addProviderTiles(provider = "OpenStreetMap",     group = "Street Map") |>
+    addCircleMarkers(
+      lng         = ~longitude,
+      lat         = ~latitude,
+      popup       = popup_text,
+      label       = ~paste(farmer, site, subsite, sep = " / "),
+      color       = marker_colors,
+      fillColor   = marker_colors,
+      radius      = 8,
+      fillOpacity = 0.8,
+      stroke      = TRUE,
+      weight      = 2
+    ) |>
+    addScaleBar(position = "bottomleft", options = scaleBarOptions(imperial = FALSE)) |>
+    addLayersControl(
+      baseGroups = c("Street Map", "Satellite"),
+      options    = layersControlOptions(collapsed = FALSE)
+    ) |>
+    addLegend(
+      position = "bottomright",
+      colors   = region_colors,
+      labels   = names(region_colors),
+      title    = "Region",
+      opacity  = 0.8
+    )
+}
+```
+
+## Known Sites
+
+```{r check-existing-sites}
+# Check all sites in the file against data_site_information (the reference table
+# built from all historical survey data). Flags sites that are not yet registered,
+# as new sites should be added to the database before data are processed.
+
+if (all(c("region", "farmer", "site", "subsite") %in% names(data))) {
+  tryCatch({
+    if (!is.null(params$site_info_path) && file.exists(params$site_info_path)) {
+      site_info <- readRDS(params$site_info_path)
+    } else {
+      store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+      site_info  <- targets::tar_read(data_site_information, store = store_path)
+    }
+
+    file_key  <- tolower(trimws(paste(data$region,     data$farmer,     data$site,     data$subsite)))
+    known_key <- tolower(trimws(paste(site_info$region, site_info$farmer, site_info$site, site_info$subsite)))
+
+    unrecognised <- !file_key %in% known_key
+    n_unrecognised <- sum(unrecognised)
+
+    if (n_unrecognised > 0) {
+      # warn but do not fail — new sites may have been added intentionally
+      cat("⚠️", n_unrecognised,
+          "record(s) have a region/farmer/site/subsite combination not found in the site database.",
+          "If these are genuinely new sites this is expected on the first run after adding data.\n\n")
+      kable(
+        distinct(data[unrecognised, c("region", "farmer", "site", "subsite", "longitude", "latitude")]),
+        caption = "Sites not found in site information database"
+      )
+    } else {
+      cat("✓ All sites found in site information database\n\n")
+    }
+
+    ## For recognised sites, check coordinates are close to stored values
+    recognised <- data[!unrecognised, ]
+    if (nrow(recognised) > 0 && all(c("longitude", "latitude") %in% names(recognised))) {
+      recognised_key <- tolower(trimws(paste(recognised$region, recognised$farmer,
+                                             recognised$site,   recognised$subsite)))
+      matched_info   <- site_info[match(recognised_key, known_key), ]
+
+      lon_diff     <- abs(recognised$longitude - matched_info$longitude)
+      lat_diff     <- abs(recognised$latitude  - matched_info$latitude)
+      coord_changed <- (lon_diff > 0.05 | lat_diff > 0.05) & !is.na(lon_diff) & !is.na(lat_diff)
+
+      if (any(coord_changed)) {
+        cat("⚠️", sum(coord_changed),
+            "site(s) have coordinates that differ from stored values by > 0.05°\n\n")
+        kable(
+          cbind(
+            distinct(recognised[coord_changed, c("region", "farmer", "site", "subsite", "longitude", "latitude")]),
+            stored_longitude = round(matched_info$longitude[coord_changed], 6),
+            stored_latitude  = round(matched_info$latitude[coord_changed],  6)
+          ),
+          caption = "Sites with coordinates differing from stored values"
+        )
+      } else {
+        cat("✓ Coordinates for all recognised sites are consistent with stored values\n\n")
+      }
+    }
+
+  }, error = function(e) {
+    cat("⚠️ Site check could not be completed:", conditionMessage(e), "\n\n")
+  })
+}
+```
+
+## Dates
+
+```{r check-dates}
+if (all(c("session_start_date", "session_end_date", "date") %in% names(data))) {
+
+  ## 1. session_end_date must not be before session_start_date
+  bad_session <- sum(data$session_end_date < data$session_start_date, na.rm = TRUE)
+  if (bad_session > 0) {
+    validation_errors <- c(validation_errors, list("session_end_date before session_start_date"))
+    validation_passed <- FALSE
+    cat("❌", bad_session, "record(s) where session_end_date is before session_start_date\n\n")
+  } else {
+    cat("✓ Session date ranges are logical (session_end_date ≥ session_start_date)\n\n")
+  }
+
+  ## 2. capture date must be within the session window
+  date_outside_session <- sum(
+    data$date < data$session_start_date | data$date > data$session_end_date,
+    na.rm = TRUE
+  )
+  if (date_outside_session > 0) {
+    validation_errors <- c(validation_errors, list("Capture date(s) outside session window"))
+    validation_passed <- FALSE
+    cat("❌", date_outside_session,
+        "record(s) where 'date' falls outside the session_start_date / session_end_date window\n\n")
+    bad_rows <- data[
+      !is.na(data$date) & (data$date < data$session_start_date | data$date > data$session_end_date),
+      intersect(c("farmer", "site", "subsite", "session_start_date", "session_end_date", "date"), names(data))
+    ]
+    kable(bad_rows, caption = "Records with capture date outside session window")
+  } else {
+    cat("✓ All capture dates fall within their session window\n\n")
+  }
+
+  ## 3. Year outlier check — catches typos like 2025 in a 2026 file
+  all_years    <- lubridate::year(c(data$session_start_date, data$session_end_date, data$date))
+  all_years    <- all_years[!is.na(all_years)]
+  if (length(all_years) > 0) {
+    dominant_year    <- as.integer(names(sort(table(all_years), decreasing = TRUE)[1]))
+    outlier_records  <- lubridate::year(data$date) != dominant_year & !is.na(data$date)
+    if (any(outlier_records)) {
+      validation_errors <- c(validation_errors,
+        list(paste0(sum(outlier_records), " record(s) with a year different from dominant year (", dominant_year, ")")))
+      validation_passed <- FALSE
+      cat("❌", sum(outlier_records),
+          "record(s) with a year different from the dominant year (", dominant_year, ")\n\n")
+      kable(data[outlier_records,
+                 intersect(c("farmer", "site", "subsite", "session_start_date", "session_end_date", "date"), names(data))],
+            caption = paste("Records with year ≠", dominant_year))
+    } else {
+      cat("✓ All date years are consistent with the dominant year (", dominant_year, ")\n\n")
+    }
+  }
+}
+```
+
+## Trap Counts
+
+```{r check-trap-counts}
+## 1. Non-negative counts
+count_cols <- c("number_traps_set", "number_phantoms", "number_functional_traps", "number_mice_caught")
+count_cols <- count_cols[count_cols %in% names(data)]
+
+negative_counts <- data %>%
+  select(all_of(count_cols)) %>%
+  summarise(across(everything(), ~ sum(.x < 0, na.rm = TRUE))) %>%
+  select(where(~ .x > 0))
+
+if (ncol(negative_counts) > 0) {
+  validation_errors <- c(validation_errors, list("Negative trap count values"))
+  validation_passed <- FALSE
+  cat("❌ **NEGATIVE VALUES IN TRAP COUNTS:**\n\n")
+  kable(negative_counts)
+} else {
+  cat("✓ All trap count values are ≥ 0\n\n")
+}
+
+## 2. functional traps = set − phantoms
+if (all(c("number_traps_set", "number_phantoms", "number_functional_traps") %in% names(data))) {
+  expected_functional <- data$number_traps_set - data$number_phantoms
+  mismatch <- sum(data$number_functional_traps != expected_functional, na.rm = TRUE)
+  if (mismatch > 0) {
+    validation_errors <- c(validation_errors,
+      list(paste(mismatch, "record(s) where number_functional_traps ≠ number_traps_set − number_phantoms")))
+    validation_passed <- FALSE
+    cat("❌", mismatch,
+        "record(s) where number_functional_traps does not equal number_traps_set − number_phantoms\n\n")
+    bad <- which(data$number_functional_traps != expected_functional)
+    kable(data[bad, c("farmer", "site", "subsite", "date",
+                      "number_traps_set", "number_phantoms", "number_functional_traps")],
+          caption = "Trap count inconsistencies")
+  } else {
+    cat("✓ number_functional_traps = number_traps_set − number_phantoms for all records\n\n")
+  }
+}
+
+## 3. mice caught cannot exceed functional traps
+if (all(c("number_mice_caught", "number_functional_traps") %in% names(data))) {
+  overcatch <- sum(data$number_mice_caught > data$number_functional_traps, na.rm = TRUE)
+  if (overcatch > 0) {
+    validation_errors <- c(validation_errors,
+      list(paste(overcatch, "record(s) where number_mice_caught > number_functional_traps")))
+    validation_passed <- FALSE
+    cat("❌", overcatch, "record(s) where number_mice_caught exceeds number_functional_traps\n\n")
+    bad <- which(data$number_mice_caught > data$number_functional_traps)
+    kable(data[bad, c("farmer", "site", "subsite", "date",
+                      "number_functional_traps", "number_mice_caught")],
+          caption = "Records where catches exceed functional trap count")
+  } else {
+    cat("✓ number_mice_caught ≤ number_functional_traps for all records\n\n")
+  }
+}
+```
+
+## Ground Cover & Biomass
+
+```{r check-ground-cover-biomass}
+if ("ground_cover_percent" %in% names(data)) {
+  invalid_gc <- sum(data$ground_cover_percent < 0 | data$ground_cover_percent > 100, na.rm = TRUE)
+  if (invalid_gc > 0) {
+    validation_errors <- c(validation_errors, list("Invalid ground cover percentages"))
+    validation_passed <- FALSE
+    cat("❌", invalid_gc, "ground_cover_percent value(s) outside 0–100 range\n\n")
+  } else {
+    cat("✓ Ground cover percentage values valid\n\n")
+  }
+}
+
+if ("biomass" %in% names(data)) {
+  valid_biomass   <- c("low", "medium", "high", NA)
+  invalid_biomass <- sum(!tolower(data$biomass) %in% valid_biomass, na.rm = TRUE)
+  if (invalid_biomass > 0) {
+    validation_errors <- c(validation_errors, list("Invalid biomass values"))
+    validation_passed <- FALSE
+    cat("❌", invalid_biomass, "biomass value(s) not in (low, medium, high)\n\n")
+    cat("Unique values found:", paste(unique(data$biomass), collapse = ", "), "\n\n")
+  } else {
+    cat("✓ Biomass values valid\n\n")
+  }
+}
+```
+
+## Data Types
+
+```{r check-types}
+type_mismatches <- data.frame(
+  column   = character(),
+  expected = character(),
+  actual   = character(),
+  stringsAsFactors = FALSE
+)
+
+for (col in names(expected_classes)) {
+  if (col %in% names(data)) {
+    actual_class <- class(data[[col]])[1]
+    exp_class    <- expected_classes[[col]]
+    all_na <- all(is.na(data[[col]]))
+    ok <- actual_class == exp_class ||
+          (exp_class == "numeric" && actual_class == "integer") ||
+          (exp_class == "numeric" && actual_class == "logical" && all_na)
+    if (!ok) {
+      type_mismatches <- rbind(type_mismatches, data.frame(
+        column   = col,
+        expected = exp_class,
+        actual   = actual_class,
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+}
+
+if (nrow(type_mismatches) > 0) {
+  validation_errors <- c(validation_errors, list("Column(s) have incorrect data type"))
+  validation_passed <- FALSE
+  cat("❌ Column type mismatches found:\n\n")
+  kable(type_mismatches, col.names = c("Column", "Expected class", "Actual class"))
+} else {
+  cat("✓ All columns have the correct data type\n\n")
+}
+```
+
+---
+
+```{r halt-if-errors}
+if (!validation_passed) {
+  cat("\n\n# ⚠️ VALIDATION FAILED\n\n")
+  cat("**The following errors were found:**\n\n")
+  for (i in seq_along(validation_errors)) {
+    cat(i, ". ", validation_errors[[i]], "\n", sep = "")
+  }
+  cat("\n\n**Please correct these issues before proceeding.**\n\n")
+  knitr::knit_exit()
+}
+```
+
+::: {.callout-note appearance="simple"}
+## Validation Status
+✅ **All validation checks passed!** Proceeding with summary.
+:::
+
+---
+
+# Data Summary
+
+```{r summary-survey}
+cat("## Survey Details\n\n")
+cat("- **Data source(s):** ", paste(unique(data$data_source), collapse = ", "), "\n")
+cat("- **Region(s):** ",      paste(unique(data$region),      collapse = ", "), "\n")
+cat("- **Farmer(s):** ",      paste(unique(data$farmer),      collapse = ", "), "\n")
+```
+
+```{r summary-sites}
+cat("\n## Site Information\n\n")
+cat("- **Total records:** ",    nrow(data), "\n")
+cat("- **Unique sites:** ",     length(unique(paste(data$farmer, data$site))),          "\n")
+cat("- **Unique subsites:** ",  length(unique(paste(data$farmer, data$site, data$subsite))), "\n")
+```
+
+```{r summary-session}
+cat("\n## Session\n\n")
+if (all(c("session_start_date", "session_end_date") %in% names(data))) {
+  cat("- **Session start:** ", format(min(data$session_start_date, na.rm = TRUE)), "\n")
+  cat("- **Session end:** ",   format(max(data$session_end_date,   na.rm = TRUE)), "\n")
+  session_length <- as.numeric(max(data$session_end_date, na.rm = TRUE) -
+                                  min(data$session_start_date, na.rm = TRUE)) + 1
+  cat("- **Session length (days):** ", session_length, "\n")
+}
+if ("survey_night" %in% names(data)) {
+  cat("- **Survey nights:** ", paste(sort(unique(data$survey_night)), collapse = ", "), "\n")
+}
+if ("trap_type" %in% names(data)) {
+  cat("- **Trap type(s):** ", paste(unique(data$trap_type), collapse = ", "), "\n")
+}
+```
+
+```{r summary-captures}
+cat("\n## Captures\n\n")
+
+# number_functional_traps is a session-level value repeated across all individual
+# rows for the same subsite x date x survey_night x trap_type. Deduplicate before
+# summing to avoid inflating the trap-night count.
+if ("number_functional_traps" %in% names(data)) {
+  total_trap_nights <- data |>
+    dplyr::distinct(farmer, site, subsite, date, survey_night, trap_type, number_functional_traps) |>
+    dplyr::summarise(total = sum(number_functional_traps, na.rm = TRUE)) |>
+    dplyr::pull(total)
+  cat("- **Total functional trap-nights:** ", total_trap_nights, "\n")
+}
+
+# Total captures: individual rows that represent a real animal (class is not NA
+# and not "phantom" — phantom rows record traps that were sprung with no animal).
+if ("class" %in% names(data)) {
+  total_captures <- data |>
+    dplyr::filter(!is.na(class), tolower(trimws(class)) != "phantom") |>
+    nrow()
+  cat("- **Total captures (all animals including recaptures):** ", total_captures, "\n")
+
+  # Unique individuals: first captures only, excluding recaptures and phantoms.
+  unique_individuals <- data |>
+    dplyr::filter(tolower(trimws(class)) == "first_capture") |>
+    nrow()
+  cat("- **Unique individuals (first captures only):** ", unique_individuals, "\n")
+
+  if (exists("total_trap_nights") && total_trap_nights > 0) {
+    trap_success <- round(total_captures / total_trap_nights * 100, 2)
+    cat("- **Overall trap success — % trap-nights catching an animal:** ", trap_success, "\n")
+  }
+}
+```
+
+```{r summary-crop}
+cat("\n## Crop Information\n\n")
+if ("crop_type"  %in% names(data)) cat("- **Crop type(s):**  ", paste(unique(data$crop_type),  collapse = ", "), "\n")
+if ("crop_stage" %in% names(data)) cat("- **Crop stage(s):** ", paste(unique(data$crop_stage), collapse = ", "), "\n")
+```

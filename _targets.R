@@ -1,8 +1,6 @@
 # TO-DO ------------------------------------------------------------------
-
-#Update RA checks so it aligns to region, site, subset
-#Update seasonal summaries so it reruns when data changes
-#Update mouse updates so it reruns when data changes
+# Update mouse updates so it reruns when data changes
+# combine nsw dpird and monitoring trap data process in the pipeline
 
 # SET-UP ------------------------------------------------------------------
 
@@ -149,15 +147,15 @@ tar_plan(
   ## NSW DPIRD data (continues ecology trapping post-project at Rosedale crop and pasture sites): read and clean
   # track the file for changes
   tar_file(data_dpird_file, "raw_data/survey_data/nsw_dpird_trap_data/dpird_coonamble_rosedale_trapping_data.csv"),          # Track the database file
-  
+
   # clean (reformat, rename, filter some data we don't want to use)
-  data_dpird = read_csv(data_dpird_file) |> 
+  data_dpird = read_csv(data_dpird_file) |>
     # read in dates properly
     mutate(across(contains("date"), ~ dmy(.x))) |>
-    # to combine with ecology database 
+    # to combine with ecology database
     transform(pit_tag_id = as.character(pit_tag_id)),
-  
-  
+
+
   
   # Load mouse survey data: Monitoring --------------------------------------------------------------
   
@@ -182,7 +180,7 @@ tar_plan(
     # list all CSVs recursively but exclude site_information.csv, which has a
     # different schema (site metadata only, no date_in/date_out survey columns)
     all_csvs <- list.files("raw_data/survey_data/rapid_assessment_data_2026_onwards", pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
-    all_csvs[basename(all_csvs) != "site_information.csv"]
+    all_csvs[!basename(all_csvs) %in% c("site_information.csv", "site_information_current.csv")]
   }),
   
   # read each CSV file (one branch per file), parse d/m/Y dates to Date class
@@ -215,11 +213,33 @@ tar_plan(
     data_rapid_summarise() |>
     data_rapid_split_types(),
   
-  ## create a table for ethics reporting
-  tar_target(ethics_report, {
-    ethics_year <- 2025
-    data_monitoring_ethics_report(data_monitoring_traps, data_rapid, aus_shp, year = ethics_year, outpath = paste0("derived_data/ethics_reports/total_", ethics_year, ".csv"))
-  }, format = "file"),
+  
+  
+  ## New monitoring trapping data 2026 onwards (one CSV per survey session, same columns as DPIRD minus 'session')
+  # track CSV files in directory (one branch per file, re-runs when files change or new files added)
+  tar_files(data_trapping_new_files,
+            list.files("raw_data/survey_data/trapping_data_2026_onwards",
+                       pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)),
+  
+  # read each CSV file (one branch per file), parse d/m/Y date columns to Date class
+  tar_target(data_trapping_new_csvs,
+             readr::read_csv(data_trapping_new_files, show_col_types = FALSE) |>
+               dplyr::mutate(
+                 across(c(session_start_date, session_end_date, date), ~ lubridate::dmy(.x)),
+                 pit_tag_id = as.character(pit_tag_id),
+                 source_file = data_trapping_new_files
+               ),
+             pattern = map(data_trapping_new_files)),
+  
+  # combine all CSV branches into one data frame
+  data_trapping_new = dplyr::bind_rows(data_trapping_new_csvs),
+  
+  # render a verification HTML report alongside each CSV (re-runs when the CSV changes)
+  tar_target(trapping_reports,
+             verify_and_render_trapping(data_trapping_new_files, data_site_information),
+             pattern = map(data_trapping_new_files),
+             format  = "file"),
+  
   
   
   
@@ -228,6 +248,7 @@ tar_plan(
   ## Combine trap data
   data_traps = bind_rows(data_monitoring_traps, data_ecology) |>
     bind_rows(data_dpird) |>
+    bind_rows(data_trapping_new) |>
     # rearrange by date, site
     dplyr::arrange(region, site, subsite, date) |>
     # calculate minimum number mice alive in each session
@@ -302,6 +323,12 @@ tar_plan(
   # save a copy of each dataframe with associated metadata, explaining each column
   tar_target(data_metadata, data_write_to_file_create_metadata(data, output_dir = "derived_data/cleaned_raw_dataset"), format = "file"),
 
+  ## create a table for ethics reporting
+  tar_target(ethics_report, {
+    ethics_year <- 2025
+    data_monitoring_ethics_report(data_monitoring_traps, data_rapid, aus_shp, year = ethics_year, outpath = paste0("derived_data/ethics_reports/total_", ethics_year, ".csv"))
+  }, format = "file"),
+  
   
   ## Quarto reports
   
@@ -310,10 +337,18 @@ tar_plan(
   seasonal_summary_seasons = get_seasonal_summary_seasons(data),
   # integer index per season — branched in parallel with seasons to build numbered filenames
   seasonal_summary_indices = seq_along(seasonal_summary_seasons),
-  # render one HTML report per season; re-renders whenever data or aus_shp change
+  # per-season data slice (one branch per season): each report branch hashes only
+  # its own rows so adding data for season X does not invalidate seasons Y and Z
+  tar_target(seasonal_summary_data,
+             get_seasonal_summary_season_data(data, seasonal_summary_seasons),
+             pattern = map(seasonal_summary_seasons)),
+  # global colour-scale bounds computed once from all seasons; kept separate so
+  # reports only re-render when these summary values change, not on every data update
+  seasonal_summary_global_stats = get_seasonal_summary_global_stats(data),
+  # render one HTML report per season
   tar_target(seasonal_summary_reports,
-             render_seasonal_summary(seasonal_summary_seasons, seasonal_summary_indices, data, aus_shp),
-             pattern = map(seasonal_summary_seasons, seasonal_summary_indices),
+             render_seasonal_summary(seasonal_summary_seasons, seasonal_summary_indices, seasonal_summary_data, seasonal_summary_global_stats, aus_shp),
+             pattern = map(seasonal_summary_seasons, seasonal_summary_indices, seasonal_summary_data),
              format  = "file"),
 
 

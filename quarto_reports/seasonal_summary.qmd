@@ -6,8 +6,9 @@ params:
   season: "Summer-2025"
   # RDS paths injected by render_seasonal_summary(); NULL triggers tar_load() fallback
   # for standalone interactive use (e.g. opening the QMD directly in RStudio)
-  data_path:    NULL
-  aus_shp_path: NULL
+  data_season_path:  NULL
+  global_stats_path: NULL
+  aus_shp_path:      NULL
 format:
   html:
     self-contained: true
@@ -47,17 +48,17 @@ library(patchwork)
 library(scales)
 
 ## load data: prefer RDS paths injected by render_seasonal_summary() (pipeline mode);
-## fall back to tar_load() when rendering standalone (e.g. from RStudio)
-if (!is.null(params$data_path) && file.exists(params$data_path)) {
-  data    <- readRDS(params$data_path)
-  aus_shp <- readRDS(params$aus_shp_path)
+## fall back to tar_load() + inline filtering when rendering standalone (e.g. from RStudio)
+if (!is.null(params$data_season_path) && file.exists(params$data_season_path)) {
+  data_season  <- readRDS(params$data_season_path)
+  global_stats <- readRDS(params$global_stats_path)
+  aus_shp      <- readRDS(params$aus_shp_path)
 } else {
   store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
-  targets::tar_load(c(data, aus_shp), store = store_path)
+  targets::tar_load(c(data, aus_shp, seasonal_summary_global_stats), store = store_path)
+  data_season  <- purrr::map(data, dplyr::filter, season_year_adj == params$season)
+  global_stats <- seasonal_summary_global_stats
 }
-
-## filter data to the target season
-data_season <- purrr::map(data, dplyr::filter, season_year_adj == params$season)
 
 ## make dataframes spatial (only when rows exist)
 data_season_sf <- purrr::map(
@@ -145,17 +146,10 @@ set_flextable_defaults(
   padding = 6,
   background.color = "#EFEFEF")
 
-## compute global colour scale domains from the full dataset so colours are
-## comparable across all seasonal reports (not rescaled to each season's range)
-
-# Table 1: max individuals caught per session across all seasons
-global_max_individuals <- max(data$traps$number_unique_individuals_session, na.rm = TRUE)
-
-# Table 1: max nightly trap success (%) across all seasons
-global_max_trap_success <- data$traps |>
-  dplyr::mutate(ts = pmin(1, pmax(0, number_mice_caught / number_functional_traps)) * 100) |>
-  dplyr::pull(ts) |>
-  max(na.rm = TRUE)
+## unpack pre-computed global colour scale bounds (computed once by the pipeline
+## from all seasons so colours are comparable across all seasonal reports)
+global_max_individuals  <- global_stats$max_individuals
+global_max_trap_success <- global_stats$max_trap_success
 
 # Table 2: burrow / chewcard proportions are bounded [0, 1] by definition
 global_burrow_domain   <- c(0, 1)
