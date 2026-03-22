@@ -65,10 +65,10 @@ theme_update(
   legend.position = "bottom"
 )
 
-## Shared colour palette for Low / Medium / High / No data
+## Shared colour palette for Low / Moderate / High / No data
 cat_colours <- c(
   "Low"     = "#91cf60",  # green
-  "Medium"  = "#ffeda0",  # yellow
+  "Moderate"  = "#ffeda0",  # yellow
   "High"    = "#f03b20",  # red
   "No data" = "grey80"
 )
@@ -197,12 +197,12 @@ hist_region <- aggregate_detection("region")
 #| label: combined_score
 #| include: false
 
-## ── Categorise proportion detected into Low / Medium / High ──────────────────
+## ── Categorise proportion detected into Low / Moderate / High ──────────────────
 ##
 ## prop_detected (0–1) is the share of surveyed sites that detected mice via
 ## any method.  Absolute thirds are used as thresholds:
 ##   Low    < 1/3 of sites detected
-##   Medium  1/3 – 2/3 of sites detected
+##   Moderate  1/3 – 2/3 of sites detected
 ##   High   > 2/3 of sites detected
 
 categorise_prop <- function(df) {
@@ -212,10 +212,10 @@ categorise_prop <- function(df) {
         case_when(
           is.na(prop_detected)      ~ "No data",
           prop_detected < 1 / 3     ~ "Low",
-          prop_detected < 2 / 3     ~ "Medium",
+          prop_detected < 2 / 3     ~ "Moderate",
           TRUE                      ~ "High"
         ),
-        levels = c("Low", "Medium", "High", "No data")
+        levels = c("Low", "Moderate", "High", "No data")
       )
     )
 }
@@ -305,7 +305,7 @@ display_aez <- best_season_data(hist_aez, "ae_zone", latest_season, prev_season,
 display_region <- best_season_data(hist_region, "region", latest_season, prev_season, prev_prev_season) |>
   dplyr::semi_join(recent_regions, by = "region")
 
-## Add cat_display: a plain Low / Medium / High / No data factor used by the
+## Add cat_display: a plain Low / Moderate / High / No data factor used by the
 ## fill scale.  Previous-season polygons are shown with the same colours as
 ## current-season polygons, so no season suffix is needed in the label.
 add_cat_display <- function(df) {
@@ -313,7 +313,7 @@ add_cat_display <- function(df) {
     dplyr::mutate(
       cat_display = factor(
         as.character(cat_combined),
-        levels = c("Low", "Medium", "High", "No data")
+        levels = c("Low", "Moderate", "High", "No data")
       )
     )
 }
@@ -383,7 +383,7 @@ region_map <- region_buffers |>
 ## Enforce the full four-level factor on both map objects so that
 ## scale_fill_manual(drop = FALSE) keeps all legend keys even when some
 ## categories are absent from the current map.
-cat_display_levels <- c("Low", "Medium", "High", "No data")
+cat_display_levels <- c("Low", "Moderate", "High", "No data")
 aez_map    <- aez_map    |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
 region_map <- region_map |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
 
@@ -415,13 +415,13 @@ list_names <- function(x, fmt = stringr::str_to_title) {
 
 ## Region-level activity categories
 reg_high   <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "High"]
-reg_med    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Medium"]
+reg_med    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Moderate"]
 reg_low    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Low"]
 reg_nodata <- display_region$region[display_region$cat_combined == "No data"]
 
 ## AE zone-level activity categories (used in the AE zone figure caption)
 aez_high <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "High"]
-aez_med  <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "Medium"]
+aez_med  <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "Moderate"]
 
 ## Regions / zones whose displayed data come from the previous season
 reg_prev_season <- display_region$region[!display_region$is_current]
@@ -466,14 +466,14 @@ make_key_results <- function(high_items, med_items, unit_label, fmt = stringr::s
 ## The legend-key explanation appears on its own line; a fallback note is
 ## appended when at least one polygon uses previous-season data.
 cap_aez <- paste0(
-  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zone with mice presence (Low = mice detected at 33% of sites or less; Medium = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zone with mice presence (Low = mice detected at 33% of sites or less; Moderate = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
   " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
-  "<br><br>",
+  " ",
   make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
 )
 cap_region <- paste0(
-  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = mice detected at 33% of sites or less; Medium = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
-  "<br><br>",
+  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = mice detected at 33% of sites or less; Moderate = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  " ",
   make_key_results(reg_high, reg_med, "region")
 )
 
@@ -534,13 +534,13 @@ build_map <- function(data_layer, show_towns = TRUE) {
 ## Colour palette for the four activity categories.
 ## Previous-season polygons are shown at full opacity (same colours as current
 ## season), so no faded variants are needed.
-base_cols <- c(Low = "#91cf60", Medium = "#ffeda0", High = "#f03b20")
+base_cols <- c(Low = "#91cf60", Moderate = "#ffeda0", High = "#f03b20")
 
-## Colour lookup: Low / Medium / High / No data
+## Colour lookup: Low / Moderate / High / No data
 activity_colours <- c(base_cols, "No data" = "grey80")
 
 ## Fill scale for AE zone / region maps.
-## cat_display has four levels (Low/Medium/High/No data); drop = FALSE keeps
+## cat_display has four levels (Low/Moderate/High/No data); drop = FALSE keeps
 ## all legend keys even when some categories are absent from the current map.
 ## has_nodata: pass TRUE only when "No data" polygons are present in the figure.
 make_activity_fill <- function(has_nodata = FALSE) {
@@ -633,7 +633,9 @@ plot_region_map <- function() {
 
 ```
 
-## Overview 
+## Overview
+
+::: {.overview-detail}
 
 ### In short
 + [Geraldton, Central Wheatbelt, Esperance (WA): **PREPARE TO ACT AT SOWING**]{style="color: red;"}
@@ -643,15 +645,16 @@ plot_region_map <- function() {
 
 ### In detail
 
-+ Western Australia: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be under way across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region. 
++ Western Australia: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be under way across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region.
 
-+ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data. 
++ Adelaide Plains: strong evidence of moderate-high and increasing population densities from recent survey data.
 There is some potential for an outbreak here depending on future conditions.
 
-+ Northern NSW and southern QLD: Generally low activity, although moderate activity seen across Goondiwindi and northern Darling Downs with recent rapid assessment monitoring. 
++ Northern NSW and southern QLD: Generally low activity, although moderate activity seen across Goondiwindi and northern Darling Downs with recent rapid assessment monitoring.
 
-+ Victoria, southern & central west NSW: mouse numbers likely remain low. 
++ Victoria, southern & central west NSW: mouse numbers likely remain low.
 
+:::
 
 ## Map
 
@@ -697,21 +700,28 @@ accordance with the label instructions and report any adverse effects (including
 ## About
 
 Mouse forecasts are enabled through a [GRDC and CSIRO investment](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). 
-
 Forecasts will be updated seasonally or as new data comes available. We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. 
 
+### Monitoring data 
 Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
 Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
 
 Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Rural Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
 
-We also receive reports from farmers and agronomists, both directly and through the National Mouse Group. This is key information we consider when providing advice given we cannot feasibly survey across the entire grain growing region. The National Mouse Group is a grower-led group comprising farmers, industry representatives, state government, GRDC and CSIRO.  The group meet three times a year to discuss the current mouse management, and also review these communications. 
+### Report mice activity 
+We also receive reports from farmers, agronomists and other community members. This is key information we consider given we cannot feasibly survey across the entire grain growing region. 
+
+You can quickly report sightings --- and importantly, lack of sightings --- of mice on your farm at [https://feralscan.org.au/mousealert](https://feralscan.org.au/mousealert). 
+
+We also receive reports from the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meet three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities. 
+
+
 
 
 
 ## Contact
 
-Seen mice? Want to get involved in the National Mouse Group? Contact Steve Henry [steve.henry@csiro.au](steve.henry@csiro.au)
+Seen mice? Want to be involved in the National Mouse Group? Contact Steve Henry [steve.henry@csiro.au](steve.henry@csiro.au)
 
 Questions about the project or forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](matt.rees@csiro.au)
 

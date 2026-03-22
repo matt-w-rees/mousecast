@@ -370,6 +370,19 @@ tar_plan(
   # so the report re-renders whenever the underlying data changes
   tar_quarto(mouse_update_report, path = "quarto_reports/mouse_update_raw_data.qmd", quiet = TRUE),
 
+  # Convert the rendered HTML mouse update report to PDF using Chrome headless.
+  # Chrome preserves all CSS styling and layout exactly as it appears in the
+  # browser — equivalent to wkhtmltopdf but using the system Chrome install.
+  # Listing mouse_update_report as a dependency ensures this target re-runs
+  # whenever the HTML report is re-rendered.
+  tar_target(mouse_update_report_pdf, {
+    mouse_update_report  # re-convert whenever the HTML report changes
+    mouse_update_pdf_from_html(
+      html_path = "quarto_reports/mouse_update_raw_data.html",
+      pdf_path  = "quarto_reports/mouse_update_raw_data.pdf"
+    )
+  }, format = "file"),
+
   # copy the rendered HTML to docs/index.html so GitHub Pages stays up to date;
   # explicitly references mouse_update_report so this target re-runs after each render
   tar_target(mouse_update_docs, {

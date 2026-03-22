@@ -20,3 +20,62 @@
   justify-content: space-between;
   align-items: center;
 }
+
+/* ── Print styles ────────────────────────────────────────────────────────────
+   Reduce font size and spacing so the Overview + Map fit on the first page.
+   The map figure height is capped so it does not push content onto page 2.   */
+@media print {
+  /* Reduce the top page margin */
+  @page { margin-top: 0.5cm; }
+
+  body {
+    font-size: 11px;
+  }
+
+  /* Tighten the title banner padding */
+  .quarto-title-block .quarto-title-banner {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+
+  /* Remove any top margin on the title block itself */
+  .quarto-title-block { margin-top: 0; padding-top: 0; }
+
+  /* Reduce heading sizes */
+  h2 { font-size: 14px; margin-top: 6px;  margin-bottom: 3px; }
+  h3 { font-size: 13px; margin-top: 5px;  margin-bottom: 2px; }
+
+  /* Reduce spacing above/below paragraphs and lists */
+  p, ul, ol { margin-top: 2px; margin-bottom: 4px; }
+  li        { margin-bottom: 1px; }
+
+  /* "In short" and "In detail" blocks — inherit 11px body size */
+  .overview-detail           { font-size: 11px; }
+  .overview-detail h3        { font-size: 11px; }
+  .overview-detail p,
+  .overview-detail ul,
+  .overview-detail li        { margin-bottom: 0px; }
+
+  /* Tighten gap between figure image/legend and caption text;
+     match caption font size to body text */
+  figcaption,
+  .figure-caption,
+  .quarto-figure figcaption  { margin-top: 0; padding-top: 0; font-size: 11px; }
+
+  /* Remove bottom margin on the image so it sits flush against the caption */
+  .quarto-figure img,
+  .cell-output-display img   { margin-bottom: 0; }
+
+  /* Page break after the figure so management recommendations start on page 2 */
+  .quarto-figure { page-break-after: always; }
+
+  /* Cap the map figure height so it fits on the first page */
+  .quarto-figure img,
+  .cell-output-display img {
+    max-height: 420px;
+    width: auto;
+  }
+
+  /* Hide tab navigation bar — only the active tab content prints */
+  .nav-tabs { display: none; }
+}
