@@ -36,7 +36,7 @@ raw_data/predictor_variables/
 raw_data/mouse_updates/
 raw_data/raw_data/survey_data/
 tmp/
-
+r_not_in_use/
 
 
 # R markdown cache
