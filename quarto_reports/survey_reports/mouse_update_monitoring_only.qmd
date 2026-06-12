@@ -1,0 +1,801 @@
+---
+title: "Mouse Forecast"
+subtitle: "Current season"
+description: "House mouse abundance across Australian grain-growing regions"
+title-block-banner: "#EBEBEB"
+title-block-banner-color: "black"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8
+    fig-asp: 0.8
+    link-external-newwindow: true
+css: mouse_update_raw_data.css
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: TRUE
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+## Load packages
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(sf)
+library(terra)
+library(stringr)
+library(ggrepel)
+
+## Load targets — handle both pipeline rendering (from project root) and
+## standalone rendering (from inside quarto_reports/)
+store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
+targets::tar_load(c(data_filtered, aez_adj, aus_shp), store = store_path)
+
+## Town / city labels for map orientation (used as landmarks)
+town_labels <- sf::st_as_sf(
+  read.csv(if (file.exists("raw_data/town_labels.csv")) "raw_data/town_labels.csv"
+           else "../../raw_data/town_labels.csv"),
+  coords = c("longitude", "latitude"), crs = "EPSG:4326", remove = FALSE
+)
+
+
+## Set default ggplot theme
+theme_update(
+  panel.grid      = element_blank(),
+  legend.position = "bottom"
+)
+
+## Shared colour palette for Low / Moderate / High / No data
+cat_colours <- c(
+  "Low"     = "#91cf60",  # green
+  "Moderate"  = "#ffeda0",  # yellow
+  "High"    = "#f03b20",  # red
+  "No data" = "grey80"
+)
+```
+
+```{r}
+#| label: attach_aez
+#| include: false
+
+## Attach ae_zone to each survey dataset via spatial extraction.
+## ae_zone is not present in data_filtered (added later in the pipeline via
+## data_add_aez), so we replicate that step here using the aez_adj shapefile.
+attach_aez <- function(df, aez) {
+  df_vect <- terra::vect(sf::st_as_sf(df, coords = c("longitude", "latitude"), crs = "epsg:4326"))
+  x       <- terra::extract(terra::vect(aez), df_vect)
+  # Sites that fall just outside the shapefile boundary default to NSW N Qld S
+  df$ae_zone <- as.factor(ifelse(is.na(x$ae_zone), "NSW N Qld S", x$ae_zone))
+  df
+}
+
+data_traps     <- data_filtered$traps     |> attach_aez(aez_adj)
+data_burrows   <- data_filtered$burrows   |> attach_aez(aez_adj)
+data_chewcards <- data_filtered$chewcards |> attach_aez(aez_adj)
+```
+
+```{r}
+#| label: seasons
+#| include: false
+
+## Identify the most recent and second-most-recent seasons with any survey data.
+## season_year_adj is an ordered factor — its levels give the chronological order.
+all_levels <- levels(data_traps$season_year_adj)
+
+seasons_with_data <- union(
+  union(
+    as.character(na.omit(data_traps$season_year_adj)),
+    as.character(na.omit(data_burrows$season_year_adj))
+  ),
+  as.character(na.omit(data_chewcards$season_year_adj))
+)
+
+seasons_ordered  <- all_levels[all_levels %in% seasons_with_data]
+latest_season    <- tail(seasons_ordered, 1)
+prev_season      <- if (length(seasons_ordered) >= 2) tail(seasons_ordered, 2)[1] else NA_character_
+prev_prev_season <- if (length(seasons_ordered) >= 3) tail(seasons_ordered, 3)[1] else NA_character_
+```
+
+```{r}
+#| label: set_subtitle
+#| results: asis
+#| include: true
+
+## Dynamically replace the "Current season" subtitle placeholder with the
+## current month and year at render time. Quarto renders the subtitle as a
+## <p class="subtitle"> element inside the title block; we update its text via
+## JavaScript at load time. This is the most reliable approach for dynamic
+## subtitles in self-contained HTML.
+cat(sprintf(
+  '<script>
+    document.addEventListener("DOMContentLoaded", function () {
+      var el = document.querySelector("#title-block-header p.subtitle");
+      if (!el) el = document.querySelector("p.subtitle");
+      if (el) el.textContent = "%s";
+    });
+  </script>',
+  format(Sys.Date(), "%B %Y")
+))
+```
+
+```{r}
+#| label: site_metrics
+#| include: false
+
+## ── Detection status per site × season ───────────────────────────────────────
+## For each method, a site is "detected" in a season if at least one visit
+## recorded evidence of mice.  The three method-level results are then combined:
+## a site is considered detected if ANY method found mice that season.
+
+detect_burrows <- data_burrows |>
+  filter(!is.na(burrow_transects_searched), burrow_transects_searched > 0) |>
+  group_by(ae_zone, region, site, subsite, season_year_adj) |>
+  summarise(detected = any(burrow_total_count > 0, na.rm = TRUE), .groups = "drop")
+
+detect_chewcards <- data_chewcards |>
+  filter(!is.na(chewcards_deployed), chewcards_deployed > 0) |>
+  group_by(ae_zone, region, site, subsite, season_year_adj) |>
+  summarise(detected = any(chewcards_chewed > 0, na.rm = TRUE), .groups = "drop")
+
+detect_traps <- data_traps |>
+  filter(!is.na(number_mice_caught), !is.na(number_functional_traps),
+         number_functional_traps > 0) |>
+  group_by(ae_zone, region, site, subsite, season_year_adj) |>
+  summarise(detected = any(number_mice_caught > 0, na.rm = TRUE), .groups = "drop")
+
+## Combine methods: detected = TRUE if any method found mice at that site-season
+site_detection <- bind_rows(detect_burrows, detect_chewcards, detect_traps) |>
+  group_by(ae_zone, region, site, subsite, season_year_adj) |>
+  summarise(detected = any(detected), .groups = "drop")
+```
+
+```{r}
+#| label: aggregate_spatial
+#| include: false
+
+## Aggregate site detection up to each spatial grouping level.
+## prop_detected = proportion of surveyed sites that detected mice this season.
+
+aggregate_detection <- function(group_cols) {
+  site_detection |>
+    group_by(across(all_of(c(group_cols, "season_year_adj")))) |>
+    summarise(
+      n_sites      = n_distinct(paste0(region, site, subsite)),
+      n_detected   = sum(detected, na.rm = TRUE),
+      prop_detected = n_detected / n_sites,
+      .groups = "drop"
+    )
+}
+
+hist_aez    <- aggregate_detection("ae_zone")
+# Group by region only (not ae_zone + region) so that regions whose sites
+# happen to straddle two AE zones are not split into duplicate rows.
+hist_region <- aggregate_detection("region")
+```
+
+```{r}
+#| label: combined_score
+#| include: false
+
+## ── Categorise proportion detected into Low / Moderate / High ──────────────────
+##
+## prop_detected (0–1) is the share of surveyed sites that detected mice via
+## any method.  Absolute thirds are used as thresholds:
+##   Low    < 1/3 of sites detected
+##   Moderate  1/3 – 2/3 of sites detected
+##   High   > 2/3 of sites detected
+
+categorise_prop <- function(df) {
+  df |>
+    mutate(
+      cat_combined = factor(
+        case_when(
+          is.na(prop_detected)      ~ "No data",
+          prop_detected < 1 / 3     ~ "Low",
+          prop_detected < 2 / 3     ~ "Moderate",
+          TRUE                      ~ "High"
+        ),
+        levels = c("Low", "Moderate", "High", "No data")
+      )
+    )
+}
+```
+
+```{r}
+#| label: best_available
+#| include: false
+
+## ── Best-available season summaries ──────────────────────────────────────────
+##
+## For each zone/region, use the current season if data exist; otherwise fall
+## back to the previous season.  An is_current flag (TRUE/FALSE) is carried
+## through so the maps can render fallback polygons at reduced opacity and the
+## text can flag that some results are from an earlier survey round.
+## Regions not surveyed in the past 12 months are excluded entirely.
+
+## Helper: map season-year string to an approximate midpoint date so we can
+## identify seasons that fall within the most recent 12 months.
+parse_season_date <- function(sy) {
+  parts  <- strsplit(as.character(sy), "-")
+  months <- c(Summer = 1L, Autumn = 4L, Winter = 7L, Spring = 10L)
+  dates  <- sapply(parts, function(p) {
+    as.Date(paste(p[2], months[p[1]], "15", sep = "-"))
+  })
+  as.Date(dates, origin = "1970-01-01")
+}
+
+## Seasons whose approximate midpoint falls within the past 12 months.
+cutoff_date    <- Sys.Date() - lubridate::years(1)
+recent_seasons <- seasons_ordered[parse_season_date(seasons_ordered) >= cutoff_date]
+
+## Regions surveyed at least once in the past 12 months (used to filter the map)
+recent_regions <- hist_region |>
+  filter(as.character(season_year_adj) %in% recent_seasons) |>
+  select(region) |>
+  distinct()
+
+## Helper: for each spatial unit in `hist`, return the best available
+## activity category — current season first, then up to two older seasons as
+## fallbacks for units that still have no data.
+## Adds two extra columns:
+##   is_current  – TRUE if data come from the latest season
+##   data_season – name of the season the data come from
+best_season_data <- function(hist, id_col, latest_s, prev_s, prev_prev_s = NA_character_) {
+  current <- hist |>
+    filter(as.character(season_year_adj) == latest_s) |>
+    select(all_of(id_col), prop_detected) |>
+    mutate(data_season = latest_s, is_current = TRUE)
+
+  ## Helper to build a fallback frame, or an empty frame if the season is NA
+  make_fallback <- function(s) {
+    if (is.na(s)) return(current[0, ])
+    hist |>
+      filter(as.character(season_year_adj) == s) |>
+      select(all_of(id_col), prop_detected) |>
+      mutate(data_season = s, is_current = FALSE)
+  }
+
+  fallback      <- make_fallback(prev_s)
+  fallback2     <- make_fallback(prev_prev_s)
+
+  ## All units ever surveyed
+  all_units <- hist |> select(all_of(id_col)) |> distinct()
+
+  all_units |>
+    left_join(current,  by = id_col) |>
+    ## Suffix each fallback to avoid column name clashes during coalesce
+    left_join(fallback  |> rename_with(~paste0(.x, "_fb"),  -all_of(id_col)), by = id_col) |>
+    left_join(fallback2 |> rename_with(~paste0(.x, "_fb2"), -all_of(id_col)), by = id_col) |>
+    mutate(
+      prop_detected = dplyr::coalesce(prop_detected, prop_detected_fb, prop_detected_fb2),
+      data_season   = dplyr::coalesce(data_season,   data_season_fb,   data_season_fb2),
+      is_current    = dplyr::coalesce(is_current,    is_current_fb,    is_current_fb2),
+      ## Units with no data in any season: treat as current (full opacity grey)
+      is_current    = dplyr::coalesce(is_current,  TRUE),
+      data_season   = dplyr::coalesce(data_season, latest_s)
+    ) |>
+    select(all_of(id_col), prop_detected, data_season, is_current) |>
+    categorise_prop()
+}
+
+## AE zone — best available data; all ever-surveyed zones retained
+display_aez <- best_season_data(hist_aez, "ae_zone", latest_season, prev_season, prev_prev_season)
+
+## Region — best available data; restricted to recently-surveyed regions
+display_region <- best_season_data(hist_region, "region", latest_season, prev_season, prev_prev_season) |>
+  dplyr::semi_join(recent_regions, by = "region")
+
+## Add cat_display: a plain Low / Moderate / High / No data factor used by the
+## fill scale.  Previous-season polygons are shown with the same colours as
+## current-season polygons, so no season suffix is needed in the label.
+add_cat_display <- function(df) {
+  df |>
+    dplyr::mutate(
+      cat_display = factor(
+        as.character(cat_combined),
+        levels = c("Low", "Moderate", "High", "No data")
+      )
+    )
+}
+
+display_aez    <- display_aez    |> add_cat_display()
+display_region <- display_region |> add_cat_display()
+```
+
+```{r}
+#| label: spatial_objects
+#| include: false
+
+## ── Prepare spatial objects for each aggregation level ────────────────────────
+
+## AE zone: join display data (including is_current / data_season) to the
+## aez_adj polygon.  Filter to zones that have been surveyed at least once.
+aez_surveyed <- unique(hist_aez$ae_zone)
+aez_map <- aez_adj |>
+  filter(ae_zone %in% aez_surveyed) |>
+  left_join(display_aez, by = "ae_zone") |>
+  ## Zones with no match get full-opacity grey "No data" treatment
+  mutate(is_current = coalesce(is_current, TRUE))
+
+## Region: build exactly one polygon per region.
+## Strategy: combine all site points for a region, take the convex hull
+## (a single polygon regardless of how many clusters exist), then buffer it.
+## This guarantees one POLYGON per region — buffering individual points and
+## unioning them can produce a MULTIPOLYGON when site clusters are far apart.
+## Buffer distance (metres) adds a margin around the outermost sites.
+buf_m <- 40000  # 40 km buffer radius
+
+all_site_pts <- bind_rows(
+  data_burrows   |> select(ae_zone, region, longitude, latitude),
+  data_chewcards |> select(ae_zone, region, longitude, latitude),
+  data_traps     |> select(ae_zone, region, longitude, latitude)
+) |>
+  distinct(ae_zone, region, longitude, latitude) |>
+  filter(!is.na(longitude), !is.na(latitude)) |>
+  sf::st_as_sf(coords = c("longitude", "latitude"), crs = "EPSG:4326") |>
+  # Project to GDA94 Australian Albers (metres) for accurate buffering
+  sf::st_transform(crs = "EPSG:3577")
+
+## Group by region only (not ae_zone + region) so regions whose sites span
+## two AE zones produce a single polygon rather than one per zone.
+region_buffers <- all_site_pts |>
+  group_by(region) |>
+  summarise(
+    # st_combine → single geometry; st_convex_hull → one polygon; st_buffer → margin
+    geometry = sf::st_buffer(
+      sf::st_convex_hull(sf::st_combine(geometry)),
+      dist = buf_m
+    ),
+    .groups = "drop"
+  ) |>
+  sf::st_transform(crs = "EPSG:4326")
+
+## Join activity scores; use inner_join so that only recently-surveyed regions
+## (those in display_region) are retained — regions inactive for > 12 months are
+## dropped from the map entirely.  Also compute centroid coords for region labels.
+region_map <- region_buffers |>
+  dplyr::inner_join(display_region, by = "region") |>
+  dplyr::mutate(
+    lon = sf::st_coordinates(sf::st_centroid(geometry))[, 1],
+    lat = sf::st_coordinates(sf::st_centroid(geometry))[, 2]
+  )
+
+## Enforce the full four-level factor on both map objects so that
+## scale_fill_manual(drop = FALSE) keeps all legend keys even when some
+## categories are absent from the current map.
+cat_display_levels <- c("Low", "Moderate", "High", "No data")
+aez_map    <- aez_map    |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
+region_map <- region_map |> dplyr::mutate(cat_display = factor(cat_display, levels = cat_display_levels))
+
+```
+
+```{r}
+#| label: summary_text_prep
+#| include: false
+
+## Pre-compute values used in the inline "In short" text.
+## Summaries are expressed at the region level (not AE zone level).
+
+## Formatter for AE zone names: apply title case then uppercase the leading
+## state abbreviation (e.g. "sa central" → "SA Central", "nsw n qld s" → "NSW N Qld S").
+## Uses a Perl back-reference \\U to uppercase the first captured word.
+fmt_aez <- function(x) {
+  x <- stringr::str_to_title(as.character(x))
+  gsub("^([A-Z][a-z]+)(?=\\s|$)", "\\U\\1", x, perl = TRUE)
+}
+
+## Helper: format a character vector as natural-language prose.
+## fmt is applied to each element before joining (default: title case).
+list_names <- function(x, fmt = stringr::str_to_title) {
+  x <- fmt(as.character(x))
+  if (length(x) == 0) return(NULL)
+  if (length(x) == 1) return(x)
+  paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+}
+
+## Region-level activity categories
+reg_high   <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "High"]
+reg_med    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Moderate"]
+reg_low    <- display_region$region[!is.na(display_region$cat_combined) & display_region$cat_combined == "Low"]
+reg_nodata <- display_region$region[display_region$cat_combined == "No data"]
+
+## AE zone-level activity categories (used in the AE zone figure caption)
+aez_high <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "High"]
+aez_med  <- display_aez$ae_zone[!is.na(display_aez$cat_combined) & display_aez$cat_combined == "Moderate"]
+
+## Regions / zones whose displayed data come from the previous season
+reg_prev_season <- display_region$region[!display_region$is_current]
+aez_prev_season <- display_aez$ae_zone[!display_aez$is_current]
+
+n_reg_total <- nrow(display_region)
+n_reg_high  <- length(reg_high)
+n_reg_data  <- sum(display_region$cat_combined != "No data")
+
+## Build two key-results sentences (high then medium) for use in figure captions.
+## unit_label is the singular noun used when no items are present (e.g. "zone").
+## fmt is passed through to list_names for name formatting (use fmt_aez for zones).
+make_key_results <- function(high_items, med_items, unit_label, fmt = stringr::str_to_title) {
+  high_sent <- if (length(high_items) == 0) {
+    paste0("No ", unit_label, "s currently show high mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **high** in ", list_names(high_items, fmt), ".")
+  }
+  med_sent <- if (length(med_items) == 0) {
+    paste0("No ", unit_label, "s currently show moderate mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **moderate** in ", list_names(med_items, fmt), ".")
+  }
+  paste(high_sent, med_sent)
+}
+
+## Build a suffix note for figure captions when any fallback data are shown.
+## The note names the previous season so readers know how old the data are.
+## Polygons are shown at full opacity regardless of season.
+#make_prev_note <- function(prev_items, prev_s) {
+#  if (length(prev_items) == 0 || is.na(prev_s)) return("")
+#  paste0(
+#    "<br>Some polygons show data from the previous season (",
+#    prev_s,
+#    ") where current-season surveys are not yet available",
+#    " \u2014 *interpret with caution as mouse populations can change",
+#    " substantially between seasons*."
+#  )
+#}
+
+## Pre-compute figure captions.
+## The legend-key explanation appears on its own line; a fallback note is
+## appended when at least one polygon uses previous-season data.
+cap_aez <- paste0(
+  "Results of recent mouse monitoring: proportion of sites within each GRDC agro-ecological zone with mice presence (Low = mice detected at 33% of sites or less; Moderate = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
+  " ",
+  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
+)
+cap_region <- paste0(
+  "Results of recent mouse monitoring: proportion of sites within each monitoring region with mice presence (Low = mice detected at 33% of sites or less; Moderate = mice detected between 33 \u2013 67% of sites, High = mice detected at more than 67% of sites).",
+  " ",
+  make_key_results(reg_high, reg_med, "region")
+)
+
+```
+
+```{r}
+#| label: plot_helpers
+#| include: false
+
+## ── Map helper functions ───────────────────────────────────────────────────────
+
+## Derive map extent automatically from the surveyed AE zone polygons.
+## A small buffer (degrees) is added so polygons aren't clipped at the edges.
+map_bbox <- sf::st_bbox(aez_adj |> dplyr::filter(ae_zone %in% aez_surveyed))
+map_buf  <- 1.5   # degrees of padding around the data extent
+map_xlim <- c(map_bbox["xmin"] - map_buf, map_bbox["xmax"] + map_buf)
+map_ylim <- c(map_bbox["ymin"] - map_buf, map_bbox["ymax"] + map_buf)
+
+## Crop town labels to those that fall inside the padded map extent, so we
+## only label cities that are visible (avoids clutter outside the grain belt).
+town_labels_crop <- dplyr::filter(
+  town_labels,
+  longitude >= map_xlim[1], longitude <= map_xlim[2],
+  latitude  >= map_ylim[1], latitude  <= map_ylim[2]
+)
+
+## Build the shared map frame: Australian outline + optional town labels +
+## auto-cropped extent.  data_layer is a list of ggplot2 geom / scale objects
+## sandwiched between the background and any labels.
+## show_towns = TRUE  → add town / city landmark labels (used for AE zone map)
+## show_towns = FALSE → suppress town labels (used for region map, which has its
+##                      own region-name labels and doesn't need the extra clutter)
+build_map <- function(data_layer, show_towns = TRUE) {
+  p <- ggplot() +
+    geom_sf(data = aus_shp, fill = "white", colour = "grey60", linewidth = 0.3) +
+    labs(y = "", x = "") +
+    data_layer
+
+  if (show_towns) {
+    p <- p +
+      geom_sf(data = town_labels_crop, size = 0.75) +
+      ggrepel::geom_text_repel(
+        data               = town_labels_crop,
+        aes(longitude, latitude, label = name),
+        size               = 2.5,
+        max.overlaps       = 20,
+        box.padding        = 0.4,
+        min.segment.length = 0   # always draw a line from dot to label
+      )
+  }
+
+  p +
+    coord_sf(xlim = map_xlim, ylim = map_ylim, expand = FALSE) +
+    theme(legend.box.margin = margin(b = -8))
+}
+
+## Colour palette for the four activity categories.
+## Previous-season polygons are shown at full opacity (same colours as current
+## season), so no faded variants are needed.
+base_cols <- c(Low = "#91cf60", Moderate = "#ffeda0", High = "#f03b20")
+
+## Colour lookup: Low / Moderate / High / No data
+activity_colours <- c(base_cols, "No data" = "grey80")
+
+## Fill scale for AE zone / region maps.
+## cat_display has four levels (Low/Moderate/High/No data); drop = FALSE keeps
+## all legend keys even when some categories are absent from the current map.
+## has_nodata: pass TRUE only when "No data" polygons are present in the figure.
+make_activity_fill <- function(has_nodata = FALSE) {
+  shown_levels <- if (has_nodata) cat_display_levels
+                  else            setdiff(cat_display_levels, "No data")
+  scale_fill_manual(
+    values   = activity_colours[shown_levels],
+    limits   = shown_levels,
+    drop     = FALSE,
+    na.value = "grey80",
+    name     = "Expected mouse abundance",
+    guide    = guide_legend(title.position = "top", nrow = 1L, byrow = TRUE, order = 1)
+  )
+}
+
+## AE zone map: filled polygons; all legend entries appear because cat_display
+## is a complete factor (set in spatial_objects) and drop = FALSE is used.
+plot_aez_map <- function() {
+  build_map(list(
+    geom_sf(data = aez_map, aes(fill = cat_display),
+            colour = "grey50", linewidth = 0.25),
+    make_activity_fill(has_nodata = "No data" %in% aez_map$cat_display)
+  ))
+}
+
+## Region map: as above but with region-name labels and town labels suppressed.
+plot_region_map <- function() {
+  build_map(list(
+    geom_sf(data = region_map, aes(fill = cat_display),
+            colour = "grey50", linewidth = 0.2),
+    make_activity_fill(has_nodata = "No data" %in% region_map$cat_display),
+    ## Region labels drawn last so they sit above all polygon layers
+    ggrepel::geom_text_repel(
+      data               = region_map,
+      aes(x = lon, y = lat, label = stringr::str_to_title(region)),
+      size               = 2.5,
+      max.overlaps       = 30,
+      box.padding        = 0.8,
+      point.padding      = 0.5,
+      min.segment.length = 0.2,
+      force              = 2
+    )
+  ), show_towns = FALSE)
+}
+
+
+```
+
+## Overview
+
+::: {.overview-detail}
+
+### In short
++ [Geraldton, Central Wheatbelt, Esperance (WA): **PREPARE TO ACT AT SOWING**]{style="color: red;"}
++ Adelaide Plains & Yorke Peninsula (SA): **WATCH AND ACT AT SOWING**
++ [Southern QLD: **WATCH**]{style="color: grey;"}
+
+
+### In detail
+
++ [Western Australia]{.underline}: we are receiving concerning reports of very high mouse numbers, suggesting outbreaks could be under way across the (1) Mid West coast around Geraldton, (2) Central Wheatbelt around Merredin, and (3) Esperance region on the south coast (shown by red hatching in the map below). Recent rapid assessment monitoring suggests this likely also extends to the Kwinana West region.
+
++ [Adelaide Plains and & Yorke Peninsula (SA)]{.underline}: strong evidence of moderate-high and increasing population densities from recent survey data.
+There is some potential for an outbreak here depending on future conditions.
+
++ [Northern NSW and southern QLD]{.underline}: Generally low activity, although moderate activity seen across Goondiwindi and northern Darling Downs with recent rapid assessment monitoring.
+
++ [Victoria, southern & central west NSW]{.underline}: mouse numbers likely remain low.
+
+:::
+
+## Map
+
+::: {.panel-tabset}
+
+#### Agro-ecological zone
+
+```{r}
+#| label: fig_aez
+#| fig-cap: !expr cap_aez
+
+plot_aez_map()
+```
+
+#### Survey regions
+
+```{r}
+#| label: fig_region
+#| fig-cap: !expr cap_region
+
+plot_region_map()
+```
+
+:::
+
+
+
+
+
+## Management recomendations
+
+1. Monitor mouse activity by walking through paddocks and [searching for active burrows (chew cards could also be used)](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/know-your-mouse-numbers). Two or three active burrows per 100 square metres are cause for concern prior to sowing. 
+
+2. Where you have identified high mouse activity, [consider applying mouse bait](https://grdc.com.au/resources-and-publications/resources/mouse-management/monitor-manage/mouse-baiting) at seeding to prevent damage to the
+freshly sown crop. Monitor mouse activity following baiting after application to assess effectiveness of the application. ZnP25 is the only currently registered bait available; use in accordance with the label instructions and report any adverse effects (including a lack of efficacy) via the [APVMA website](https://www.apvma.gov.au/regulation/adverse-experience-reporting-program). 
+
+3. Reduce available mouse food (e.g., spilt grain) where possible. High rates of background food directly reduces the effectiveness of poison baiting  (as mice are less likely to consume the baits). 
+
+
+
+## About
+
+Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data comes available. 
+
+We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meet three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities. 
+
+### Monitoring data 
+Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
+Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
+
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+
+We also receive reports from farmers, agronomists and other community members directly. This is key information we consider given we cannot feasibly survey across the entire grain growing region. 
+
+
+
+
+## Report mouse activity
+
+You can quickly report sightings --- and importantly, lack of sightings --- of mice using our survey form linked below.
+
+We are seeking observations of mice within paddocks (not houses or sheds) from the general public to supplement our scientific survey data. This information will potentially improve our understanding and forecasts of mouse populations. 
+
+You will be asked to categorise the level of mouse activity you’ve observed, date and location of the observation, how you observed mice and whether mice were recently baited or not (if known). 
+
+Participation is voluntary. We do not think there are any risks involved with taking part in this survey. You may not benefit directly from taking part, but you will be making an important contribution our understanding about mouse populations. Your answers are anonymous and treated as confidential – they will not be publicly released. We will store this data on our secure servers alongside our scientific monitoring data. This survey has been approved by CSIRO’s Social Science Human Research Ethics Committee in accordance with the [National Statement on Ethical Conduct in Human Research (2023)](https://www.csiro.au/en/about/policies/ethical-human-research). If you have questions you can contact the project leader [matt.rees@csiro.au](mailto:matt.rees@csiro.au) or Executive Manager of Social Responsibility and Ethics on +61 7 3833 5693 or [csshrec@csiro.au](mailto:csshrec@csiro.au).
+
+If you consent to take part, [access the form to report mouse observations here](https://mouse-forecast.getodk.cloud/f/pSxhfvMR8ElSL70KM52oSPSdeAgbs7x?st=vXkh0bVCMFL8MDb8X0tFALrdFMfq!2CyV3XdJpYz8Y8FsVsyiTpS1pFUYErLYgBP). 
+
+
+
+## Contact {#sec-contact}
+
+Questions about the project or forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](mailto:matt.rees@csiro.au)
+
+For media enquiries, contact Research Officer Steve Henry [steve.henry@csiro.au](mailto:steve.henry@csiro.au) or the [CSIRO media office](https://www.csiro.au/en/news/Media-Centre). 
+
+We value your feedback. 
+
+
+## 📬 Stay updated
+
+Receive seasonal mouse forecasts to your inbox 
+
+```{=html}
+<!-- JSONP submission keeps the user on this page and shows inline feedback.
+     The form action is only used as a no-JS fallback. -->
+<form id="mailchimp-form"
+      action="https://mouseforecast.us20.list-manage.com/subscribe/post?u=952eafef177b5f80f3265bedd&id=ebb485fa13"
+      method="post" class="mt-3">
+
+  <div class="row">
+    <div class="col-md-6 mb-2">
+      <input type="text" name="FNAME" class="form-control"
+             placeholder="First name" required>
+    </div>
+    <div class="col-md-6 mb-2">
+      <input type="text" name="LNAME" class="form-control"
+             placeholder="Last name" required>
+    </div>
+  </div>
+
+  <div class="mb-2">
+    <input type="text" name="COMPANY" class="form-control"
+           placeholder="Organisation (optional)">
+  </div>
+
+  <div class="mb-2">
+    <input type="email" name="EMAIL" class="form-control"
+           placeholder="Email address" required>
+  </div>
+
+  <!-- Mailchimp bot-protection honeypot (must stay hidden and empty) -->
+  <div style="position: absolute; left: -5000px;" aria-hidden="true">
+    <input type="text" name="b_952eafef177b5f80f3265bedd_ebb485fa13" tabindex="-1" value="">
+  </div>
+
+  <button type="submit" class="btn btn-primary w-100">Subscribe</button>
+
+  <!-- Submission status shown here by the script below -->
+  <div id="mailchimp-result" class="mt-2" style="display:none;" role="alert"></div>
+
+
+</form>
+
+<script>
+(function () {
+  var form = document.getElementById("mailchimp-form");
+  if (!form) return;
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+
+    var resultEl = document.getElementById("mailchimp-result");
+    resultEl.className = "mt-2 alert alert-info";
+    resultEl.textContent = "Subscribing\u2026";
+    resultEl.style.display = "block";
+
+    /* Collect form fields into a query string */
+    var data = new FormData(form);
+    var params = [];
+    data.forEach(function (value, key) {
+      params.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+    });
+
+    /* Unique callback name avoids collisions if submitted twice */
+    var cbName = "mc_cb_" + Math.round(Math.random() * 1e8);
+
+    /* Mailchimp JSONP endpoint: /post-json + &c=CALLBACK_NAME */
+    var url =
+      "https://mouseforecast.us20.list-manage.com/subscribe/post-json" +
+      "?u=952eafef177b5f80f3265bedd&id=ebb485fa13&" +
+      params.join("&") + "&c=" + cbName;
+
+    /* Mailchimp calls this function with the response object */
+    window[cbName] = function (resp) {
+      if (resp.result === "success") {
+        resultEl.className = "mt-2 alert alert-success";
+        resultEl.textContent = "Thank you for subscribing!";
+        form.reset();
+      } else {
+        /* Strip any HTML tags Mailchimp includes in the message */
+        var msg = (resp.msg || "Something went wrong. Please try again.")
+                    .replace(/<[^>]+>/g, "");
+        resultEl.className = "mt-2 alert alert-danger";
+        resultEl.textContent = msg;
+      }
+      delete window[cbName];
+    };
+
+    /* Inject a <script> tag — this is how JSONP works */
+    var s = document.createElement("script");
+    s.src = url;
+    s.onload  = function () { if (s.parentNode) s.parentNode.removeChild(s); };
+    s.onerror = function () {
+      resultEl.className = "mt-2 alert alert-danger";
+      resultEl.textContent = "Network error. Please try again.";
+      delete window[cbName];
+      if (s.parentNode) s.parentNode.removeChild(s);
+    };
+    document.head.appendChild(s);
+  });
+})();
+</script>
+```
+
+
+---
+
+
+
+::: {.doc-footer}
+![](../images/logo_nsw_gov.png){height="60px" style="opacity: 0.85;"}
+
+<div>
+![](../images/logo_csiro.png){height="60px" style="opacity: 0.85;"}
+![](../images/logo_grdc.png){height="60px" style="opacity: 0.85;"}
+</div>
+:::

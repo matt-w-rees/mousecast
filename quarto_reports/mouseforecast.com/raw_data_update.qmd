@@ -1,0 +1,732 @@
+---
+title: "Mouse Forecast"
+subtitle: "Current season"
+description: "House mouse abundance across Australian grain-growing regions"
+title-block-banner: "#EBEBEB"
+title-block-banner-color: "black"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8
+    fig-asp: 0.8
+    link-external-newwindow: true
+css: mouse_update_raw_data.css
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: TRUE
+params:
+  data_from_date: "01-03-2026"
+  weight_pct_detected: 1
+  weight_result_traps: 1
+  weight_result_burrow: 1
+  weight_chew_per10: 1
+  weight_avg_daily_high: 1
+  activity_index_gradient_max: 2
+  draft_overview: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+## Load packages
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(sf)
+library(terra)
+library(stringr)
+library(ggrepel)
+library(ggnewscale)  # second discrete fill scale for the "No data" map legend entry
+
+## Load targets — handle both pipeline rendering (from project root) and
+## standalone rendering (from inside quarto_reports/)
+store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
+targets::tar_load(c(surveys_all, metric_ranges, aez_adj, aus_shp), store = store_path)
+
+## Functions for drafting the "## Overview" / "## Management recomendations"
+## text below (aez_zone_info() + generate_overview_text() + draft_overview_files()).
+r_path <- if (dir.exists("r")) "r" else "../../r"
+source(file.path(r_path, "1_aez_zone_info.R"))
+source(file.path(r_path, "1_generate_overview_text.R"))
+source(file.path(r_path, "1_draft_overview_files.R"))
+
+## Earliest survey date included in this report's "current" calculations
+## (format: dd-mm-yyyy). Set via the forecast_html target's execute_params.
+data_from_date <- as.Date(params$data_from_date, format = "%d-%m-%Y")
+
+## Per-metric weights for the Mouse Activity Index (see activity_index_helpers
+## chunk below), set via the forecast_html target's execute_params alongside
+## data_from_date. Equal (1) by default; set a metric's weight to 0 to exclude
+## it from both activity_index and activity_category entirely.
+activity_weights <- c(
+  pct_detected   = params$weight_pct_detected,
+  result_traps   = params$weight_result_traps,
+  result_burrow  = params$weight_result_burrow,
+  chew_per10     = params$weight_chew_per10,
+  avg_daily_high = params$weight_avg_daily_high
+)
+
+## Town / city labels for map orientation (used as landmarks)
+town_labels <- sf::st_as_sf(
+  read.csv(if (file.exists("raw_data/town_labels.csv")) "raw_data/town_labels.csv"
+           else "../../raw_data/town_labels.csv"),
+  coords = c("longitude", "latitude"), crs = "EPSG:4326", remove = FALSE
+)
+
+
+## Set default ggplot theme
+theme_update(
+  panel.grid      = element_blank(),
+  legend.position = "bottom"
+)
+
+## Shared colour palette for Low / Moderate / High / No data
+cat_colours <- c(
+  "Low"     = "#91cf60",  # green
+  "Moderate"  = "#ffeda0",  # yellow
+  "High"    = "#f03b20",  # red
+  "No data" = "grey80"
+)
+```
+
+
+```{r}
+#| label: set_subtitle
+#| results: asis
+#| include: true
+
+## Dynamically replace the "Current season" subtitle placeholder with the
+## current month and year at render time. Quarto renders the subtitle as a
+## <p class="subtitle"> element inside the title block; we update its text via
+## JavaScript at load time. This is the most reliable approach for dynamic
+## subtitles in self-contained HTML.
+cat(sprintf(
+  '<script>
+    document.addEventListener("DOMContentLoaded", function () {
+      var el = document.querySelector("#title-block-header p.subtitle");
+      if (!el) el = document.querySelector("p.subtitle");
+      if (el) el.textContent = "%s";
+    });
+  </script>',
+  format(Sys.Date(), "%B %Y")
+))
+```
+
+```{r}
+#| label: data_prep
+#| include: false
+
+## surveys_all is loaded via tar_load() in the setup chunk above — see
+## r/combine_survey_data.R for its construction (shared with
+## shiny/raw_data_explorer/app.R, which loads the same target as
+## data/surveys_all.rds). Includes all three survey types: traps + rapid feed
+## the systematic-survey metrics (pct_detected, result_traps, result_burrow,
+## chew_per10); observations ("MouseAlert") feed avg_daily_high only — see
+## compute_mice_by_aez() / compute_mouse_alert_by_aez() in the
+## activity_index_helpers chunk below for why these are kept separate.
+
+## Records within the reporting period — used for the per-AEZ summary below.
+## Excludes recently-baited paddocks (bait_history == "yes"), matching the
+## default *_bait_filter (c("no", "unsure")) applied to surveys_filtered() in
+## shiny/raw_data_explorer/app.R — a recently-baited paddock's reduced mouse
+## activity reflects the intervention rather than underlying mouse pressure.
+## surveys_all (used for the dataset-wide reference levels and full-history
+## trend baseline below) is intentionally left unfiltered, matching app.R.
+surveys_recent <- surveys_all |>
+  dplyr::filter(survey_date >= data_from_date, bait_history %in% c("no", "unsure"))
+
+## Full-history date range — anchors the dataset-wide reference levels
+## (max_result_traps etc.) so the index/category thresholds are stable across
+## reports, regardless of the data_from_date cutoff.
+date_min_all <- min(surveys_all$survey_date)
+date_max_all <- max(surveys_all$survey_date)
+
+## All AE zones ever covered by traps/rapid surveys — defines the full map
+## extent; zones with no traps/rapid paddocks in the reporting period fall
+## back to "No data" via the n_paddocks == 0 rule in display_data below.
+aez_surveyed <- surveys_all |>
+  dplyr::filter(data_type %in% c("traps", "rapid"), !is.na(ae_zone)) |>
+  dplyr::pull(ae_zone) |>
+  unique()
+```
+
+```{r}
+#| label: activity_index_helpers
+#| include: false
+
+## ── Mouse Activity Index ─────────────────────────────────────────────────
+## Combines five per-AEZ metrics into one headline rating, mirroring
+## compute_activity_index() in shiny/raw_data_explorer/app.R:
+##   - pct_detected:   % of surveyed paddocks with a mouse detection (traps/rapid)
+##   - result_traps:   mean mice caught per trap night
+##   - result_burrow:  mean active burrows per transect
+##   - chew_per10:     mean chew cards (>=1% chew) per 10 deployed
+##   - avg_daily_high: MouseAlert "high" abundance reports per day
+## activity_index is a weighted mean of these, each scaled relative to a
+## dataset-wide reference level (the percentile references below).
+## activity_category classifies that combined index into Low/Moderate/High/No
+## data using the activity_index_breaks (c(1,2)/3) defined below.
+## Per-metric weights come from params (see setup chunk); a weight of 0
+## excludes that metric from activity_index, and so from activity_category too.
+
+## Per-AEZ detection stats restricted to traps/rapid (the systematically
+## monitored paddock networks) — MouseAlert observations alone aren't enough
+## to consider an AEZ surveyed for this purpose.
+compute_mice_by_aez <- function(surveys) {
+  surveys |>
+    dplyr::filter(data_type %in% c("traps", "rapid")) |>
+    dplyr::group_by(ae_zone, paddock_id) |>
+    dplyr::summarise(ever_detected = any(mice_detected), .groups = "drop") |>
+    dplyr::group_by(ae_zone) |>
+    dplyr::summarise(
+      n_paddocks   = dplyr::n(),
+      n_detected   = sum(ever_detected),
+      pct_detected = round(n_detected / n_paddocks * 100, 1),
+      .groups      = "drop"
+    )
+}
+
+## Per-AEZ MouseAlert stats: average number of "high" abundance sightings per
+## day within the supplied date window (n_days = date_end - date_start + 1).
+compute_mouse_alert_by_aez <- function(surveys, date_start, date_end) {
+  n_days <- as.numeric(as.Date(date_end) - as.Date(date_start)) + 1
+  if (length(n_days) == 0 || !is.finite(n_days) || n_days < 1) n_days <- 1
+  surveys |>
+    dplyr::filter(data_type == "observations", !is.na(ae_zone),
+                  !is.na(mouse_abundance), mouse_abundance == "high") |>
+    dplyr::group_by(ae_zone) |>
+    dplyr::summarise(
+      n_high_reports = dplyr::n(),
+      avg_daily_high = round(dplyr::n() / n_days, 3),
+      .groups = "drop"
+    )
+}
+
+## Dataset-wide reference levels (the "1.0" anchor for activity_index and the
+## Moderate/High thresholds for activity_category — i.e. "1.0" represents how
+## high this metric gets, dataset-wide, in its less common but not extreme
+## cases, the same for every zone, rather than each zone's own typical level).
+## Computed once by compute_metric_ranges() (r/compute_metric_ranges.R) from
+## surveys_all and shared verbatim with shiny/raw_data_explorer/app.R via the
+## metric_ranges target, loaded in the setup chunk above.
+max_result_traps   <- metric_ranges$max_result_traps
+max_result_burrow  <- metric_ranges$max_result_burrow
+max_chew_per10     <- metric_ranges$max_chew_per10
+max_avg_daily_high <- metric_ranges$max_avg_daily_high
+
+## Approximate calendar length (days) of each season — used to convert a
+## season's MouseAlert "high" report count into a daily rate (avg_daily_high).
+## Close enough for a relative index; leap years are ignored.
+season_n_days <- function(season) {
+  dplyr::case_when(
+    as.character(season) == "Summer" ~ 90,
+    as.character(season) == "Autumn" ~ 92,
+    as.character(season) == "Winter" ~ 92,
+    as.character(season) == "Spring" ~ 91,
+    TRUE                              ~ 91
+  )
+}
+
+## Classifies a numeric vector into Low / Moderate / High using a 2-element
+## breaks vector (breaks[1] = Low/Moderate threshold, breaks[2] = Moderate/High).
+## NA values become NA — see classify_with_nodata() below for the "No data"
+## variant used for activity_category.
+classify_metric <- function(x, breaks) {
+  dplyr::case_when(
+    is.na(x)       ~ NA_character_,
+    x <= breaks[1] ~ "Low",
+    x <= breaks[2] ~ "Moderate",
+    TRUE           ~ "High"
+  )
+}
+
+activity_category_levels <- c("Low", "Moderate", "High", "No data")
+
+## classify_metric(), but NA -> "No data" and returned as a complete factor,
+## used to reclassify activity_index onto this Low/Moderate/High/No data scale
+## for the "key results" prose (aez_high/aez_med below).
+classify_with_nodata <- function(x, breaks) {
+  cls <- classify_metric(x, breaks)
+  cls[is.na(cls)] <- "No data"
+  factor(cls, levels = activity_category_levels)
+}
+
+## Breaks for classifying activity_index into activity_category.
+activity_index_breaks <- c(1, 2) / 3
+
+## Adds activity_index (weighted mean of the five metrics, scaled to the
+## reference levels above) to a per-AEZ summary df with columns:
+## pct_detected, result_traps, result_burrow, chew_per10, avg_daily_high.
+## Mirrors compute_activity_index() in shiny/raw_data_explorer/app.R exactly —
+## activity_category (Low/Moderate/High/No data) is derived separately by
+## classifying activity_index (see classify_with_nodata() / activity_index_breaks
+## above), not computed here.
+compute_activity_index <- function(df, weights) {
+  weights <- weights[c("pct_detected", "result_traps", "result_burrow", "chew_per10", "avg_daily_high")]
+
+  norms <- cbind(
+    df$pct_detected   / 100,
+    df$result_traps   / max_result_traps,
+    df$result_burrow  / max_result_burrow,
+    df$chew_per10     / max_chew_per10,
+    df$avg_daily_high / max_avg_daily_high
+  )
+  weight_mat <- matrix(weights, nrow = nrow(norms), ncol = 5, byrow = TRUE)
+  weight_mat[is.na(norms)] <- NA_real_
+  index <- rowSums(norms * weight_mat, na.rm = TRUE) / rowSums(weight_mat, na.rm = TRUE)
+
+  df |>
+    dplyr::mutate(
+      activity_index = round(dplyr::if_else(is.nan(index), NA_real_, index), 3)
+    )
+}
+
+## Per-AEZ summary (n_paddocks, the five activity-index input metrics, plus
+## activity_index/activity_category) for `surveys` over the window
+## [date_start, date_end] (date_end - date_start + 1 is the avg_daily_high
+## denominator — see compute_mouse_alert_by_aez()). One row per
+## ever-surveyed AE zone (aez_surveyed); zones with zero traps/rapid paddocks
+## in `surveys` get n_paddocks = 0 and activity_index/category = NA/"No data".
+## Mirrors aez_summary_r() in shiny/raw_data_explorer/app.R. Used twice below:
+## once for the reporting period (display_aez) and once for the entire
+## dataset (display_aez_full).
+compute_aez_summary <- function(surveys, date_start, date_end) {
+  mice_by_aez        <- compute_mice_by_aez(surveys)
+  mouse_alert_by_aez <- compute_mouse_alert_by_aez(surveys, date_start, date_end)
+
+  aez_means <- surveys |>
+    dplyr::filter(!is.na(ae_zone)) |>
+    dplyr::group_by(ae_zone) |>
+    dplyr::summarise(
+      result_traps  = mean(result_traps, na.rm = TRUE),
+      result_burrow = mean(result_burrow, na.rm = TRUE),
+      chew_per10    = mean(chew_per10,   na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      result_traps  = round(dplyr::if_else(is.nan(result_traps), NA_real_, result_traps), 3),
+      result_burrow = round(dplyr::if_else(is.nan(result_burrow), NA_real_, result_burrow), 2),
+      chew_per10    = round(dplyr::if_else(is.nan(chew_per10),   NA_real_, chew_per10),   2)
+    )
+
+  tibble::tibble(ae_zone = aez_surveyed) |>
+    dplyr::left_join(mice_by_aez,        by = "ae_zone") |>
+    dplyr::left_join(aez_means,          by = "ae_zone") |>
+    dplyr::left_join(mouse_alert_by_aez, by = "ae_zone") |>
+    dplyr::mutate(n_paddocks = dplyr::if_else(is.na(n_paddocks), 0L, n_paddocks)) |>
+    compute_activity_index(weights = activity_weights) |>
+    dplyr::mutate(
+      activity_index    = replace(activity_index, n_paddocks == 0, NA_real_),
+      activity_category = classify_with_nodata(activity_index, activity_index_breaks)
+    )
+}
+
+```
+
+```{r}
+#| label: display_data
+#| include: false
+
+## ── Per-AEZ summary for the reporting period (data_from_date onward) ──────
+## Mirrors aez_summary_r() in shiny/raw_data_explorer/app.R: one row per
+## ever-surveyed AE zone, with the five activity-index metrics plus
+## activity_index / activity_category. Zones with zero traps/rapid paddocks in
+## the reporting period get n_paddocks -> 0, then activity_index/category ->
+## "No data" (MouseAlert reports alone aren't enough to score an AEZ) — see
+## compute_aez_summary().
+display_aez <- compute_aez_summary(surveys_recent, data_from_date, date_max_all)
+```
+
+```{r}
+#| label: draft_overview
+#| include: false
+
+## By default (draft_overview: false), the "## Overview" / "## Management
+## recomendations" sections below {{< include >}} the hand-edited
+## _overview_in_short.md / _overview_in_detail.md / _overview_management.md
+## files as-is, so manual edits by the National Mouse Group persist across
+## renders. To start a new reporting cycle, render with -P
+## draft_overview:true to overwrite those three files with a fresh draft from
+## the current display_aez (see r/draft_overview_files.R), then hand-edit
+## before the final (default) render.
+qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) "quarto_reports/mouseforecast.com" else "."
+if (isTRUE(params$draft_overview)) {
+  draft_overview_files(display_aez, dir = qmd_dir, report_date = Sys.Date())
+}
+```
+
+```{r}
+#| label: spatial_objects
+#| include: false
+
+## AE zone polygon map: join display data to the aez_adj polygon, restricted
+## to zones that have ever been surveyed. activity_category is already a
+## complete Low/Moderate/High/No data factor (see classify_with_nodata()),
+## so scale_fill_manual(drop = FALSE) in plot_helpers keeps all legend keys
+## even when some categories are absent from the current map.
+aez_map <- aez_adj |>
+  dplyr::filter(ae_zone %in% aez_surveyed) |>
+  dplyr::left_join(display_aez, by = "ae_zone")
+```
+
+```{r}
+#| label: summary_text_prep
+#| include: false
+
+## Pre-compute values used in the inline "In short" text and figure captions.
+
+## Formatter for AE zone names: apply title case then uppercase the leading
+## state abbreviation (e.g. "sa central" → "SA Central", "nsw n qld s" → "NSW N Qld S").
+## Uses a Perl back-reference \\U to uppercase the first captured word.
+fmt_aez <- function(x) {
+  x <- stringr::str_to_title(as.character(x))
+  gsub("^([A-Z][a-z]+)(?=\\s|$)", "\\U\\1", x, perl = TRUE)
+}
+
+## Helper: format a character vector as natural-language prose.
+## fmt is applied to each element before joining (default: title case).
+list_names <- function(x, fmt = stringr::str_to_title) {
+  x <- fmt(as.character(x))
+  if (length(x) == 0) return(NULL)
+  if (length(x) == 1) return(x)
+  paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+}
+
+## AE zone-level activity categories (used in the AE zone figure caption)
+aez_high <- display_aez$ae_zone[!is.na(display_aez$activity_category) & display_aez$activity_category == "High"]
+aez_med  <- display_aez$ae_zone[!is.na(display_aez$activity_category) & display_aez$activity_category == "Moderate"]
+
+## Build two key-results sentences (high then medium) for use in figure captions.
+## unit_label is the singular noun used when no items are present (e.g. "zone").
+## fmt is passed through to list_names for name formatting (use fmt_aez for zones).
+make_key_results <- function(high_items, med_items, unit_label, fmt = stringr::str_to_title) {
+  high_sent <- if (length(high_items) == 0) {
+    paste0("No ", unit_label, "s currently show high mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **high** in ", list_names(high_items, fmt), ".")
+  }
+  med_sent <- if (length(med_items) == 0) {
+    paste0("No ", unit_label, "s currently show moderate mouse activity.")
+  } else {
+    paste0("Monitoring data shows mouse activity to be **moderate** in ", list_names(med_items, fmt), ".")
+  }
+  paste(high_sent, med_sent)
+}
+
+## Pre-compute the AE zone figure caption, noting the reporting period covered
+## (data_from_date onward) and the metrics combined into the activity index.
+data_from_label <- format(data_from_date, "%B %Y")
+
+## Only mention the "No data" legend entry in the caption when at least one
+## AE zone actually has no traps/rapid paddocks since data_from_date (see
+## plot_aez_map(), which likewise only draws the grey "No data" layer/legend
+## key when this is true).
+nodata_sentence <- if (any(display_aez$activity_category == "No data")) {
+  paste0(" Zones shaded grey (\"No data\" in the legend) have had no trap or rapid-assessment surveys since ", data_from_label, ".")
+} else {
+  ""
+}
+
+cap_aez <- paste0(
+  "Results of mouse monitoring since ", data_from_label,
+  ": Mouse Activity Index for each GRDC agro-ecological zone, combining the proportion of paddocks with mice detected, mice caught per trap night, active burrows per transect, chew cards per 10 deployed, and MouseAlert reports of high mouse abundance \u2014 each zone is shaded by the resulting index value (darker red indicates higher activity).",
+  nodata_sentence,
+  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
+  " ",
+  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
+)
+
+```
+
+```{r}
+#| label: plot_helpers
+#| include: false
+
+## ── Map helper functions ───────────────────────────────────────────────────────
+
+## Derive map extent automatically from the surveyed AE zone polygons.
+## A small buffer (degrees) is added so polygons aren't clipped at the edges.
+map_bbox <- sf::st_bbox(aez_adj |> dplyr::filter(ae_zone %in% aez_surveyed))
+map_buf  <- 1.5   # degrees of padding around the data extent
+map_xlim <- c(map_bbox["xmin"] - map_buf, map_bbox["xmax"] + map_buf)
+map_ylim <- c(map_bbox["ymin"] - map_buf, map_bbox["ymax"] + map_buf)
+
+## Crop town labels to those that fall inside the padded map extent, so we
+## only label cities that are visible (avoids clutter outside the grain belt).
+town_labels_crop <- dplyr::filter(
+  town_labels,
+  longitude >= map_xlim[1], longitude <= map_xlim[2],
+  latitude  >= map_ylim[1], latitude  <= map_ylim[2]
+)
+
+## Build the shared map frame: Australian outline + town labels + auto-cropped
+## extent. data_layer is a list of ggplot2 geom / scale objects sandwiched
+## between the background and the town labels.
+build_map <- function(data_layer, show_towns = TRUE) {
+  p <- ggplot() +
+    geom_sf(data = aus_shp, fill = "white", colour = "grey60", linewidth = 0.3) +
+    labs(y = "", x = "") +
+    data_layer
+
+  if (show_towns) {
+    p <- p +
+      geom_sf(data = town_labels_crop, size = 0.75) +
+      ggrepel::geom_text_repel(
+        data               = town_labels_crop,
+        aes(longitude, latitude, label = name),
+        size               = 2.5,
+        max.overlaps       = 20,
+        box.padding        = 0.4,
+        min.segment.length = 0   # always draw a line from dot to label
+      )
+  }
+
+  p +
+    coord_sf(xlim = map_xlim, ylim = map_ylim, expand = FALSE) +
+    theme(legend.box.margin = margin(b = -8))
+}
+
+## Colour palette for the four activity categories.
+base_cols <- c(Low = "#91cf60", Moderate = "#ffeda0", High = "#f03b20")
+
+## Colour lookup: Low / Moderate / High / No data
+activity_colours <- c(base_cols, "No data" = "grey80")
+
+## Continuous fill scale for the AE zone map: green -> yellow -> red over
+## [0, max_val]. "No data" zones (NA activity_index) are shown in grey.
+## activity_index isn't capped at 1 by compute_activity_index() — a standout
+## AEZ can exceed its reference level — so max_val is the
+## activity_index_gradient_max param (see plot_aez_map()): the value at which
+## the scale reaches full red, with yellow ("Moderate") at half that value.
+## oob = scales::squish clamps any activity_index above max_val to the
+## endpoint red rather than leaving it unfilled. The colourbar is labelled
+## "Low"/"High" at its two ends rather than numeric breaks, since
+## activity_index's raw scale isn't meaningful to readers.
+make_activity_gradient_fill <- function(max_val) {
+  scale_fill_gradient2(
+    low      = activity_colours[["Low"]],
+    mid      = activity_colours[["Moderate"]],
+    high     = activity_colours[["High"]],
+    midpoint = max_val / 2,
+    limits   = c(0, max_val),
+    breaks   = c(0, max_val),
+    labels   = c("Low", "High"),
+    oob      = scales::squish,
+    na.value = activity_colours[["No data"]],
+    name     = "Mouse Activity Index",
+    guide    = guide_colourbar(title.position = "top")
+  )
+}
+
+## AE zone map: filled polygons, shaded by a continuous green-to-red gradient
+## fill (activity_index). Zones with activity_index = NA ("No data" -- no
+## traps/rapid paddocks surveyed since data_from_date) are drawn as a separate
+## grey layer with its own discrete legend entry via
+## ggnewscale::new_scale_fill(), since a continuous colourbar guide has no
+## built-in way to show an "NA" key.
+plot_aez_map <- function() {
+  aez_data   <- dplyr::filter(aez_map, !is.na(activity_index))
+  aez_nodata <- dplyr::filter(aez_map, is.na(activity_index))
+
+  nodata_layer <- if (nrow(aez_nodata) > 0) {
+    list(
+      ggnewscale::new_scale_fill(),
+      geom_sf(data = aez_nodata, aes(fill = "No data"),
+              colour = "grey50", linewidth = 0.25),
+      scale_fill_manual(
+        values = c("No data" = activity_colours[["No data"]]),
+        name   = NULL,
+        guide  = guide_legend(title.position = "top", order = 2)
+      )
+    )
+  }
+
+  build_map(c(
+    list(
+      geom_sf(data = aez_data, aes(fill = activity_index),
+              colour = "grey50", linewidth = 0.25),
+      make_activity_gradient_fill(params$activity_index_gradient_max)
+    ),
+    nodata_layer
+  ))
+}
+
+
+```
+
+## Overview
+
+::: {.overview-detail}
+
+### In short
+
+{{< include _overview_in_short.md >}}
+
+### In detail
+
+{{< include _overview_in_detail.md >}}
+
+:::
+
+
+```{r}
+#| label: fig_aez
+#| fig-cap: !expr cap_aez
+
+plot_aez_map()
+```
+
+
+
+
+
+## Management recomendations
+
+{{< include _overview_management.md >}}
+
+
+
+## About
+
+Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data comes available. 
+
+We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meet three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities. 
+
+### Monitoring data 
+Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
+Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
+
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+
+We also receive reports from farmers, agronomists and other community members directly. This is key information we consider given we cannot feasibly survey every paddock across the entire grain growing region. 
+
+
+## Report mouse activity
+
+You can quickly report sightings of mice on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
+
+We incorporate citizen observations with our scientific surveys to create these forecasts and improve our understanding of mouse populations.
+We are primarily using observations of mice within paddocks (not houses or sheds). 
+Please don't only report observations of high mouse activity, if you've looked and found no sign or low mouse activity, this information is just as important to record!
+
+
+## Contact {#sec-contact}
+
+Questions about the project or forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](mailto:matt.rees@csiro.au)
+
+For media enquiries, contact Research Officer Steve Henry [steve.henry@csiro.au](mailto:steve.henry@csiro.au) or the [CSIRO media office](https://www.csiro.au/en/news/Media-Centre). 
+
+We value your feedback. 
+
+
+## 📬 Stay updated
+
+Receive seasonal mouse forecasts to your inbox 
+
+```{=html}
+<!-- JSONP submission keeps the user on this page and shows inline feedback.
+     The form action is only used as a no-JS fallback. -->
+<form id="mailchimp-form"
+      action="https://mouseforecast.us20.list-manage.com/subscribe/post?u=952eafef177b5f80f3265bedd&id=ebb485fa13"
+      method="post" class="mt-3">
+
+  <div class="mb-2">
+    <input type="email" name="EMAIL" class="form-control"
+           placeholder="Email address" required>
+  </div>
+
+  <!-- Mailchimp bot-protection honeypot (must stay hidden and empty) -->
+  <div style="position: absolute; left: -5000px;" aria-hidden="true">
+    <input type="text" name="b_952eafef177b5f80f3265bedd_ebb485fa13" tabindex="-1" value="">
+  </div>
+
+  <button type="submit" class="btn btn-primary w-100">Subscribe</button>
+
+  <!-- Submission status shown here by the script below -->
+  <div id="mailchimp-result" class="mt-2" style="display:none;" role="alert"></div>
+
+
+</form>
+
+<script>
+(function () {
+  var form = document.getElementById("mailchimp-form");
+  if (!form) return;
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+
+    var resultEl = document.getElementById("mailchimp-result");
+    resultEl.className = "mt-2 alert alert-info";
+    resultEl.textContent = "Subscribing\u2026";
+    resultEl.style.display = "block";
+
+    /* Collect form fields into a query string */
+    var data = new FormData(form);
+    var params = [];
+    data.forEach(function (value, key) {
+      params.push(encodeURIComponent(key) + "=" + encodeURIComponent(value));
+    });
+
+    /* Unique callback name avoids collisions if submitted twice */
+    var cbName = "mc_cb_" + Math.round(Math.random() * 1e8);
+
+    /* Mailchimp JSONP endpoint: /post-json + &c=CALLBACK_NAME */
+    var url =
+      "https://mouseforecast.us20.list-manage.com/subscribe/post-json" +
+      "?u=952eafef177b5f80f3265bedd&id=ebb485fa13&" +
+      params.join("&") + "&c=" + cbName;
+
+    /* Mailchimp calls this function with the response object */
+    window[cbName] = function (resp) {
+      if (resp.result === "success") {
+        resultEl.className = "mt-2 alert alert-success";
+        resultEl.textContent = "Thank you for subscribing!";
+        form.reset();
+      } else {
+        /* Strip any HTML tags Mailchimp includes in the message */
+        var msg = (resp.msg || "Something went wrong. Please try again.")
+                    .replace(/<[^>]+>/g, "");
+        resultEl.className = "mt-2 alert alert-danger";
+        resultEl.textContent = msg;
+      }
+      delete window[cbName];
+    };
+
+    /* Inject a <script> tag — this is how JSONP works */
+    var s = document.createElement("script");
+    s.src = url;
+    s.onload  = function () { if (s.parentNode) s.parentNode.removeChild(s); };
+    s.onerror = function () {
+      resultEl.className = "mt-2 alert alert-danger";
+      resultEl.textContent = "Network error. Please try again.";
+      delete window[cbName];
+      if (s.parentNode) s.parentNode.removeChild(s);
+    };
+    document.head.appendChild(s);
+  });
+})();
+</script>
+```
+
+
+---
+
+
+
+::: {.doc-footer}
+![](../images/logo_nsw_gov.png){height="60px" style="opacity: 0.85;"}
+
+<div>
+![](../images/logo_csiro.png){height="60px" style="opacity: 0.85;"}
+![](../images/logo_grdc.png){height="60px" style="opacity: 0.85;"}
+</div>
+:::

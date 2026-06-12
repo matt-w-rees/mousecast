@@ -37,7 +37,7 @@ raw_data/mouse_updates/
 raw_data/raw_data/survey_data/
 tmp/
 r_not_in_use/
-
+tmp_workflow_part_2/
 
 # R markdown cache
 *_cache/

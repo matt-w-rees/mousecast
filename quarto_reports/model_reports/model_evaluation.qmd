@@ -1,0 +1,75 @@
+---
+title: "Mouse forecast model evaluation"
+subtitle: Autumn 2025
+date: last-modified
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8  
+    fig-asp: 0.8 # fig-height = fig-width * fig-asp
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: false
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages
+library(targets)
+library(mvgam)
+
+# no sci notation
+options(scipen = 999)
+
+## load model (as it is a file) 
+model_path <- tar_read(forecast_model)  # returns the file path
+model <- readRDS(model_path)   # loads the actual model object
+
+```
+
+
+```{r}
+#| label: summary
+
+# Display model summary neatly
+summary_text <- capture.output(summary(model, smooth_test = FALSE))
+cat(paste0("<pre style='font-size: 0.25em;'>", paste(summary_text, collapse = "\n"), "</pre>"))
+```
+
+```{r}
+#| label: smooth_effects
+
+# smooth and random effect plots from the process model
+plot(model, "smooths", trend_effects = TRUE)
+#plot(model, "re", trend_effects = TRUE)
+```
+
+```{r}
+#| label: forecast_plots
+#| results: 'asis'
+#| fig-height: 4
+#| fig-width: 8
+
+# Retrieve the series names recorded in the fitted model and derive the count.
+# levels() preserves the factor ordering used during model fitting.
+series_names <- levels(model$obs_data$series)
+n_series     <- length(series_names)
+
+# Loop through every series and emit a heading followed by its forecast plot.
+# results: 'asis' allows the cat() headings to be rendered as markdown while
+# knitr captures each plot() call as a separate inline figure.
+for (s in seq_len(n_series)) {
+  cat(paste0("\n#### Series ", s, ": `", series_names[s], "`\n\n"))
+  plot(model, type = "forecast", series = s,
+       ylim = c(0, 1), ylab = "Relative abundance", xlab = "Season")
+}
+```
+

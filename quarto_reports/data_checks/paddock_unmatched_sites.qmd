@@ -1,0 +1,157 @@
+---
+title: "Sites not matched to an ePaddock"
+date: last-modified
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    toc: true
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(targets)
+library(dplyr)
+library(leaflet)
+library(stringr)
+library(flextable)
+library(glue)
+
+store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
+targets::tar_load(c(data_site_paddocks, nearby_unmatched_paddocks), store = store_path)
+
+# Sites with no matching ePaddock polygon
+unmatched <- data_site_paddocks |>
+  dplyr::filter(is.na(paddock_id)) |>
+  dplyr::arrange(region_name, farmer, site_name, subsite_name)
+```
+
+## Overview
+
+**`r nrow(unmatched)`** of **`r nrow(data_site_paddocks)`** sites did not fall
+within any ePaddock polygon. Common causes are:
+
+- Sites on road verges, fence-lines, or paddock boundaries
+- Paddocks too small or irregular to appear in ePaddocks v3
+- GPS coordinates recorded at the paddock entrance rather than inside
+- ePaddocks coverage gaps (e.g. some Eyre Peninsula and QLD regions)
+
+```{r}
+#| label: summary-by-state
+
+if (nrow(unmatched) == 0) {
+  cat("No unmatched sites.")
+} else {
+  unmatched |>
+    dplyr::count(state, name = "n_sites") |>
+    flextable::flextable() |>
+    flextable::set_header_labels(state = "State", n_sites = "Unmatched sites") |>
+    flextable::autofit() |>
+    flextable::theme_vanilla()
+}
+```
+
+## Map
+
+ePaddock boundaries within 1 km of each unmatched site are shown in grey.
+Click a marker for full site details; points are coloured by state.
+
+```{r}
+#| label: map
+
+m <- leaflet::leaflet() |>
+  leaflet::addProviderTiles(leaflet::providers$Esri.WorldImagery)
+
+# ePaddock boundaries (pre-loaded by the targets pipeline)
+if (nrow(nearby_unmatched_paddocks) > 0) {
+  m <- m |>
+    leaflet::addPolygons(
+      data        = nearby_unmatched_paddocks,
+      color       = "#555555",
+      weight      = 1,
+      opacity     = 0.8,
+      fill        = TRUE,
+      fillColor   = "#cccccc",
+      fillOpacity = 0.25,
+      label       = ~as.character(id),
+      group       = "ePaddocks"
+    ) |>
+    leaflet::addLayersControl(
+      overlayGroups = "ePaddocks",
+      options       = leaflet::layersControlOptions(collapsed = FALSE)
+    )
+}
+
+# Unmatched site points
+if (nrow(unmatched) > 0) {
+  states <- sort(unique(unmatched$state))
+  pal    <- leaflet::colorFactor(palette = "Set1", domain = states)
+
+  popups <- glue::glue_data(unmatched,
+    "<b>{str_to_title(site)}</b> — {str_to_title(subsite)}<br>
+     <b>Farmer:</b> {str_to_title(farmer)}<br>
+     <b>Region:</b> {str_to_title(region)}, {state}<br>
+     <b>Coords:</b> {round(longitude, 4)}, {round(latitude, 4)}"
+  )
+
+  m <- m |>
+    leaflet::addCircleMarkers(
+      data        = unmatched,
+      lng         = ~longitude,
+      lat         = ~latitude,
+      radius      = 7,
+      stroke      = TRUE,
+      weight      = 2,
+      color       = "white",
+      fillColor   = ~pal(state),
+      fillOpacity = 0.9,
+      popup       = popups,
+      label       = ~str_to_title(paste(site, "-", subsite))
+    ) |>
+    leaflet::addLegend(
+      position = "bottomright",
+      pal      = pal,
+      values   = unmatched$state,
+      title    = "State"
+    )
+}
+
+m
+```
+
+## Full site list
+
+```{r}
+#| label: table
+
+if (nrow(unmatched) == 0) {
+  cat("No unmatched sites.")
+} else {
+  unmatched |>
+    dplyr::select(state, region, farmer, site, subsite, longitude, latitude) |>
+    dplyr::mutate(
+      longitude = round(longitude, 4),
+      latitude  = round(latitude,  4)
+    ) |>
+    flextable::flextable() |>
+    flextable::set_header_labels(
+      state     = "State",
+      region    = "Region",
+      farmer    = "Farmer",
+      site      = "Site",
+      subsite   = "Subsite",
+      longitude = "Lon",
+      latitude  = "Lat"
+    ) |>
+    flextable::autofit() |>
+    flextable::theme_vanilla() |>
+    flextable::fontsize(size = 9, part = "all")
+}
+```

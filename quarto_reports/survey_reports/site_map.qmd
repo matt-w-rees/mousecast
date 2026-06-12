@@ -1,0 +1,528 @@
+---
+title: "Survey Sites Map"
+format:
+  html:
+    self-contained: true
+    page-layout: full
+    toc: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(dplyr)
+library(sf)
+library(leaflet)
+library(crosstalk)
+library(htmltools)
+library(RColorBrewer)
+library(reactable)
+```
+
+```{r load-data}
+data_list_clean_paddocks <- targets::tar_read(data_list_clean_paddocks)
+
+surveys <- purrr::imap(data_list_clean_paddocks, ~ dplyr::mutate(.x, data_type = .y)) |>
+  dplyr::bind_rows() |>
+  dplyr::filter(
+    !is.na(longitude), !is.na(latitude),
+    !is.na(paddock_id),
+    !is.na(survey_date)
+  ) |>
+  dplyr::mutate(
+    survey_date = as.Date(survey_date),
+    # coerce to character so ordered-factor levels from different survey types
+    # don't prevent distinct() from collapsing identical rows
+    season      = as.character(season),
+    # standardised effort and result; definitions differ by data type:
+    #   traps — effort: functional traps; result: mice per trap night
+    #   rapid — effort: burrow transects surveyed; result: avg active burrows per transect
+    effort = dplyr::case_when(
+      data_type == "traps" ~ as.numeric(number_functional_traps),
+      data_type == "rapid" ~ as.numeric(burrow_transects_surveyed),
+      TRUE ~ NA_real_
+    ),
+    result = dplyr::case_when(
+      data_type == "traps" & !is.na(number_functional_traps) & number_functional_traps > 0 ~
+        round(as.numeric(number_mice_caught) / as.numeric(number_functional_traps), 3),
+      data_type == "rapid" & !is.na(burrow_transects_surveyed) & burrow_transects_surveyed > 0 ~
+        round(as.numeric(burrow_total_count) / as.numeric(burrow_transects_surveyed), 2),
+      TRUE ~ NA_real_
+    ),
+    # average percentage eaten across all individual chewcard_percent_N columns (rapid only)
+    pct_chewcard = {
+      m <- rowMeans(dplyr::pick(dplyr::starts_with("chewcard_percent_")), na.rm = TRUE)
+      dplyr::if_else(data_type == "rapid" & !is.nan(m), round(m, 1), NA_real_)
+    }
+  ) |>
+  # one row per unique paddock × date × season × data type × project;
+  # raw count columns are included so the download can export them directly
+  dplyr::distinct(paddock_id, longitude, latitude, state, ae_zone,
+                  survey_date, season, year_adj, data_type, data_source,
+                  effort, result, pct_chewcard,
+                  number_functional_traps, number_mice_caught,
+                  burrow_transects_surveyed, burrow_total_count,
+                  chewcards_deployed, chewcards_detected) |>
+  dplyr::mutate(
+    label_popup = paste0(
+      "<b>Paddock ID:</b> ", paddock_id, "<br>",
+      "<b>State:</b> ",      state,      "<br>",
+      "<b>AEZ:</b> ",        ae_zone,    "<br>",
+      "<b>Season:</b> ",     season, " ", year_adj, "<br>",
+      "<b>Date:</b> ",       format(survey_date, "%d %b %Y"), "<br>",
+      "<b>Data type:</b> ",  data_type,  "<br>",
+      "<b>Project:</b> ",    data_source, "<br>",
+      dplyr::case_when(
+        data_type == "traps" ~ paste0(
+          "<b>Functional traps:</b> ",       dplyr::if_else(is.na(effort), "—", as.character(effort)), "<br>",
+          "<b>Mice / trap night:</b> ",       dplyr::if_else(is.na(result), "—", as.character(result))
+        ),
+        data_type == "rapid" ~ paste0(
+          "<b>Burrow transects:</b> ",       dplyr::if_else(is.na(effort),       "—", as.character(effort)), "<br>",
+          "<b>Avg burrows / transect:</b> ",  dplyr::if_else(is.na(result),       "—", as.character(result)), "<br>",
+          "<b>Avg chew per card (%):</b> ",   dplyr::if_else(is.na(pct_chewcard), "—", paste0(pct_chewcard, "%"))
+        ),
+        TRUE ~ ""
+      )
+    ),
+    # type-specific columns used in the summary table so NAs correctly exclude
+    # the other data type from each column's aggregate
+    effort_traps = dplyr::if_else(data_type == "traps", effort, NA_real_),
+    result_traps = dplyr::if_else(data_type == "traps", result, NA_real_),
+    effort_burrow = dplyr::if_else(data_type == "rapid", effort, NA_real_),
+    result_burrow = dplyr::if_else(data_type == "rapid", result, NA_real_),
+    # key must be unique for SharedData filtering to work correctly
+    row_key = paste(paddock_id, survey_date, data_type, data_source,
+                    round(longitude, 5), round(latitude, 5), sep = "_")
+  ) |>
+  # guard against any remaining duplicate keys
+  dplyr::distinct(row_key, .keep_all = TRUE)
+```
+
+```{r load-aez}
+# Load AEZ polygons for the map overlay; ae_zone is already attached to survey
+# points via the pipeline so no spatial join is needed here.
+aez_adj <- targets::tar_read(aez_adj)
+
+# Per-AEZ mouse detection: proportion of unique paddocks where mice were ever
+# detected. Traps: any mice caught; rapid: any active burrows or chewcard activity.
+mice_by_aez <- surveys |>
+  dplyr::mutate(
+    mice_detected = dplyr::case_when(
+      data_type == "traps" ~
+        !is.na(number_mice_caught) & number_mice_caught > 0,
+      data_type == "rapid" ~
+        (!is.na(burrow_total_count) & burrow_total_count > 0) |
+        (!is.na(chewcards_detected) & chewcards_detected > 0),
+      TRUE ~ FALSE
+    )
+  ) |>
+  dplyr::group_by(ae_zone, paddock_id) |>
+  dplyr::summarise(ever_detected = any(mice_detected), .groups = "drop") |>
+  dplyr::group_by(ae_zone) |>
+  dplyr::summarise(
+    n_sites       = dplyr::n(),
+    n_detected    = sum(ever_detected),
+    pct_detected  = round(n_detected / n_sites * 100, 1),
+    traffic_light = dplyr::case_when(
+      pct_detected <= 33 ~ "Low",
+      pct_detected <= 67 ~ "Moderate",
+      TRUE               ~ "High"
+    ),
+    .groups = "drop"
+  )
+
+# Attribute join — sf geometry is preserved when sf object is on the left
+aez_adj <- dplyr::left_join(aez_adj, mice_by_aez, by = "ae_zone")
+
+# Also attach the AEZ-level detection stats to surveys so the summary table
+# can display pct_detected alongside the per-survey result columns
+surveys <- dplyr::left_join(
+  surveys,
+  dplyr::select(mice_by_aez, ae_zone, pct_detected, n_sites, n_detected, traffic_light),
+  by = "ae_zone"
+)
+```
+
+```{r colour-palette}
+# Traffic light palette for AEZ polygon shading (proportion of sites with mice)
+pal_aez <- colorFactor(
+  palette  = c(Low = "#2ECC71", Moderate = "#F39C12", High = "#E74C3C"),
+  levels   = c("Low", "Moderate", "High"),
+  na.color = "#BDBDBD"
+)
+
+pal_type <- colorFactor(
+  palette = brewer.pal(3, "Dark2")[seq_len(length(unique(surveys$data_type)))],
+  domain  = surveys$data_type
+)
+```
+
+```{r crosstalk-shared}
+shared_surveys <- SharedData$new(surveys, key = ~row_key, group = "survey_data")
+```
+
+## Filters {.unnumbered}
+
+Use the dropdowns to filter surveys. All active filters apply together (AND logic).
+
+```{r filter-widgets}
+bscols(
+  widths = c(3, 3, 3, 3),
+  filter_select("year_filter",    "Year",      shared_surveys, ~year_adj,    multiple = TRUE),
+  filter_select("season_filter",  "Season",    shared_surveys, ~season,      multiple = TRUE),
+  filter_select("type_filter",    "Data type", shared_surveys, ~data_type,   multiple = TRUE),
+  filter_select("project_filter", "Project",   shared_surveys, ~data_source, multiple = TRUE)
+)
+```
+
+
+```{r export-setup}
+surveys_json <- jsonlite::toJSON(
+  dplyr::select(surveys, paddock_id, ae_zone, state,
+                longitude, latitude, survey_date, season, year_adj,
+                data_type, data_source,
+                number_functional_traps, number_mice_caught,
+                burrow_transects_surveyed, burrow_total_count,
+                chewcards_deployed, chewcards_detected,
+                row_key),
+  auto_unbox = TRUE
+)
+
+htmltools::tagList(
+  htmltools::tags$script(paste0("var SURVEY_DATA = ", surveys_json, ";")),
+
+  htmltools::tags$script('
+    function downloadSurveyCSV() {
+      var filterKeys = crosstalk.group("survey_data").var("filter").get();
+      var keySet = filterKeys ? new Set(filterKeys) : null;
+
+      var rows = keySet
+        ? SURVEY_DATA.filter(function(r) { return keySet.has(r.row_key); })
+        : SURVEY_DATA;
+
+      if (rows.length === 0) { alert("No sites match the current selection."); return; }
+
+      var cols = ["paddock_id","ae_zone","state",
+                  "longitude","latitude","survey_date","season","year_adj",
+                  "data_type","data_source",
+                  "number_functional_traps","number_mice_caught",
+                  "burrow_transects_surveyed","burrow_total_count",
+                  "chewcards_deployed","chewcards_detected"];
+
+      var csv = cols.join(",") + "\\n" +
+        rows.map(function(r) {
+          return cols.map(function(c) {
+            var v = (r[c] === null || r[c] === undefined) ? "" : r[c];
+            return \'"\' + String(v).replace(/"/g, \'""\')+\'"\';
+          }).join(",");
+        }).join("\\n");
+
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+      a.download = "survey_sites.csv";
+      a.click();
+    }
+  '),
+
+  htmltools::tags$button(
+    "Download selected sites (CSV)",
+    onclick = "downloadSurveyCSV()",
+    class   = "btn btn-outline-secondary btn-sm",
+    style   = "margin-top: 8px;"
+  ),
+
+  # Recalculates per-AEZ mouse detection proportion from the currently-filtered
+  # rows and updates polygon fill colours to match the traffic light thresholds.
+  # Uses crosstalk.FilterHandle to listen for filter changes; on each change it
+  # rebuilds the per-AEZ paddock/detection counts from SURVEY_DATA (already
+  # loaded above) restricted to the active row_key set, then calls
+  # layer.setStyle() on each polygon layer identified by its layerId option.
+  htmltools::tags$script('
+    HTMLWidgets.addPostRenderHandler(function() {
+
+      var TRAFFIC_COLORS = {
+        Low:    "#2ECC71",
+        Mod:    "#F39C12",
+        High:   "#E74C3C",
+        nodata: "#BDBDBD"
+      };
+
+      // Map detection percentage to the traffic light colour bucket.
+      function trafficColor(pct) {
+        if (pct === null || isNaN(pct)) return TRAFFIC_COLORS.nodata;
+        if (pct <= 33) return TRAFFIC_COLORS.Low;
+        if (pct <= 67) return TRAFFIC_COLORS.Mod;
+        return TRAFFIC_COLORS.High;
+      }
+
+      // Build an ae_zone -> fillColor map from an array of survey rows.
+      // Mirrors the R detection logic: traps = any mice caught;
+      // rapid = any active burrows OR any chewcard activity.
+      function computeColors(rows) {
+        var paddocks = {}, detected = {};
+        rows.forEach(function(r) {
+          var z = r.ae_zone;
+          if (!z) return;
+          if (!paddocks[z]) { paddocks[z] = {}; detected[z] = {}; }
+          paddocks[z][r.paddock_id] = true;
+          var hit = r.data_type === "traps"
+            ? (r.number_mice_caught !== null && r.number_mice_caught > 0)
+            : r.data_type === "rapid"
+              ? ((r.burrow_total_count !== null && r.burrow_total_count > 0) ||
+                 (r.chewcards_detected !== null && r.chewcards_detected > 0))
+              : false;
+          if (hit) detected[z][r.paddock_id] = true;
+        });
+        var colors = {};
+        Object.keys(paddocks).forEach(function(z) {
+          var n = Object.keys(paddocks[z]).length;
+          var d = Object.keys(detected[z]).length;
+          colors[z] = trafficColor(n > 0 ? (d / n * 100) : null);
+        });
+        return colors;
+      }
+
+      // Walk all leaflet layers; update fillColor on polygon layers whose
+      // layerId matches an AEZ name (polygons have _latlngs, circles do not).
+      function applyColors(colorMap) {
+        var widgets = document.querySelectorAll(".leaflet");
+        var map = null;
+        for (var i = 0; i < widgets.length; i++) {
+          var w = HTMLWidgets.find(widgets[i]);
+          if (w && w.getMap) { map = w.getMap(); break; }
+        }
+        if (!map) return;
+        map.eachLayer(function(layer) {
+          if (layer._latlngs && layer.options && layer.options.layerId) {
+            var color = colorMap.hasOwnProperty(layer.options.layerId)
+              ? colorMap[layer.options.layerId]
+              : TRAFFIC_COLORS.nodata;
+            layer.setStyle({ fillColor: color });
+          }
+        });
+      }
+
+      // Initialise colours from the full unfiltered dataset.
+      applyColors(computeColors(SURVEY_DATA));
+
+      // Re-colour whenever any crosstalk filter changes.
+      var fh = new crosstalk.FilterHandle("survey_data");
+      fh.on("change", function(e) {
+        var keys = e.value;
+        var rows = keys
+          ? (function() {
+              var s = new Set(keys);
+              return SURVEY_DATA.filter(function(r) { return s.has(r.row_key); });
+            })()
+          : SURVEY_DATA;
+        applyColors(computeColors(rows));
+      });
+
+    });
+  ')
+)
+```
+
+## Map {.unnumbered}
+
+```{r map}
+leaflet(width = "100%", height = "700px") |>
+  addProviderTiles("CartoDB.Positron",     group = "Light (default)") |>
+  addProviderTiles("Esri.WorldImagery",    group = "Satellite") |>
+  addProviderTiles("OpenStreetMap.Mapnik", group = "OpenStreetMap") |>
+
+  addPolygons(
+    data        = aez_adj,
+    group       = "AEZ zones",
+    layerId     = ~ae_zone,
+    fillColor   = ~pal_aez(traffic_light),
+    fillOpacity = 0.4,
+    color       = "white",
+    weight      = 1.2,
+    label       = ~ae_zone,
+    popup       = ~paste0(
+      "<b>AEZ:</b> ", ae_zone, "<br>",
+      "<b>Mouse presence:</b> ",
+      ifelse(is.na(traffic_light), "No data", traffic_light), "<br>",
+      "<b>Sites detected:</b> ",
+      ifelse(is.na(pct_detected), "—",
+             paste0(n_detected, " / ", n_sites, " (", pct_detected, "%)"))
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2.5, fillOpacity = 0.6, bringToFront = FALSE
+    )
+  ) |>
+
+  addCircleMarkers(
+    data        = shared_surveys,
+    lng         = ~longitude,
+    lat         = ~latitude,
+    group       = "Survey sites",
+    radius      = 6,
+    color       = ~pal_type(data_type),
+    fillColor   = ~pal_type(data_type),
+    fillOpacity = 0.85,
+    stroke      = TRUE,
+    weight      = 1,
+    opacity     = 1,
+    popup       = ~label_popup,
+    label       = ~data_type
+  ) |>
+
+  addLegend(
+    position = "bottomleft",
+    pal      = pal_type,
+    values   = surveys$data_type,
+    title    = "Data type",
+    opacity  = 0.85
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal      = pal_aez,
+    values   = c("Low", "Moderate", "High"),
+    title    = "Mouse presence<br><small>% of sites with detection</small>",
+    opacity  = 0.85
+  ) |>
+
+  addLayersControl(
+    baseGroups    = c("Light (default)", "Satellite", "OpenStreetMap"),
+    overlayGroups = c("AEZ zones", "Survey sites"),
+    options       = layersControlOptions(collapsed = FALSE)
+  ) |>
+
+  addScaleBar(position = "topright", options = scaleBarOptions(imperial = FALSE))
+```
+
+## Survey summary per AEZ {.unnumbered}
+
+Updates with the filters above. Result columns are specific to each data type: traps (mice per trap night) and rapid assessment (avg active burrows per transect; avg % eaten per chewcard).
+
+```{r summary-table}
+max_aez <- surveys |> dplyr::group_by(ae_zone) |>
+  dplyr::summarise(n = dplyr::n_distinct(paddock_id), .groups = "drop") |>
+  dplyr::pull(n) |> max()
+max_result_traps <- max(surveys$result_traps, na.rm = TRUE)
+max_result_burrow <- max(surveys$result_burrow, na.rm = TRUE)
+max_pct_chewcard <- max(surveys$pct_chewcard, na.rm = TRUE)
+
+# hide detail columns not needed in the grouped view
+hidden_cols <- list(
+  longitude                 = colDef(show = FALSE),
+  latitude                  = colDef(show = FALSE),
+  state                     = colDef(show = FALSE),
+  survey_date               = colDef(show = FALSE),
+  season                    = colDef(show = FALSE),
+  year_adj                  = colDef(show = FALSE),
+  data_type                 = colDef(show = FALSE),
+  data_source               = colDef(show = FALSE),
+  effort                    = colDef(show = FALSE),
+  result                    = colDef(show = FALSE),
+  effort_traps              = colDef(show = FALSE),
+  effort_burrow             = colDef(show = FALSE),
+  # raw count columns kept for the download but not shown in the table
+  number_functional_traps   = colDef(show = FALSE),
+  number_mice_caught        = colDef(show = FALSE),
+  burrow_transects_surveyed = colDef(show = FALSE),
+  burrow_total_count        = colDef(show = FALSE),
+  chewcards_deployed        = colDef(show = FALSE),
+  chewcards_detected        = colDef(show = FALSE),
+  # AEZ-level detection stats — pct_detected is shown explicitly; others hidden
+  traffic_light             = colDef(show = FALSE),
+  n_sites                   = colDef(show = FALSE),
+  n_detected                = colDef(show = FALSE),
+  label_popup               = colDef(show = FALSE),
+  row_key                   = colDef(show = FALSE)
+)
+
+# unique paddock count with blue heat-map intensity
+count_col <- function(max_val) {
+  colDef(
+    name      = "Paddocks",
+    minWidth  = 110,
+    aggregate = JS("function(values) { return new Set(values).size; }"),
+    style     = JS(sprintf("
+      function(rowInfo) {
+        var val = rowInfo.aggregated ? parseFloat(rowInfo.value) : rowInfo.row['paddock_id'];
+        if (!val || isNaN(val)) return {};
+        var intensity = Math.min(val / %d, 1);
+        var lightness  = Math.round(95 - intensity * 50);
+        return { background: 'hsl(210, 70%%, ' + lightness + '%%)', fontWeight: rowInfo.aggregated ? 'bold' : 'normal' };
+      }
+    ", max_val))
+  )
+}
+
+# mean of non-NA values with blue heat-map intensity; max_val scales the colour range
+heat_col <- function(label, max_val, min_width = 100) {
+  colDef(
+    name      = label,
+    minWidth  = min_width,
+    aggregate = JS("
+      function(values) {
+        var nums = values.filter(function(v) { return v !== null && !isNaN(v); });
+        if (nums.length === 0) return '—';
+        return (nums.reduce(function(a, b) { return a + b; }) / nums.length).toFixed(2);
+      }
+    "),
+    style = JS(sprintf("
+      function(rowInfo) {
+        var val = parseFloat(rowInfo.value);
+        if (isNaN(val) || val <= 0) return {};
+        var intensity = Math.min(val / %s, 1);
+        var lightness  = Math.round(95 - intensity * 50);
+        return { background: 'hsl(210, 70%%, ' + lightness + '%%)', fontWeight: rowInfo.aggregated ? 'bold' : 'normal' };
+      }
+    ", max_val))
+  )
+}
+
+htmltools::tags$style("
+  #aez-table .rt-expander-button, #aez-table .rt-td-expandable { padding-left: 8px; }
+  #aez-table .rt-expander-button { display: none; }
+")
+
+reactable(
+  shared_surveys,
+  elementId    = "aez-table",
+  groupBy      = "ae_zone",
+  columns      = c(list(
+    ae_zone      = colDef(name = "AEZ", minWidth = 200,
+                          grouped = JS("function(cellInfo) { return cellInfo.value; }")),
+    paddock_id   = count_col(max_aez),
+    # pct_detected is constant within each AEZ group; aggregate returns the first value
+    pct_detected = colDef(
+      name      = "Sites detected (%)",
+      minWidth  = 140,
+      format    = colFormat(suffix = "%", digits = 1),
+      aggregate = JS("
+        function(values) {
+          var nums = values.filter(function(v) { return v !== null && !isNaN(v); });
+          return nums.length > 0 ? nums[0].toFixed(1) + '%' : '—';
+        }
+      "),
+      style = JS("
+        function(rowInfo) {
+          var val = parseFloat(rowInfo.value);
+          if (isNaN(val)) return rowInfo.aggregated ? { fontWeight: 'bold' } : {};
+          var bg = val <= 33 ? '#2ECC71' : val <= 67 ? '#F39C12' : '#E74C3C';
+          return { background: bg, fontWeight: rowInfo.aggregated ? 'bold' : 'normal' };
+        }
+      ")
+    ),
+    result_traps = heat_col("Mice / trap night",  max_result_traps),
+    result_burrow = heat_col("Burrows / transect", max_result_burrow),
+    pct_chewcard = heat_col("Avg chew / card",    max_pct_chewcard)
+  ), hidden_cols),
+  columnGroups = list(
+    colGroup(name = "Mouse presence",   columns = "pct_detected"),
+    colGroup(name = "Traps",            columns = "result_traps"),
+    colGroup(name = "Rapid assessment", columns = c("result_burrow", "pct_chewcard"))
+  ),
+  defaultSorted   = list(ae_zone = "asc"),
+  defaultExpanded = FALSE,
+  pagination = FALSE, bordered = TRUE, striped = FALSE, highlight = TRUE
+)
+```

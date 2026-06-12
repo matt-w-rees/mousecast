@@ -1,0 +1,162 @@
+clean_data_access_ecology <- function(data_ecology_raw){
+  
+  
+  # REMOVE DATA  ---------------------------------------------------
+  data_filtered <- data_ecology_raw |>
+    # remove sessions after poison-baiting as this is biased popuation data, and we only want data from box traps - need to do this prior to reformatting
+    dplyr::filter(SessionName != "Parkes post-baiting" & TrapType == "1") |>
+    # we only want data which can reliably estimate density using CMR grids
+    dplyr::filter(TrapsSet >= 33) |>
+    # remove data from dam locations - just want crop and pasture
+    dplyr::filter(!(SiteName == "Dam- green")) |>
+    # remove post-baiting data for baited sites in April/May ZnP trials 2026
+    dplyr::filter(!(SessionName == "April 2026 - Postbaiting Adelaide Plains" & SiteName %in% c("Heaslip", "Jharkness", "Cemetery", "Clary", "Days Hill", "Parker")))
+  
+
+  # CLEAN DATA --------------------------------------------------------------
+  data_filtered_cleaned <- data_filtered |>
+    
+    # Make all character variables lowercase and turn "" into NA
+    # make all column names lowercase
+    rename_with(tolower) |>
+    
+      mutate(
+        across(
+          where(is.character),
+          ~ na_if(tolower(.x), "")
+        )
+      ) |>
+    
+    # rename / recode consistent with cleaned monitoring data
+    transmute(
+      
+      ## Spatial information
+  
+      data_source = "ms_access",
+      project = "CSIRO_ecology",
+      longitude = easting,
+      latitude = northing,
+      farmer = farmername,
+      # make consistent with monitoring database region e.g., coonamble, adelaide plains, remove state name from trangie and coonamble
+      region_name = if_else(areaname == "central west nsw", "central west",
+                       if_else(areaname == "trangie nsw", "trangie",
+                               if_else(areaname == "coonamble nsw", "coonamble",
+                                       areaname))),
+      site_name = sitename,
+      subsite_name = sitename, # need this to relate sites to monitoring naming convention 
+      
+      ## Session information (placeholder for now - calculated later)
+      session, # unique session ID in access used, will remove after caculating session dates 
+      session_start_date = NA, 
+      session_end_date = NA,
+      session_length_days = NA,
+      # site information for this session
+      crop_type = cropname,
+      crop_stage = cropstage,
+      bait_history = "unsure",
+      bait_dosage = NA, 
+      # trap type: recode numerical value to meaningful character
+      trap_type = case_when(
+        traptype == 1 ~ "longworth",
+        traptype == 2 ~ "elliott",
+        traptype == 3 ~ "snapback",
+        TRUE ~ as.character(traptype)),
+      
+      ## Capture day information
+      # day of morning animal processed / trap checked
+      survey_date = ymd(capturedate),
+      # place holder to be calculated below
+      survey_night = NA,
+      
+      # effort and total captures per night
+      number_traps_set = trapsset,
+      number_phantoms = ifelse(is.na(phantoms), 0, phantoms),
+      number_functional_traps = number_traps_set - number_phantoms,
+      number_mice_caught = totalcaptures,
+      
+      # location of trap in grid 
+      grid_location_x = traplocationx,
+      grid_location_y = traplocationy,
+      
+      # unique pit tag ID
+      pit_tag_id = pittag,
+      # ear mark if not pit tagged
+      ear_mark = as.character(earmark),
+      
+      # "class": capture or recapture?
+      class = case_when(
+        class == 1 ~ "first_capture",
+        class == 2 | class == "2" ~ "recapture_within_trip",
+        class == 3 | class == "3" ~ "recapture_bw_trips",
+        class == 4 | class == "4" ~ "recapture_tag_lost",
+        TRUE ~ as.character(class)),
+      
+      # male or female
+      sex = case_when(
+        sex %in% c("3", "0", "12") ~ NA_character_,
+        sex == 1 | sex == "1" ~ "male",
+        sex == 2 | sex == "2" ~ "female",
+        TRUE ~ as.character(sex)),      
+      
+      # female variable only:
+      vagina = case_when(
+        vagina == 0 ~ NA_character_,
+        vagina == 1 ~ "not_open",
+        vagina == 2 | vagina == "2" ~ "not_open_no_membrane",
+        vagina == 3 | vagina == "3" ~ "pin_hole",
+        vagina == 4 | vagina == "4" ~ "large_opening",
+        TRUE ~ as.character(vagina)),
+      
+      # female variable only:
+      teats = case_when(
+        teat == 0 ~ NA_character_,
+        teat == 1 ~ "not_visible",
+        teat == 2 | teat == "2" ~ "present_fur_at_base",
+        teat == 3 | teat == "3" ~ "present_large_fur_not_at_base",
+        TRUE ~ as.character(teat)),    
+      
+      # female variable only:
+      pregnant = case_when(
+        pregnant == "" ~ NA_character_,
+        pregnant == "Not pregnant" ~ "no",
+        pregnant == "Pregnant" ~ "yes",
+        TRUE ~ as.character(pregnant)),    
+      
+      # measurements
+      weight_g = weight,
+      length_mm = length,
+      
+      # fate when released
+      fate = case_when(
+        fate == 1 ~ "released",
+        fate == 2 | fate == "2" ~ "dead",
+        fate == 3 | fate == "3" ~ "released_no_mark",
+        fate == 4 | fate == "4" ~ "dead_to_lab",
+        TRUE ~ as.character(fate)),
+      
+      comments,
+      
+    ) |>
+    
+    # ADD SESSION DETAILS TO DATA
+    group_by(region_name, farmer, site_name, session, trap_type) |>  # assuming subsites started on same day, hence why not included
+    mutate(
+      session_start_date = min(survey_date),
+      session_end_date = max(survey_date),
+      session_length_days = as.integer(session_end_date - session_start_date + 1),
+      survey_night = as.integer(survey_date - session_start_date + 1)
+    ) |>
+    ungroup() |>
+    
+    
+  # CHANGE SITE FEATURES ------------------------------------------------------
+    mutate(
+      # all quigleys operate as one
+      farmer = if_else(grepl("quigley", farmer, ignore.case = TRUE), "richard quigley", farmer),
+      subsite_name = if_else(site_name == "rk murphy", "rk murphy tg", subsite_name)
+    )    
+
+  # END  --------------------------------------------------------------------
+    return(data_filtered_cleaned)
+  
+}

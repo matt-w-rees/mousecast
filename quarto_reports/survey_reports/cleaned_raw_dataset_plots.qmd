@@ -1,0 +1,189 @@
+---
+title: "Cleaned raw monitoring dataset"
+subtitle: Autumn 2025
+date: last-modified
+format: 
+  html:
+    self-contained: true
+    theme: cosmo
+    fontcolor: black
+    fig-width: 8  
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+toc: true
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| include: FALSE
+
+## load packages
+library(targets)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(lubridate)
+library(ggh4x)
+library(leaflet)
+library(sf)
+
+## load targets 
+targets::tar_load(
+  c(data)
+)
+
+
+```
+
+
+
+
+## Live-trapping data
+
+
+```{r}
+#| label: prep_trap_data
+
+# ADJUST RESPONSE VARIABLES: TRAPS ---------------------------------------------------
+# into proportional data for each data type
+
+## Traps: proportion of traps which caught a mouse
+data_traps <- data$traps |>
+  dplyr::mutate(
+    # and adjust cases when more mice than traps
+    number_mice_caught = if_else(number_mice_caught > number_functional_traps, number_functional_traps, number_mice_caught),
+    # calculate proportion, and also add column for survey type (for merge, use as sampling artefacts
+    mice_prop = pmin(1, pmax(0, number_mice_caught / number_functional_traps)),
+    survey_method = "traps") |>
+  # only show highest proportion
+  group_by(region, site, subsite, session_start_date, session_end_date) |>
+  slice_max(mice_prop, with_ties = FALSE) |>
+  ungroup()
+  
+
+  
+```
+
+### Map of sites
+
+```{r}
+#| label: map_traps
+
+leaflet(data_traps) %>%
+  addMarkers(label = data_traps$subsite, group = data_traps$region) %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>%
+  addScaleBar(position = "topright", options = c(imperial = FALSE)) %>%
+  # Layers control
+  addLayersControl(
+    overlayGroups = c(data_traps$region),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+```
+
+### Raw data plots
+
+```{r}
+#| label: plot_traps
+#| fig-height: 14
+
+# use this to determine fig height
+#length(unique(paste0(data_traps_long$site, data_traps_long$subsite))) * 2
+
+data_traps %>%
+  ggplot(aes(x = ymd(session_start_date), y = mice_prop, col = subsite)) +
+  scale_y_continuous(limits = c(0, 1)) + 
+  geom_line() + 
+  geom_point() +  
+    facet_nested_wrap(vars(region), ncol = 1, axes = "all") +
+  xlab("") + 
+  ylab("Proportion trap success") + 
+  theme(legend.position = "bottom",  
+          strip.background = element_blank()) 
+  
+```
+
+## Rapid Assessment data
+
+```{r}
+#| label: prep_ra_data
+
+# want to plot rapid assessment datatypes together -- create a new consistent response variable for each -- proportional
+# Note: column names updated to match rapid_assessment_clean_summarise() output
+data$burrows <- data$burrows %>%
+  dplyr::mutate(mice_prop = pmin(1, pmax(0, burrow_transects_present / burrow_transects_searched)),
+         survey_method = "burrows")
+
+## calculate proportion variable for chewcard data
+data$chewcards <- data$chewcards |>
+  mutate(mice_prop = pmin(1, pmax(0, chewcards_chewed / chewcards_deployed)),
+         survey_method = "chewcards")
+
+
+## prepare for binding of RA datasets (so we can plot them together)
+# can't join when different levels, so just make these cols characters
+data$burrows$season_year_adj <- as.character(data$burrows$season_year_adj)
+data$chewcards$season_year_adj <- as.character(data$chewcards$season_year_adj)
+data$burrows$month_year <- as.character(data$burrows$month_year)
+data$chewcards$month_year <- as.character(data$chewcards$month_year)
+
+## combine rapid assessment data, so separate row for each survey method
+data_ra <- bind_rows(data$burrows, data$chewcards)
+
+```
+
+### Map of sites
+
+```{r}
+#| label: map_ra
+
+data_ra_sites <- data_ra |> 
+  dplyr::select(region, site, subsite, longitude, latitude, region) |>
+  distinct(.keep_all = FALSE)
+
+  leaflet(data_ra_sites) %>%
+  addMarkers(label = data_ra_sites$subsite, group = data_ra_sites$region) %>%
+  addProviderTiles(provider = "Esri.WorldImagery") %>%
+  addScaleBar(position = "topright", options = c(imperial = FALSE)) %>%
+  # Layers control
+  addLayersControl(
+     overlayGroups = c(data_ra_sites$region),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+```
+
+
+
+### Raw data plots
+
+Each data has been converted to proportional data to plot both active burrow counts and chewcards on the same plot / scale:
+  + Chew cards: proportion of chewcards deployed with any sign of mice chew
+  + Burrows: proportion of transects which detected at least one burrow
+
+
+```{r}
+#| label: plot_ra
+#| fig-height: !expr length(unique(paste0(data_ra$site, data_ra$subsite))) * 2
+
+# use this to determine fig height
+#length(unique(paste0(data_ra$site, data_ra$subsite))) * 2
+
+
+data_ra |>
+  ggplot(aes(x = ymd(session_start_date), y = mice_prop, col = survey_method)) +
+  scale_y_continuous(limits = c(0, 1)) + 
+  geom_point() +
+  geom_line() + 
+  facet_nested_wrap(vars(region, site, subsite), ncol = 1, axes = "all") +
+  xlab("") + 
+  ylab("Mouse index") + 
+  theme(legend.position = "top",  
+          strip.background = element_blank()) 
+
+```
+
