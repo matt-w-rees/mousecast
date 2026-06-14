@@ -329,6 +329,86 @@ compute_aez_summary <- function(surveys, date_start, date_end) {
     )
 }
 
+## ── Per-season Mouse Activity Index (for the AEZ activity trend plot) ──────
+## Generalises compute_aez_summary() to a per-(year_adj, season, ae_zone)
+## summary, so activity_index can be plotted as a trend over time -- one row
+## per group present in `d`. Mirrors compute_trend_activity_index() in
+## shiny/raw_data_explorer/app.R's "Detection Trends" tab ("Overlay by AEZ"
+## view, "Mouse Activity Index" metric).
+compute_trend_activity_index <- function(d, join_keys, weights) {
+  ## Paddocks surveyed (traps/rapid) and the share with a detection, per group
+  ## -- mirrors compute_mice_by_aez()'s n_paddocks/pct_detected, but per season
+  ## rather than collapsed across the whole filter window.
+  detect <- d |>
+    dplyr::filter(data_type %in% c("traps", "rapid")) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(c(join_keys, "paddock_id")))) |>
+    dplyr::summarise(detected = any(mice_detected), .groups = "drop") |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) |>
+    dplyr::summarise(
+      n_paddocks   = dplyr::n(),
+      pct_detected = round(mean(detected) * 100, 1),
+      .groups = "drop"
+    )
+
+  ## Mean survey-level results per group, matching compute_aez_summary()'s
+  ## mean(result_traps/result_burrow/chew_per10, na.rm = TRUE).
+  means <- d |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) |>
+    dplyr::summarise(
+      result_traps  = mean(result_traps, na.rm = TRUE),
+      result_burrow = mean(result_burrow, na.rm = TRUE),
+      chew_per10    = mean(chew_per10,   na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      result_traps  = round(dplyr::if_else(is.nan(result_traps), NA_real_, result_traps), 3),
+      result_burrow = round(dplyr::if_else(is.nan(result_burrow), NA_real_, result_burrow), 2),
+      chew_per10    = round(dplyr::if_else(is.nan(chew_per10),   NA_real_, chew_per10),   2)
+    )
+
+  ## MouseAlert "high" reports per group, converted to a daily rate using the
+  ## season's approximate length (~90-92 days) -- see season_n_days().
+  alerts <- d |>
+    dplyr::filter(data_type == "observations", !is.na(mouse_abundance),
+                  mouse_abundance == "high") |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) |>
+    dplyr::summarise(n_high_reports = dplyr::n(), .groups = "drop")
+
+  d |>
+    dplyr::distinct(dplyr::across(dplyr::all_of(join_keys))) |>
+    dplyr::left_join(detect, by = join_keys) |>
+    dplyr::left_join(means,  by = join_keys) |>
+    dplyr::left_join(alerts, by = join_keys) |>
+    dplyr::mutate(
+      n_paddocks     = dplyr::if_else(is.na(n_paddocks), 0L, n_paddocks),
+      n_high_reports = dplyr::if_else(is.na(n_high_reports), 0L, n_high_reports),
+      avg_daily_high = round(n_high_reports / season_n_days(season), 3)
+    ) |>
+    compute_activity_index(weights = weights) |>
+    dplyr::mutate(
+      ## Zero systematic survey paddocks -> "no data" for that zone-season,
+      ## even if MouseAlert reports exist -- mirrors compute_aez_summary().
+      activity_index = replace(activity_index, n_paddocks == 0, NA_real_)
+    )
+}
+
+## Mid-season date for a (year_adj, season) pair, used as the trend plot's
+## x-axis position (Summer=Jan, Autumn=Apr, Winter=Jul, Spring=Oct -- the
+## middle month of each 3-month season, see attach_time_variables()).
+season_mid_date <- function(year_adj, season) {
+  if (length(year_adj) == 0) return(as.Date(character(0)))
+  as.Date(paste0(
+    year_adj, "-",
+    dplyr::case_when(
+      as.character(season) == "Summer" ~ "01",
+      as.character(season) == "Autumn" ~ "04",
+      as.character(season) == "Winter" ~ "07",
+      TRUE                              ~ "10"
+    ),
+    "-15"
+  ))
+}
+
 ```
 
 ```{r}
@@ -351,12 +431,12 @@ display_aez <- compute_aez_summary(surveys_recent, data_from_date, date_max_all)
 
 ## By default (draft_overview: false), the "## Overview" / "## Management
 ## recomendations" sections below {{< include >}} the hand-edited
-## _overview_in_short.md / _overview_in_detail.md / _overview_management.md
-## files as-is, so manual edits by the National Mouse Group persist across
-## renders. To start a new reporting cycle, render with -P
-## draft_overview:true to overwrite those three files with a fresh draft from
-## the current display_aez (see r/draft_overview_files.R), then hand-edit
-## before the final (default) render.
+## _overview.md / __management.md files as-is, so manual edits made
+## by the National Mouse Group persist across renders. To start a new
+## reporting cycle, render with -P draft_overview:true to overwrite those two
+## files with a fresh draft from the current display_aez (see
+## r/1_draft_overview_files.R), then hand-edit before the final (default)
+## render.
 qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) "quarto_reports/mouseforecast.com" else "."
 if (isTRUE(params$draft_overview)) {
   draft_overview_files(display_aez, dir = qmd_dir, report_date = Sys.Date())
@@ -430,20 +510,85 @@ data_from_label <- format(data_from_date, "%B %Y")
 ## plot_aez_map(), which likewise only draws the grey "No data" layer/legend
 ## key when this is true).
 nodata_sentence <- if (any(display_aez$activity_category == "No data")) {
-  paste0(" Zones shaded grey (\"No data\" in the legend) have had no trap or rapid-assessment surveys since ", data_from_label, ".")
+  paste0(" Mouse activity cannot be estimated in zones shaded grey as they have not been surveyed since ", data_from_label, ".")
 } else {
   ""
 }
 
 cap_aez <- paste0(
-  "Results of mouse monitoring since ", data_from_label,
-  ": Mouse Activity Index for each GRDC agro-ecological zone, combining the proportion of paddocks with mice detected, mice caught per trap night, active burrows per transect, chew cards per 10 deployed, and MouseAlert reports of high mouse abundance \u2014 each zone is shaded by the resulting index value (darker red indicates higher activity).",
+  "Expected current mouse activity across each GRDC agro-ecological zone. Zones with very low mouse activity are shown in dark green, low activity = light green, yellow shading indicates moderate activity, whereas orange - red shades showing increasingly high mouse activity (dark red = highest). The current activity values is compared to all previous data to provide a relative estimate. These estimates consider the number of paddocks with mouse presence, live-trapping rates, active burrows counts, chew cards assessments, and MouseAlert reports.",
   nodata_sentence,
   " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
   " ",
   make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
 )
 
+```
+
+```{r}
+#| label: trend_data
+#| include: false
+
+## \u2500\u2500 Mouse Activity Index trend, by AEZ \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+## Per-(season, AEZ) Mouse Activity Index over time, using the same
+## activity_weights as the "## Overview" map (see compute_trend_activity_index()).
+## Mirrors the "Detection Trends" tab's "Overlay by AEZ" view (Mouse Activity
+## Index metric) in shiny/raw_data_explorer/app.R.
+##
+## The current, in-progress season is excluded -- its partial data would show
+## as an artificially low final point for every AEZ. The trend therefore runs
+## up to and including the most recently *completed* season
+## (Summer/Autumn/Winter/Spring -- each exactly 3 calendar months, see
+## attach_time_variables()).
+
+## Start date of the season `report_date` (i.e. today) falls in -- the
+## previous season's end date is then just one day earlier.
+report_date <- Sys.Date()
+current_season_start <- dplyr::case_when(
+  lubridate::month(report_date) %in% 3:5  ~ as.Date(paste0(lubridate::year(report_date), "-03-01")),
+  lubridate::month(report_date) %in% 6:8  ~ as.Date(paste0(lubridate::year(report_date), "-06-01")),
+  lubridate::month(report_date) %in% 9:11 ~ as.Date(paste0(lubridate::year(report_date), "-09-01")),
+  lubridate::month(report_date) == 12     ~ as.Date(paste0(lubridate::year(report_date), "-12-01")),
+  TRUE ~ as.Date(paste0(lubridate::year(report_date) - 1, "-12-01")) # Jan/Feb -> previous Dec
+)
+
+last_season_start <- current_season_start %m-% months(3)
+last_season_end   <- current_season_start - 1
+
+last_season_label <- dplyr::case_when(
+  lubridate::month(last_season_start) == 3  ~ "Autumn",
+  lubridate::month(last_season_start) == 6  ~ "Winter",
+  lubridate::month(last_season_start) == 9  ~ "Spring",
+  lubridate::month(last_season_start) == 12 ~ "Summer"
+)
+last_season_year <- lubridate::year(last_season_end)
+
+## Same bait_history filter as surveys_recent (see data_prep chunk) -- a
+## recently-baited paddock's reduced activity reflects the intervention
+## rather than underlying mouse pressure.
+surveys_trend <- surveys_all |>
+  dplyr::filter(survey_date <= last_season_end, bait_history %in% c("no", "unsure"))
+
+## One row per (year_adj, season, ae_zone) with at least one traps/rapid
+## paddock surveyed -- zone-seasons with zero such paddocks (n_paddocks == 0,
+## activity_index = NA) are dropped, matching the trend_min_paddocks >= 1
+## default in app.R.
+trend_activity_index <- compute_trend_activity_index(
+  surveys_trend,
+  join_keys = c("year_adj", "season", "ae_zone"),
+  weights   = activity_weights
+) |>
+  dplyr::filter(n_paddocks >= 1, ae_zone %in% aez_surveyed) |>
+  dplyr::mutate(season_date = season_mid_date(year_adj, season))
+
+cap_trend <- paste0(
+  "Mouse Activity Index by GRDC agro-ecological zone over time, up to and including ",
+  last_season_label, " ", last_season_year,
+  ": each line combines the proportion of paddocks with mice detected, mice caught per trap night,",
+  " active burrows per transect, chew cards per 10 deployed, and MouseAlert reports of high mouse abundance for that zone and season.",
+  " Zone-seasons with no traps/rapid paddocks surveyed are omitted.",
+  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems."
+)
 ```
 
 ```{r}
@@ -528,13 +673,14 @@ make_activity_gradient_fill <- function(max_val) {
 
 ## AE zone map: filled polygons, shaded by a continuous green-to-red gradient
 ## fill (activity_index). Zones with activity_index = NA ("No data" -- no
-## traps/rapid paddocks surveyed since data_from_date) are drawn as a separate
-## grey layer with its own discrete legend entry via
+## traps/rapid paddocks surveyed in the period this map summarises) are drawn
+## as a separate grey layer with its own discrete legend entry via
 ## ggnewscale::new_scale_fill(), since a continuous colourbar guide has no
-## built-in way to show an "NA" key.
-plot_aez_map <- function() {
-  aez_data   <- dplyr::filter(aez_map, !is.na(activity_index))
-  aez_nodata <- dplyr::filter(aez_map, is.na(activity_index))
+## built-in way to show an "NA" key. map_data defaults to aez_map (the
+## "## Overview" map, data_from_date onward).
+plot_aez_map <- function(map_data = aez_map) {
+  aez_data   <- dplyr::filter(map_data, !is.na(activity_index))
+  aez_nodata <- dplyr::filter(map_data, is.na(activity_index))
 
   nodata_layer <- if (nrow(aez_nodata) > 0) {
     list(
@@ -559,6 +705,36 @@ plot_aez_map <- function() {
   ))
 }
 
+## Mouse Activity Index trend, one line per AEZ ("Overlay by AEZ" in
+## shiny/raw_data_explorer/app.R's "Detection Trends" tab). x-axis is the
+## mid-season date (season_mid_date()). The y-axis is capped at 2.5 via
+## coord_cartesian() (a visual zoom, not a data filter) -- a standout
+## AEZ-season can exceed its dataset-wide reference level by more than this
+## (see compute_activity_index()), and its line is simply clipped at the top
+## of the panel rather than dropped.
+plot_activity_trend <- function(trend_data) {
+  ggplot2::ggplot(trend_data, ggplot2::aes(x = season_date, y = activity_index,
+                                            group = ae_zone, colour = ae_zone)) +
+    ggplot2::geom_line(linewidth = 0.8, na.rm = TRUE, alpha = 0.35) +
+    ggplot2::geom_point(size = 1.8, na.rm = TRUE, alpha = 0.95) +
+    ggplot2::scale_y_continuous(limits = c(0, NA), expand = ggplot2::expansion(mult = c(0, 0.05))) +
+    ggplot2::coord_cartesian(ylim = c(0, 3)) +
+    ggplot2::scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+    ggplot2::scale_colour_brewer(palette = "Paired") +
+    ggplot2::labs(x = NULL, y = "Relative mouse activity", colour = "GRDC Agro-Ecological zone") +
+    # title.position = "top": the legend title ("GRDC Agro-Ecological zone")
+    # is too long to sit beside the keys at the bottom without wrapping into
+    # extra rows and truncating zone names -- placing it above the keys
+    # avoids that.
+    ggplot2::guides(colour = ggplot2::guide_legend(title.position = "top")) +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 0, hjust = 0.5),
+                   panel.grid.major.x = ggplot2::element_blank(),
+                   panel.grid.minor = ggplot2::element_blank(),
+                   legend.text = ggplot2::element_text(size = 8),
+                   legend.title = ggplot2::element_text(size = 10),
+                   legend.position = "bottom")
+}
 
 ```
 
@@ -566,19 +742,13 @@ plot_aez_map <- function() {
 
 ::: {.overview-detail}
 
-### In short
-
-{{< include _overview_in_short.md >}}
-
-### In detail
-
-{{< include _overview_in_detail.md >}}
+{{< include _overview.md >}}
 
 :::
 
 
 ```{r}
-#| label: fig_aez
+#| label: fig-aez
 #| fig-cap: !expr cap_aez
 
 plot_aez_map()
@@ -590,7 +760,19 @@ plot_aez_map()
 
 ## Management recomendations
 
-{{< include _overview_management.md >}}
+{{< include _management.md >}}
+
+
+
+## Mouse activity trends
+
+```{r}
+#| label: fig-activity-trend
+#| fig-cap: !expr cap_trend
+#| fig-height: 3.0
+
+plot_activity_trend(trend_activity_index)
+```
 
 
 

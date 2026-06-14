@@ -314,15 +314,15 @@ tar_plan(
   #
   # Each season, refresh the "## Overview" / "## Management recomendations"
   # text BEFORE running tar_make(), in two steps:
-  #   1) Draft: regenerate _overview_in_short.md / _overview_in_detail.md /
-  #      _overview_management.md from the latest data by rendering once with
-  #      draft_overview = TRUE (this render's own HTML output is a throwaway
-  #      -- only the three .md files matter):
+  #   1) Draft: regenerate _overview.md / _overview_management.md from the
+  #      latest data by rendering once with draft_overview = TRUE (this
+  #      render's own HTML output is a throwaway -- only the two .md files
+  #      matter):
   #        quarto::quarto_render(
   #          "quarto_reports/mouseforecast.com/raw_data_update.qmd",
   #          execute_params = list(draft_overview = TRUE)
   #        )
-  #   2) Edit: hand-edit those three .md files as needed (e.g. add specific
+  #   2) Edit: hand-edit those two .md files as needed (e.g. add specific
   #      town names, rapid-assessment anecdotes, trend notes) — the National
   #      Mouse Group should review before publishing.
   # Then run tar_make("forecast_html") (draft_overview defaults to FALSE), which
@@ -330,12 +330,11 @@ tar_plan(
   # (see extra_files below).
    tar_quarto(forecast_html, path = "quarto_reports/mouseforecast.com/raw_data_update.qmd",
               # Hand-edited Overview / Management text (see
-              # r/draft_overview_files.R) -- {{< include >}}d by the qmd, so
+              # r/1_draft_overview_files.R) -- {{< include >}}d by the qmd, so
               # list here to force a re-render when these are edited.
               extra_files = c(
-                "quarto_reports/mouseforecast.com/_overview_in_short.md",
-                "quarto_reports/mouseforecast.com/_overview_in_detail.md",
-                "quarto_reports/mouseforecast.com/_overview_management.md"
+                "quarto_reports/mouseforecast.com/_overview.md",
+                "quarto_reports/mouseforecast.com/_management.md"
               ),
               execute_params = list(
                 data_from_date        = "01-03-2026",

@@ -132,16 +132,16 @@ management_text <- function(stage, has_dual, any_flagged) {
   paste(c(base, extra), collapse = "\n\n")
 }
 
-# Generates draft markdown for raw_data_update.qmd's "## Overview" ("In
-# short" / "In detail") and "## Management recomendations" sections from
-# display_aez (one row per ever-surveyed AE zone, with activity_category --
-# see compute_aez_summary()) and the current date.
+# Generates draft markdown for raw_data_update.qmd's "## Overview" and
+# "## Management recomendations" sections from display_aez (one row per
+# ever-surveyed AE zone, with activity_category -- see compute_aez_summary())
+# and the current date.
 #
-# Returns a list of three markdown strings:
-#   - in_short:   bullet list, one line per (region, action, severity)
-#                 combination among Moderate/High AE zones (High shown in
-#                 red, matching cat_colours).
-#   - in_detail:  one paragraph per region with Moderate/High activity,
+# Returns a list of two markdown strings:
+#   - overview:   "In short" bullet list (one line per (region, action,
+#                 severity) combination among Moderate/High AE zones, High
+#                 shown in red, matching cat_colours) followed by an "In
+#                 detail" paragraph per region with Moderate/High activity,
 #                 describing the activity level and the cropping-stage-
 #                 appropriate management focus (see detail_sentence()), plus
 #                 a closing "Elsewhere ..." paragraph for regions that are
@@ -238,5 +238,9 @@ generate_overview_text <- function(display_aez, report_date = Sys.Date()) {
   ## ---- Management recommendations --------------------------------------------
   management <- management_text(stage, any(flagged$cropping_system == "dual"), nrow(flagged) > 0)
 
-  list(in_short = in_short, in_detail = in_detail, management = management)
+  ## Combine "In short" and "In detail" into a single block -- both are part
+  ## of "## Overview" and are written to one file by draft_overview_files().
+  overview <- paste(in_short, in_detail, sep = "\n\n")
+
+  list(overview = overview, management = management)
 }
