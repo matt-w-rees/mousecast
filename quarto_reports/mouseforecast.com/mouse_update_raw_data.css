@@ -11,6 +11,20 @@
   background-origin: content-box;
 }
 
+/* On narrow (mobile) screens there isn't room for the logos beside the
+   title/subtitle/description text without overlapping it -- move both
+   logos into a small row at the top of the banner instead, and push the
+   title content down below them. background-origin: border-box keeps the
+   logo row pinned to the top of the banner regardless of padding-top. */
+@media (max-width: 768px) {
+  .quarto-title-block .quarto-title-banner {
+    background-origin: border-box;
+    background-position: top 8px right 100px, top 8px right 8px;
+    background-size: 44px, 84px;
+    padding-top: 64px;
+  }
+}
+
 /* Footer logo area: NSW logo on the left, GRDC + CSIRO on the right */
 .doc-footer {
   margin-top: 60px;
@@ -22,14 +36,14 @@
 }
 
 /* ── Print styles ────────────────────────────────────────────────────────────
-   Reduce font size and spacing so the Overview + Map fit on the first page.
-   The map figure height is capped so it does not push content onto page 2.   */
+   Reduce font size and spacing, and let content flow across pages naturally
+   (no forced page breaks) so there's no wasted whitespace between sections.  */
 @media print {
-  /* Reduce the top page margin */
-  @page { margin-top: 0.5cm; }
+  /* Reduce the top and bottom page margins */
+  @page { margin-top: 0.5cm; margin-bottom: 0.3cm; }
 
   body {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   /* Tighten the title banner padding */
@@ -41,17 +55,18 @@
   /* Remove any top margin on the title block itself */
   .quarto-title-block { margin-top: 0; padding-top: 0; }
 
-  /* Reduce heading sizes */
-  h2 { font-size: 14px; margin-top: 6px;  margin-bottom: 3px; }
-  h3 { font-size: 13px; margin-top: 5px;  margin-bottom: 2px; }
+  /* Heading sizes, with extra space (~2 lines at the new body size) above
+     each section heading so sections are clearly separated */
+  h2 { font-size: 16px; margin-top: 42px; margin-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 36px; margin-bottom: 4px; }
 
-  /* Reduce spacing above/below paragraphs and lists */
-  p, ul, ol { margin-top: 2px; margin-bottom: 4px; }
-  li        { margin-bottom: 1px; }
+  /* Spacing for paragraphs and lists */
+  p, ul, ol { margin-top: 4px; margin-bottom: 6px; }
+  li        { margin-bottom: 2px; }
 
-  /* "In short" and "In detail" blocks — inherit 11px body size */
-  .overview-detail           { font-size: 11px; }
-  .overview-detail h3        { font-size: 11px; }
+  /* "In short" and "In detail" blocks — inherit the body size */
+  .overview-detail           { font-size: 13px; }
+  .overview-detail h3        { font-size: 13px; }
   .overview-detail p,
   .overview-detail ul,
   .overview-detail li        { margin-bottom: 0px; }
@@ -60,16 +75,17 @@
      match caption font size to body text */
   figcaption,
   .figure-caption,
-  .quarto-figure figcaption  { margin-top: 0; padding-top: 0; font-size: 11px; }
+  .quarto-figure figcaption  { margin-top: 0; padding-top: 0; font-size: 13px; }
 
   /* Remove bottom margin on the image so it sits flush against the caption */
   .quarto-figure img,
   .cell-output-display img   { margin-bottom: 0; }
 
-  /* Page break after the figure so management recommendations start on page 2 */
-  .quarto-figure { page-break-after: always; }
+  /* Keep each figure (image + caption) together if a page break falls nearby,
+     without forcing an extra break after every figure */
+  .quarto-figure { page-break-inside: avoid; }
 
-  /* Cap the map figure height so it fits on the first page */
+  /* Cap figure heights so they stay compact and don't dominate a page */
   .quarto-figure img,
   .cell-output-display img {
     max-height: 420px;
@@ -78,4 +94,10 @@
 
   /* Hide tab navigation bar — only the active tab content prints */
   .nav-tabs { display: none; }
+
+  /* Trim the footer's extra top spacing, and the horizontal rule above it,
+     so the larger section gaps above don't push a near-empty page onto the
+     end of the document */
+  .doc-footer { margin-top: 10px; padding-top: 8px; }
+  hr          { margin: 8px 0; }
 }

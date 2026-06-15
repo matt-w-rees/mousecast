@@ -323,18 +323,19 @@ tar_plan(
   #          execute_params = list(draft_overview = TRUE)
   #        )
   #   2) Edit: hand-edit those two .md files as needed (e.g. add specific
-  #      town names, rapid-assessment anecdotes, trend notes) — the National
-  #      Mouse Group should review before publishing.
+  #      town names, rapid-assessment anecdotes, trend notes) 
   # Then run tar_make("forecast_html") (draft_overview defaults to FALSE), which
   # {{< include >}}s the edited files as-is and re-renders whenever they change
   # (see extra_files below).
    tar_quarto(forecast_html, path = "quarto_reports/mouseforecast.com/raw_data_update.qmd",
               # Hand-edited Overview / Management text (see
               # r/1_draft_overview_files.R) -- {{< include >}}d by the qmd, so
-              # list here to force a re-render when these are edited.
+              # list here to force a re-render when these are edited. The css
+              # file is also listed so styling-only edits trigger a re-render.
               extra_files = c(
                 "quarto_reports/mouseforecast.com/_overview.md",
-                "quarto_reports/mouseforecast.com/_management.md"
+                "quarto_reports/mouseforecast.com/_management.md",
+                "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"
               ),
               execute_params = list(
                 data_from_date        = "01-03-2026",
@@ -354,6 +355,19 @@ tar_plan(
       forecast_html  # dependency: re-copy whenever the report is re-rendered
       file.copy("quarto_reports/mouseforecast.com/raw_data_update.html", "docs/index.html", overwrite = TRUE)
       "docs/index.html"
+    }, format = "file"),
+
+    # Print the rendered HTML to a PDF copy in mouse_updates/, following the
+    # "Mouse Monitoring project Update #<N> <Mon> <Year>.pdf" naming convention
+    # used by past updates (see mouse_update_pdf_path()). Re-rendering within
+    # the same month overwrites that month's PDF; a new month gets the next
+    # update number, so each month's update is kept.
+    tar_target(forecast_pdf, {
+      forecast_html  # dependency: re-convert whenever the report is re-rendered
+      mouse_update_pdf_from_html(
+        html_path = "quarto_reports/mouseforecast.com/raw_data_update.html",
+        pdf_path  = mouse_update_pdf_path("mouse_updates")
+      )
     }, format = "file"),
   
   # Git commit of docs/index.html will then deploy to github pages

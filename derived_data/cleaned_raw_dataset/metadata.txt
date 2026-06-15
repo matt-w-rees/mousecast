@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-06-12 17:40:14
+Generated: 2026-06-15 15:03:11
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -311,7 +311,7 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3639
+  Number of rows: 3644
   Number of columns: 82
 
 UNIQUE VARIABLES (specific to rapid dataset):

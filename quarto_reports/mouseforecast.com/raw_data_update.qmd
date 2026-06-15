@@ -1,7 +1,7 @@
 ---
 title: "Mouse Forecast"
 subtitle: "Current season"
-description: "House mouse abundance across Australian grain-growing regions"
+description: "House mouse activity across Australian grain-growing regions"
 title-block-banner: "#EBEBEB"
 title-block-banner-color: "black"
 format:
