@@ -5,4 +5,4 @@ ZnP25 is the only currently registered bait available; use in accordance with th
 There is currently an emergency permit for the higher dose ZnP50 bait, administered through [GRDC](https://grdc.com.au/resources-and-publications/resources/mouse-management).
 Locations this permit applies to changes on a fortnightly basis based on recent monitoring led by GRDC, check current access on the [GRDC website](https://grdc.com.au/resources-and-publications/resources/mouse-management/aez-lookup/aez-lookup-table-and-map). 
 
-3. Plan for a clean harvest (minimal grain loss) to reduce mouse food carry over into next season, and control weeds and grasses along fence lines and crop margins before seed set.
+3. Plan for a clean harvest (minimal grain loss) to reduce mouse food through the stubble, and control weeds and grasses along fence lines and crop margins before seed set.

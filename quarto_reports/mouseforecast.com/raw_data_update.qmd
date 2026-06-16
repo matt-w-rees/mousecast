@@ -51,7 +51,7 @@ library(ggnewscale)  # second discrete fill scale for the "No data" map legend e
 store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
 targets::tar_load(c(surveys_all, metric_ranges, aez_adj, aus_shp), store = store_path)
 
-## Functions for drafting the "## Overview" / "## Management recomendations"
+## Functions for drafting the "## Overview" / "## Management recommendations"
 ## text below (aez_zone_info() + generate_overview_text() + draft_overview_files()).
 r_path <- if (dir.exists("r")) "r" else "../../r"
 source(file.path(r_path, "1_aez_zone_info.R"))
@@ -430,7 +430,7 @@ display_aez <- compute_aez_summary(surveys_recent, data_from_date, date_max_all)
 #| include: false
 
 ## By default (draft_overview: false), the "## Overview" / "## Management
-## recomendations" sections below {{< include >}} the hand-edited
+## recommendations" sections below {{< include >}} the hand-edited
 ## _overview.md / __management.md files as-is, so manual edits made
 ## by the National Mouse Group persist across renders. To start a new
 ## reporting cycle, render with -P draft_overview:true to overwrite those two
@@ -758,7 +758,7 @@ plot_aez_map()
 
 
 
-## Management recomendations
+## Management recommendations
 
 {{< include _management.md >}}
 
