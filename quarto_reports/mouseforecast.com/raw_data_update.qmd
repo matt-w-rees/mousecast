@@ -516,7 +516,7 @@ nodata_sentence <- if (any(display_aez$activity_category == "No data")) {
 }
 
 cap_aez <- paste0(
-  "Expected current mouse activity across each GRDC agro-ecological zone. Zones with very low mouse activity are shown in dark green, low activity = light green, yellow shading indicates moderate activity, whereas orange - red shades showing increasingly high mouse activity (dark red = highest). The current activity values is compared to all previous data to provide a relative estimate. These estimates consider the number of paddocks with mouse presence, live-trapping rates, active burrows counts, chew cards assessments, and MouseAlert reports.",
+  "Expected current mouse activity across each GRDC agro-ecological zone. Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest). Activity estimates consider the number of paddocks with mouse presence, live-trapping rates, active burrows counts, chew cards assessments, and MouseAlert reports, comparing to all previous data to provide a relative estimate",
   nodata_sentence,
   " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
   " ",
@@ -636,7 +636,8 @@ build_map <- function(data_layer, show_towns = TRUE) {
 
   p +
     coord_sf(xlim = map_xlim, ylim = map_ylim, expand = FALSE) +
-    theme(legend.box.margin = margin(b = -8))
+    theme(legend.box.margin = margin(b = -8), legend.justification = "center",
+          legend.box = "vertical")
 }
 
 ## Colour palette for the four activity categories.
@@ -662,12 +663,13 @@ make_activity_gradient_fill <- function(max_val) {
     high     = activity_colours[["High"]],
     midpoint = max_val / 2,
     limits   = c(0, max_val),
-    breaks   = c(0, max_val),
-    labels   = c("Low", "High"),
+    breaks   = c(0, max_val / 2, max_val),
+    labels   = c("Low", "Moderate", "High"),
     oob      = scales::squish,
     na.value = activity_colours[["No data"]],
-    name     = "Mouse Activity Index",
-    guide    = guide_colourbar(title.position = "top")
+    name     = "Mouse Activity",
+    guide    = guide_colourbar(title.position = "top", title.hjust = 0.5, order = 1,
+                               barwidth = unit(10, "cm"))
   )
 }
 
@@ -690,7 +692,7 @@ plot_aez_map <- function(map_data = aez_map) {
       scale_fill_manual(
         values = c("No data" = activity_colours[["No data"]]),
         name   = NULL,
-        guide  = guide_legend(title.position = "top", order = 2)
+        guide  = guide_legend(order = 2)
       )
     )
   }
@@ -751,7 +753,16 @@ plot_activity_trend <- function(trend_data) {
 #| label: fig-aez
 #| fig-cap: !expr cap_aez
 
-plot_aez_map()
+p_aez <- plot_aez_map()
+
+# Save a copy for the email draft so email_draft.qmd can embed it directly
+# without re-running any computation. qmd_dir is defined in the draft_overview chunk.
+ggplot2::ggsave(
+  file.path(qmd_dir, "email_map.png"),
+  plot = p_aez, width = 6.5, height = 6.5 * 0.82, dpi = 150, bg = "white"
+)
+
+p_aez
 ```
 
 
@@ -764,7 +775,7 @@ plot_aez_map()
 
 
 
-## Mouse activity trends
+## Past trends
 
 ```{r}
 #| label: fig-activity-trend
@@ -793,11 +804,26 @@ We also receive reports from farmers, agronomists and other community members di
 
 ## Report mouse activity
 
+
 You can quickly report sightings of mice on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
 
 We incorporate citizen observations with our scientific surveys to create these forecasts and improve our understanding of mouse populations.
-We are primarily using observations of mice within paddocks (not houses or sheds). 
-Please don't only report observations of high mouse activity, if you've looked and found no sign or low mouse activity, this information is just as important to record!
+We are primarily using observations of mice within paddocks (not houses or sheds). If you've looked and found no sign or low mouse activity, this information is just as important as high mouse activity observations.
+
+```{r}
+#We incorporate citizen observations of mice within paddocks (not houses or sheds) from the general public to supplement our scientific survey data. 
+#This information will potentially improve our understanding and forecasts of mouse populations. 
+#If you've looked and found no sign or low mouse activity, this information is just as important as high mouse activity observations.
+#
+#You can quickly report observations using our survey form linked below. 
+#You will be asked to categorise the level of mouse activity you’ve observed, date and location of the observation, how you observed mice and whether mice were recently baited or not (if known).
+#Participation is voluntary. We do not think there are any risks involved with taking part in this survey. You may not benefit directly from taking part, but you will be making an important #contribution to our understanding about mouse populations.
+#Your answers are anonymous and treated as confidential – they will not be publicly released. We will store this data on secure servers, alongside our scientific monitoring data. 
+#This survey has been approved by CSIRO’s Social Science Human Research Ethics Committee in accordance with the National Statement on Ethical Conduct in HumanResearch (2023). 
+#If you have questions you can contact the project leader matt.rees@csiro.au or Executive Manager of Social Responsibility and Ethics on +61 7 3833 5693 or csshrec@csiro.au.
+#If you consent to take part, access the form to report mouse observations here (*hyperlink to be provided*).
+
+```
 
 
 ## Contact {#sec-contact}

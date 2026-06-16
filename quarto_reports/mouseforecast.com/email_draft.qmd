@@ -1,0 +1,192 @@
+---
+title: ""
+format:
+  html:
+    self-contained: true
+    theme: none
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Resolve the directory containing this QMD so relative paths work whether
+# rendered from the project root (via targets) or from inside the folder.
+qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) {
+  "quarto_reports/mouseforecast.com"
+} else {
+  "."
+}
+map_png <- file.path(qmd_dir, "email_map.png")
+```
+
+<style>
+/* Email preview styling — single-column layout, ~620 px wide */
+body {
+  margin: 0;
+  padding: 24px 12px;
+  background: #f0f0f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  font-size: 15px;
+  color: #1a1a1a;
+  line-height: 1.65;
+}
+.email-wrapper {
+  max-width: 620px;
+  margin: 0 auto;
+  background: #ffffff;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+}
+.email-header {
+  background: #EBEBEB;
+  padding: 18px 24px 18px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.email-header .email-title {
+  margin: 0;
+  font-size: 1.25em;
+  font-weight: 700;
+  color: #000000;
+}
+.email-header .email-subtitle {
+  margin: 3px 0 0;
+  font-size: 0.88em;
+  color: #444444;
+}
+.email-header-logos {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-shrink: 0;
+}
+.email-header-logos img {
+  height: 38px;
+  width: auto;
+  display: inline-block;
+  margin: 0;
+}
+.email-body {
+  padding: 30px 36px 24px;
+}
+.email-preamble {
+  background: #f0f6ff;
+  border-left: 4px solid #2c5f8a;
+  padding: 13px 18px;
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 26px;
+  font-size: 0.97em;
+}
+.email-preamble a {
+  color: #2c5f8a;
+  font-weight: 600;
+  text-decoration: none;
+}
+.email-preamble a:hover { text-decoration: underline; }
+.email-signature {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #dce3ed;
+  font-size: 0.88em;
+  color: #555;
+  line-height: 1.6;
+}
+h2 {
+  font-size: 1.05em;
+  font-weight: 700;
+  color: #1a1a1a;
+  margin: 24px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e4e4e4;
+}
+p  { margin: 0 0 10px; }
+ul { padding-left: 18px; }
+li { margin-bottom: 7px; }
+img { max-width: 100%; height: auto; display: block; margin: 12px auto 0; }
+.email-footer {
+  background: #ffffff;
+  padding: 18px 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+}
+.email-footer img {
+  height: 38px;
+  width: auto;
+  display: inline-block;
+  margin: 0;
+}
+.quarto-figure, .cell-output-display { margin: 0; }
+figcaption, .figure-caption { display: none; }
+</style>
+
+::: {.email-wrapper}
+
+::: {.email-header}
+<div>
+<p class="email-title">Mouse Forecast</p>
+<p class="email-subtitle">`r format(Sys.Date(), "%B %Y")` update</p>
+</div>
+<div class="email-header-logos">
+<img src="../images/logo_csiro.png" alt="CSIRO" />
+<img src="../images/logo_grdc.png" alt="GRDC" />
+</div>
+:::
+
+::: {.email-body}
+
+::: {.email-preamble}
+
+Hi all, 
+
+A new Mouse Forecast is now available, and some changes to the way we communicate these updates.
+
+**We have launched a new website - [mouseforecast.com](https://mouseforecast.com)** - where you can see the full report with the most up-to-date information. 
+
+We will regularly update the website as new data comes in (and continue to send these emails at key times of the growing year). A pdf copy is also attached to this email, feel free to forward on to your relevant network along with the website URL.  
+
+Mouse activity estimates are now completely based on quantitative data. Live-trap, active burrow, chew card assessments are integrated with citizen reports via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding, but shifted to a continous scale to show detail. We are actively refining statistical methods to improve estimates, and improve their presentation. Again, we welcome any feedback you may have. 
+
+Cheers, Matt.
+
+<div class="email-signature">
+<strong>Dr Matthew Rees</strong><br>
+Research Scientist | CSIRO | <a href="mailto:matt.rees@csiro.au">matt.rees@csiro.au</a>
+</div>
+
+:::
+
+## Overview
+
+{{< include _overview.md >}}
+
+```{r}
+#| label: fig-aez
+#| results: asis
+
+# Embed the PNG as a plain <img> tag with an inline base64 data URI, bypassing
+# Quarto's figure wrapper (which adds a lightbox link and scroll controls).
+cat(sprintf(
+  '<img src="%s" style="width:100%%;height:auto;display:block;margin:12px auto 0;" alt="Mouse activity map" />',
+  knitr::image_uri(map_png)
+))
+```
+
+:::
+
+::: {.email-footer}
+<img src="../images/logo_csiro.png" alt="CSIRO" />
+<img src="../images/logo_grdc.png" alt="GRDC" />
+<img src="../images/logo_nsw_gov.png" alt="NSW Government" />
+:::
+
+:::

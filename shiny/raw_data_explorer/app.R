@@ -345,6 +345,10 @@ activity_weights <- c(pct_detected = 1, result_traps = 1, result_burrow = 1,
                        chew_per10 = 1, avg_daily_high = 1)
 
 compute_activity_index <- function(df, weights = activity_weights) {
+  # Guard: matrix() warns "non-empty data for zero-extent matrix" when nrow == 0
+  # but the weights vector is non-empty. Return early with the expected column.
+  if (nrow(df) == 0) return(dplyr::mutate(df, activity_index = numeric(0)))
+
   # Reorder/name-match so the weight vector lines up with the norms columns
   # below regardless of how the caller constructed it.
   weights <- weights[c("pct_detected", "result_traps", "result_burrow", "chew_per10", "avg_daily_high")]
@@ -623,6 +627,15 @@ make_filter_reactive <- function(input, pfx, aez_selected = NULL) {
 ui <- fluidPage(
 
   useShinyjs(),
+
+  # Keepalive: ping the server every 55 s to prevent shinyapps.io from closing
+  # idle sessions. The server-side observeEvent below receives the ping and does
+  # nothing — enough to reset the idle timer without any visible effect.
+  tags$script(HTML("
+    setInterval(function() {
+      Shiny.setInputValue('keepalive_ping', Date.now());
+    }, 55000);
+  ")),
 
   titlePanel("Mouse Survey Data Explorer"),
 
@@ -1004,6 +1017,9 @@ ui <- fluidPage(
 
 # ── Server ───────────────────────────────────────────────────────────────────
 server <- function(input, output, session) {
+
+  # Receive keepalive pings from the UI — no-op, just resets the idle timer.
+  observeEvent(input$keepalive_ping, {}, ignoreInit = TRUE)
 
   # ── AEZ selector map helper ────────────────────────────────────────────────
   # Renders a small clickable AEZ polygon map.

@@ -357,6 +357,31 @@ tar_plan(
       "docs/index.html"
     }, format = "file"),
 
+    # Track the email QMD as a file target so edits to it invalidate email_draft.
+    tar_target(
+      email_draft_qmd,
+      "quarto_reports/mouseforecast.com/email_draft.qmd",
+      format = "file"
+    ),
+
+    # Draft HTML email for the current update. Embeds the map PNG saved as a
+    # side-effect of forecast_html — no data recomputation or params needed.
+    # Open email_draft.html in a browser, Ctrl+A -> Ctrl+C, paste into Gmail
+    # (base64 image survives the paste). Edit the preamble before sending.
+    tar_target(
+      email_draft,
+      {
+        forecast_html   # ensures forecast_html (and its email_map.png) runs first
+        email_draft_qmd # re-render whenever the QMD content changes
+        quarto::quarto_render(
+          "quarto_reports/mouseforecast.com/email_draft.qmd",
+          quiet = TRUE
+        )
+        "quarto_reports/mouseforecast.com/email_draft.html"
+      },
+      format = "file"
+    ),
+
     # Print the rendered HTML to a PDF copy in mouse_updates/, following the
     # "Mouse Monitoring project Update #<N> <Mon> <Year>.pdf" naming convention
     # used by past updates (see mouse_update_pdf_path()). Re-rendering within
