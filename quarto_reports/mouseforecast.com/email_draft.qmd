@@ -131,16 +131,25 @@ figcaption, .figure-caption { display: none; }
 
 ::: {.email-wrapper}
 
-::: {.email-header}
-<div>
-<p class="email-title">Mouse Forecast</p>
-<p class="email-subtitle">`r format(Sys.Date(), "%B %Y")` update</p>
-</div>
-<div class="email-header-logos">
-<img src="../images/logo_csiro.png" alt="CSIRO" />
-<img src="../images/logo_grdc.png" alt="GRDC" />
-</div>
-:::
+```{r}
+#| label: email-header
+#| results: asis
+
+cat(paste0(
+  '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EBEBEB;">',
+  '<tr>',
+  '<td style="padding:18px 16px 18px 32px;vertical-align:middle;">',
+  '<p style="margin:0;font-size:1.2em;font-weight:700;color:#000000;font-family:Arial,sans-serif;">Mouse Forecast</p>',
+  '<p style="margin:3px 0 0;font-size:0.85em;color:#444444;font-family:Arial,sans-serif;">', format(Sys.Date(), "%B %Y"), ' update</p>',
+  '</td>',
+  '<td style="padding:18px 24px 18px 16px;vertical-align:middle;text-align:right;white-space:nowrap;">',
+  '<img src="../images/logo_csiro.png" alt="CSIRO" height="38" style="height:38px;display:inline;border:0;vertical-align:middle;" />',
+  '<img src="../images/logo_grdc.png" alt="GRDC" height="38" style="height:38px;display:inline;border:0;vertical-align:middle;margin-left:16px;" />',
+  '</td>',
+  '</tr>',
+  '</table>'
+))
+```
 
 ::: {.email-body}
 
@@ -152,9 +161,12 @@ A new Mouse Forecast is now available, and some changes to the way we communicat
 
 **We have launched a new website - [mouseforecast.com](https://mouseforecast.com)** - where you can see the full report with the most up-to-date information. 
 
-We will regularly update the website as new data comes in (and continue to send these emails at key times of the growing year). A pdf copy is also attached to this email, feel free to forward on to your relevant network along with the website URL.  
+Mouse activity estimates are now completely based on quantitative data. Live-trap, active burrow, chew card assessments are integrated with farmer observations via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding but shifted to a continuous scale to show detail. 
+We are actively refining statistical methods to improve estimates and their presentation.
 
-Mouse activity estimates are now completely based on quantitative data. Live-trap, active burrow, chew card assessments are integrated with citizen reports via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding, but shifted to a continous scale to show detail. We are actively refining statistical methods to improve estimates, and improve their presentation. Again, we welcome any feedback you may have. 
+We will regularly refresh the website as new data comes in (and continue to send these emails at key times of the growing year). A pdf copy is also attached to this email, feel free to forward on to your relevant network along with the website URL.  
+
+Lastly, our thoughts are with those in WA affected by the current mouse plague. 
 
 Cheers, Matt.
 
@@ -183,10 +195,21 @@ cat(sprintf(
 
 :::
 
-::: {.email-footer}
-<img src="../images/logo_csiro.png" alt="CSIRO" />
-<img src="../images/logo_grdc.png" alt="GRDC" />
-<img src="../images/logo_nsw_gov.png" alt="NSW Government" />
-:::
+```{r}
+#| label: email-footer
+#| results: asis
+
+cat(paste0(
+  '<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff;padding:18px 0;">',
+  '<tr>',
+  '<td align="center" style="padding:18px 36px;vertical-align:middle;">',
+  '<img src="../images/logo_csiro.png" alt="CSIRO" height="38" style="height:38px;display:inline;border:0;vertical-align:middle;" />',
+  '<img src="../images/logo_grdc.png" alt="GRDC" height="38" style="height:38px;display:inline;border:0;vertical-align:middle;margin-left:24px;" />',
+  '<img src="../images/logo_nsw_gov.png" alt="NSW Government" height="38" style="height:38px;display:inline;border:0;vertical-align:middle;margin-left:24px;" />',
+  '</td>',
+  '</tr>',
+  '</table>'
+))
+```
 
 :::

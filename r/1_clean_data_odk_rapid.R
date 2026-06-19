@@ -1,6 +1,44 @@
+# Internal helper used by clean_data_odk_rapid().
+# When mice_chewed_cards == "no", the chew_cards repeat group has no entries
+# so all chewcard_percent_N columns are NA for that row. This function fills
+# them in with 0 up to chew_cards_deployed, making such rows consistent with
+# how a submission where all cards were assessed but none were chewed looks.
+# Submissions from form versions that predate mice_chewed_cards are unaffected
+# (the column will be absent or NA).
+.odk_fill_zero_chew_cards <- function(data) {
+
+  if (!all(c("mice_chewed_cards", "chew_cards_deployed") %in% names(data))) {
+    return(data)
+  }
+
+  no_chew_idx <- which(!is.na(data$mice_chewed_cards) & data$mice_chewed_cards == "no")
+  if (length(no_chew_idx) == 0) return(data)
+
+  n_cards <- suppressWarnings(as.integer(data$chew_cards_deployed[no_chew_idx]))
+
+  # Create any chewcard_percent_N columns that do not yet exist
+  max_n <- max(n_cards, na.rm = TRUE)
+  if (is.finite(max_n) && max_n > 0) {
+    missing_cols <- setdiff(paste0("chewcard_percent_", seq_len(max_n)), names(data))
+    if (length(missing_cols) > 0) data[missing_cols] <- NA_real_
+  }
+
+  # Set each no-chew row's chewcard_percent_1 ... chewcard_percent_n to 0
+  for (i in seq_along(no_chew_idx)) {
+    n <- n_cards[i]
+    if (!is.na(n) && n > 0) {
+      data[no_chew_idx[i], paste0("chewcard_percent_", seq_len(n))] <- 0
+    }
+  }
+
+  data
+}
+
 clean_data_odk_rapid <- function(data_field, data_office){
 
- cleaned <- bind_rows(data_field, data_office) |>
+  combined <- .odk_fill_zero_chew_cards(bind_rows(data_field, data_office))
+
+  cleaned <- combined |>
     transmute(
       data_source = "odk",
       project = if_else(submitter_name == "GRDC" | organisation == "GRDC" | organisation == "grdc", "GRDC_permit", "CSIRO_monitoring"),

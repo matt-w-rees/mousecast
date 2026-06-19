@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-06-16 17:52:45
+Generated: 2026-06-19 14:00:26
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -135,6 +135,9 @@ ae_zone
   Values:      e.g., SA Vic Mallee, NSW Central, Yorke Mid North
   Source:      Polygon-over-polygon join with GRDC AEZ layer in attach_aez()
 
+grdc_subregion
+  Description: [not yet documented]
+
 soil_type
   Description: Dominant Australian Soil Classification within the paddock polygon
   Type:        Character
@@ -172,7 +175,7 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 
 DATA STRUCTURE:
   Number of rows: 1305
-  Number of columns: 42
+  Number of columns: 43
 
 UNIQUE VARIABLES (specific to traps dataset):
 ----------------------------------------------------------------------------
@@ -311,8 +314,8 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3661
-  Number of columns: 82
+  Number of rows: 3686
+  Number of columns: 83
 
 UNIQUE VARIABLES (specific to rapid dataset):
 ----------------------------------------------------------------------------

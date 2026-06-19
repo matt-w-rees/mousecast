@@ -69,8 +69,8 @@ tar_plan(
     sf::st_transform(crs = "EPSG:4326"),
   
   # GRDC "Agro-ecological" zones (used to link sites and derive seperate process models)
-  # this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main 
-  aez_adj = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |> 
+  # this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main
+  aez_adj = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |>
     dplyr::rename(ae_zone = AEZ) |>
     dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)), #|>
     #dplyr::mutate(ae_zone = if_else(ae_zone %in% c("NSW NE Qld SE", "NSW NW Qld SW"), "NSW N Qld S", ae_zone)) |>
@@ -79,6 +79,11 @@ tar_plan(
   #aez_adj_filtered = dplyr::filter(aez_adj, ae_zone %in% unique(model_data$ae_zone)),
   # alter two QLD/NSW zones to have a north south rather than east west split (due to how sites are positioned)
   #aez_adj = adjust_aez(aez, aus),
+
+  # GRDC growing subregions — finer-grained alternative zone system
+  grdc_subregion_adj = sf::read_sf("raw_data/predictor_variables/grdc_regions/growing_subregion/GRDC SubRegion_region.shp") |>
+    dplyr::rename(grdc_subregion = SubRegion_) |>
+    sf::st_transform(crs = "EPSG:4326"),
   
   
   # 2) Load survey data --------------------------------------------------
@@ -167,7 +172,7 @@ tar_plan(
   
   # v. MouseAlert ---------------------------------------------
   # Citizen-science mouse sightings from the FeralScan / MouseAlert platform. Each record is an ordinal abundance observation (none / low / medium / high) submitted by a farmer or member of the public.
-  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-6-7.csv"),
+  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-6-18.csv"),
   data_mouse_alert = clean_data_mouse_alert(mouse_alert_file),
 
 
@@ -222,6 +227,8 @@ tar_plan(
   paddocks_sf = load_paddocks(data_list_clean, custom_paddocks_path = paddocks_by_hand) |>
     # ae_zone — intersection join then snap unmatched systematic paddocks to nearest AEZ; MouseAlert-only paddocks outside the AEZ boundary are left as NA (not snapped).
     attach_aez(aez_adj, data_list = data_list_clean, snap_dist = 15000) |>
+    # grdc_subregion — finer-grained zone; same intersection + snap logic as attach_aez()
+    attach_grdc_subregion(grdc_subregion_adj, data_list = data_list_clean, snap_dist = 15000) |>
     # soil_type — raster extraction (modal): 38% of paddocks span multiple soil types
     attach_soil_type() |>
     # state — polygon-over-polygon join (largest = TRUE): all paddocks fall within one state
@@ -285,10 +292,12 @@ tar_plan(
       # save targets needed for shiny app -
       saveRDS(data_list_clean_paddocks, "shiny/raw_data_explorer/data/data_list_clean_paddocks.rds")
       saveRDS(aez_adj,                  "shiny/raw_data_explorer/data/aez_adj.rds")
+      saveRDS(grdc_subregion_adj,       "shiny/raw_data_explorer/data/grdc_subregion_adj.rds")
       saveRDS(surveys_all,              "shiny/raw_data_explorer/data/surveys_all.rds")
       saveRDS(metric_ranges,            "shiny/raw_data_explorer/data/metric_ranges.rds")
       c("shiny/raw_data_explorer/data/data_list_clean_paddocks.rds",
         "shiny/raw_data_explorer/data/aez_adj.rds",
+        "shiny/raw_data_explorer/data/grdc_subregion_adj.rds",
         "shiny/raw_data_explorer/data/surveys_all.rds",
         "shiny/raw_data_explorer/data/metric_ranges.rds")
     },
@@ -312,18 +321,21 @@ tar_plan(
   # update these each season — changing any of them invalidates the target and
   # triggers a re-render.
   #
-  # Each season, refresh the "## Overview" / "## Management recomendations"
+  # Each season, refresh the "## Overview" / "## Management recommendations"
   # text BEFORE running tar_make(), in two steps:
-  #   1) Draft: regenerate _overview.md / _overview_management.md from the
-  #      latest data by rendering once with draft_overview = TRUE (this
-  #      render's own HTML output is a throwaway -- only the two .md files
-  #      matter):
+  #   1) Draft: regenerate _overview.md from the latest data by rendering
+  #      once with draft_overview = TRUE (this render's own HTML output is a
+  #      throwaway -- only _overview.md matters). _management.md is a
+  #      standalone, hand-maintained checklist and is NOT touched by this
+  #      step -- the qmd substitutes the current Moderate/High zone names
+  #      into its "(list zones)" placeholder itself at render time:
   #        quarto::quarto_render(
   #          "quarto_reports/mouseforecast.com/raw_data_update.qmd",
   #          execute_params = list(draft_overview = TRUE)
   #        )
-  #   2) Edit: hand-edit those two .md files as needed (e.g. add specific
-  #      town names, rapid-assessment anecdotes, trend notes) 
+  #   2) Edit: hand-edit _overview.md as needed (e.g. add specific town
+  #      names, rapid-assessment anecdotes, trend notes), and _management.md
+  #      if the recommended actions themselves need to change.
   # Then run tar_make("forecast_html") (draft_overview defaults to FALSE), which
   # {{< include >}}s the edited files as-is and re-renders whenever they change
   # (see extra_files below).

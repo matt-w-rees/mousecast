@@ -26,21 +26,22 @@ suppressPackageStartupMessages({
 
 # ── Load pipeline outputs (once at startup, not inside reactive context) ─────
 data_list_raw <- readRDS("data/data_list_clean_paddocks.rds")
-aez_base      <- readRDS("data/aez_adj.rds")
+aez_base           <- readRDS("data/aez_adj.rds")
+grdc_subregion_adj <- readRDS("data/grdc_subregion_adj.rds")
 
-# ── Download raw data feature (disabled) ────────────────────────────────────
+# ── Download raw data feature ────────────────────────────────────────────────
 # Combine all survey types into one flat frame, for the download buttons below.
 # Drop month_year/season_year_adj before binding: attach_time_variables() builds
 # these ordered factors with per-dataset level sets (observations spans a
 # narrower year range than traps/rapid), so bind_rows() fails on the mismatched
 # levels with "Can't combine ... <ordered>". Neither column is used in this app
 # — month/season groupings are derived fresh below from survey_date.
-# surveys_bound <- purrr::imap(data_list_raw, ~ dplyr::mutate(.x, data_type = .y) |>
-#                                dplyr::select(-dplyr::any_of(c("month_year", "season_year_adj")))) |>
-#   dplyr::bind_rows()
-#
-# surveys_raw <- surveys_bound |>
-#   dplyr::mutate(survey_date = as.Date(survey_date))
+surveys_bound <- purrr::imap(data_list_raw, ~ dplyr::mutate(.x, data_type = .y) |>
+                               dplyr::select(-dplyr::any_of(c("month_year", "season_year_adj")))) |>
+  dplyr::bind_rows()
+
+surveys_raw <- surveys_bound |>
+  dplyr::mutate(survey_date = as.Date(survey_date))
 
 # ── Pre-processed flat survey-level frame ────────────────────────────────────
 # Built by combine_survey_data() in r/combine_survey_data.R, run once as the
@@ -77,6 +78,16 @@ paddock_labels <- purrr::map(data_list_raw[c("traps", "rapid")], function(d) {
     )
   )
 
+# ── Zone name formatter ───────────────────────────────────────────────────────
+# Apply title case then uppercase all short words (≤ 3 letters) so state codes
+# and directional abbreviations are fully capitalised (e.g. "NSW NE Qld SE" →
+# "NSW NE QLD SE", "Vic High Rainfall" → "VIC High Rainfall"). Mirrors fmt_aez()
+# in quarto_reports/mouseforecast.com/raw_data_update.qmd.
+fmt_aez <- function(x) {
+  x <- stringr::str_to_title(as.character(x))
+  gsub("\\b([A-Za-z]{1,3})\\b", "\\U\\1", x, perl = TRUE)
+}
+
 # ── Colour palettes ──────────────────────────────────────────────────────────
 # Green -> yellow -> red diverging scale, matching
 # quarto_reports/mouseforecast.com/raw_data_update.qmd's
@@ -102,18 +113,22 @@ marker_col <- "#555555"
 # to 55% on 62 sites). MouseAlert gets its own metric: compute_mouse_alert_by_aez().
 # Uses the mice_detected column already computed on surveys_all (one definition,
 # shared by the table, map, trend chart and pattern chart).
-compute_mice_by_aez <- function(surveys) {
+compute_mice_by_aez <- function(surveys, zone_col = "ae_zone") {
+  # zone_col selects which zone system to group by ("ae_zone" or "grdc_subregion").
+  # The output zone column is always renamed to "zone" so downstream joins are
+  # consistent regardless of which zone system is active.
   surveys |>
     dplyr::filter(data_type %in% c("traps", "rapid")) |>
-    dplyr::group_by(ae_zone, paddock_id) |>
+    dplyr::group_by(.data[[zone_col]], paddock_id) |>
     dplyr::summarise(ever_detected = any(mice_detected), .groups = "drop") |>
-    dplyr::group_by(ae_zone) |>
+    dplyr::group_by(.data[[zone_col]]) |>
     dplyr::summarise(
       n_sites      = dplyr::n(),
       n_detected   = sum(ever_detected),
       pct_detected = round(n_detected / n_sites * 100, 1),
       .groups      = "drop"
-    )
+    ) |>
+    dplyr::rename(zone = dplyr::all_of(zone_col))
 }
 
 # ── Per-AEZ MouseAlert stats ─────────────────────────────────────────────────
@@ -121,56 +136,61 @@ compute_mice_by_aez <- function(surveys) {
 # average number of "high" abundance MouseAlert sightings per day within the
 # supplied date window. Dividing by the window length makes the metric
 # comparable across different filter periods (analogous to mice per trap night).
-compute_mouse_alert_by_aez <- function(surveys, date_start, date_end) {
+compute_mouse_alert_by_aez <- function(surveys, date_start, date_end, zone_col = "ae_zone") {
   # Guard against NULL/zero-length dates (can occur briefly during session init).
   n_days <- tryCatch(
     as.numeric(as.Date(date_end) - as.Date(date_start)) + 1,
     error = function(e) 1
   )
   if (length(n_days) == 0 || !is.finite(n_days) || n_days < 1) n_days <- 1
+  # zone_col selects which zone system to group by; output column is always "zone".
   surveys |>
-    dplyr::filter(data_type == "observations", !is.na(ae_zone),
+    dplyr::filter(data_type == "observations", !is.na(.data[[zone_col]]),
                   !is.na(mouse_abundance), mouse_abundance == "high") |>
-    dplyr::group_by(ae_zone) |>
+    dplyr::group_by(.data[[zone_col]]) |>
     dplyr::summarise(
       # raw count displayed in the table; avg_daily_high used for shading
       n_high_reports = dplyr::n(),
       avg_daily_high = round(dplyr::n() / n_days, 3),
       .groups = "drop"
-    )
+    ) |>
+    dplyr::rename(zone = dplyr::all_of(zone_col))
 }
 
 # ── Per-AEZ stats for a chosen map metric ────────────────────────────────────
 # Returns ae_zone, n_sites, display_val, and (for pct_detected) n_detected /
 # traffic_light so the polygon popup can show the right information.
-compute_aez_display <- function(surveys, metric) {
-  # isTRUE() handles zero-length or NULL metric without throwing "argument is of length zero"
+compute_aez_display <- function(surveys, metric, zone_col = "ae_zone") {
+  # isTRUE() handles zero-length or NULL metric without throwing "argument is of length zero".
+  # zone_col selects the zone grouping variable; output column is always renamed to "zone".
   if (isTRUE(metric == "pct_detected")) {
     # Restricted to traps/rapid — see compute_mice_by_aez() for why MouseAlert
     # observations are excluded from this systematic-survey detection rate.
     surveys |>
       dplyr::filter(data_type %in% c("traps", "rapid")) |>
-      dplyr::group_by(ae_zone, paddock_id) |>
+      dplyr::group_by(.data[[zone_col]], paddock_id) |>
       dplyr::summarise(detected = any(mice_detected), .groups = "drop") |>
-      dplyr::group_by(ae_zone) |>
+      dplyr::group_by(.data[[zone_col]]) |>
       dplyr::summarise(
         n_sites     = dplyr::n(),
         n_detected  = sum(detected),
         display_val = round(mean(detected) * 100, 1),
         .groups     = "drop"
-      )
+      ) |>
+      dplyr::rename(zone = dplyr::all_of(zone_col))
   } else {
-    # Simple mean across all survey rows per AEZ — matches the table's aggregation
+    # Simple mean across all survey rows per zone — matches the table's aggregation
     # so map and table colours are directly comparable.
     surveys |>
-      dplyr::group_by(ae_zone) |>
+      dplyr::group_by(.data[[zone_col]]) |>
       dplyr::summarise(
         n_sites       = dplyr::n_distinct(paddock_id),
         n_detected    = NA_integer_,
         display_val   = round(mean(.data[[metric]], na.rm = TRUE), 3),
         traffic_light = NA_character_,
         .groups       = "drop"
-      )
+      ) |>
+      dplyr::rename(zone = dplyr::all_of(zone_col))
   }
 }
 
@@ -314,6 +334,11 @@ project_choices <- sort(unique(surveys_all$project))
 bait_choices    <- sort(unique(surveys_all$bait_history))
 aez_choices        <- sort(unique(surveys_all$ae_zone))
 aez_base_surveyed  <- dplyr::filter(aez_base, ae_zone %in% aez_choices)
+# GRDC subregion equivalents — built from the grdc_subregion column added by
+# the upstream pipeline; NAs are excluded since some survey rows may lack a
+# subregion assignment (e.g. sites outside the grain-belt boundary).
+subregion_choices       <- sort(unique(surveys_all$grdc_subregion[!is.na(surveys_all$grdc_subregion)]))
+subregion_base_surveyed <- dplyr::filter(grdc_subregion_adj, grdc_subregion %in% subregion_choices)
 date_min        <- min(surveys_all$survey_date)
 date_max        <- max(surveys_all$survey_date)
 
@@ -654,19 +679,18 @@ ui <- fluidPage(
         tags$p(textOutput("summary_stats"),
                style = "color: #555; font-size: 0.9em; margin-bottom: 4px;"),
 
-        # tags$p(tags$strong("Download raw datasets for this date window"),
-        #        style = "margin-bottom: 4px; font-size: 0.95em;"),
+        tags$p(tags$strong("Download raw datasets for this date window"),
+               style = "margin-bottom: 4px; font-size: 0.95em;"),
         fluidRow(
           column(9,
-            # downloadButton("download_traps", "Download traps (CSV)",
-            #                class = "btn btn-outline-secondary btn-sm"),
-            # tags$span(style = "display:inline-block; width:8px;"),
-            # downloadButton("download_rapid", "Download rapid assessment (CSV)",
-            #                class = "btn btn-outline-secondary btn-sm"),
-            # tags$span(style = "display:inline-block; width:8px;"),
-            # downloadButton("download_observations", "Download observations (CSV)",
-            #                class = "btn btn-outline-secondary btn-sm")
-            NULL
+            downloadButton("download_traps", "Download traps (CSV)",
+                           class = "btn btn-outline-secondary btn-sm"),
+            tags$span(style = "display:inline-block; width:8px;"),
+            downloadButton("download_rapid", "Download rapid assessment (CSV)",
+                           class = "btn btn-outline-secondary btn-sm"),
+            tags$span(style = "display:inline-block; width:8px;"),
+            downloadButton("download_observations", "Download observations (CSV)",
+                           class = "btn btn-outline-secondary btn-sm")
           ),
           column(3,
             actionButton("map_reset", "Reset filters",
@@ -702,7 +726,11 @@ ui <- fluidPage(
         ),
 
         tags$hr(),
-        tags$h4("Summary statistics within GRDC Agro-Ecological Zones"),
+        radioButtons("zone_type", "Zone grouping for table and map",
+                     choices  = c("GRDC AEZ" = "ae_zone",
+                                  "GRDC Subregion" = "grdc_subregion"),
+                     selected = "ae_zone", inline = TRUE),
+        uiOutput("table_heading"),
         tags$p("Result columns are specific to each data type: traps (mice per trap night) and
                 rapid assessment (active burrows per transect; chew cards per 10 deployed)."),
         reactableOutput("table"),
@@ -733,7 +761,7 @@ ui <- fluidPage(
         tags$h4("Map"),
         fluidRow(
           column(12,
-            radioButtons("map_metric", "Colour AEZ zones by",
+            radioButtons("map_metric", "Colour zones by",
                          choices = c(
                            "% paddocks detected"        = "pct_detected",
                            "Mice / trap night"          = "result_traps",
@@ -1045,7 +1073,7 @@ server <- function(input, output, session) {
           fillOpacity      = ifelse(aez_base_surveyed$ae_zone %in% selected, 0.75, 0.45),
           color            = "white",
           weight           = 1,
-          label            = ~ae_zone,
+          label            = ~fmt_aez(ae_zone),
           highlightOptions = highlightOptions(weight = 2, fillOpacity = 0.65, bringToFront = TRUE)
         )
     })
@@ -1074,11 +1102,27 @@ server <- function(input, output, session) {
           fillOpacity      = ifelse(aez_base_surveyed$ae_zone %in% selected, 0.75, 0.45),
           color            = "white",
           weight           = 1,
-          label            = ~ae_zone,
+          label            = ~fmt_aez(ae_zone),
           highlightOptions = highlightOptions(weight = 2.5, fillOpacity = 0.9, bringToFront = TRUE)
         )
     })
   }
+
+  # ── Zone system toggle reactives ───────────────────────────────────────────
+  # zone_col_r() returns the column name in surveys_all for the currently
+  # selected zone system ("ae_zone" or "grdc_subregion").
+  zone_col_r <- reactive({ input$zone_type })
+
+  # zone_base_r() returns an sf polygon object whose zone identifier column has
+  # been renamed to "zone" so all downstream map and join logic is uniform.
+  zone_base_r <- reactive({
+    base <- if (isTRUE(input$zone_type == "grdc_subregion")) {
+      subregion_base_surveyed
+    } else {
+      aez_base_surveyed
+    }
+    dplyr::rename(base, zone = dplyr::all_of(zone_col_r()))
+  })
 
   # ── Map tab filters ────────────────────────────────────────────────────────
   surveys_filtered <- make_filter_reactive(input, "map_")
@@ -1103,17 +1147,17 @@ server <- function(input, output, session) {
   })
 
   # Raw pipeline data filtered by map tab inputs — used for downloads.
-  # surveys_raw_filtered <- reactive({
-  #   d <- surveys_raw
-  #   d <- dplyr::filter(d, survey_date >= safe_date(input$map_date_start, date_min),
-  #                         survey_date <= safe_date(input$map_date_end, date_max))
-  #   if (length(input$map_year_filter)    > 0) d <- dplyr::filter(d, year_adj     %in% input$map_year_filter)
-  #   if (length(input$map_season_filter)  > 0) d <- dplyr::filter(d, season       %in% input$map_season_filter)
-  #   if (length(input$map_type_filter)    > 0) d <- dplyr::filter(d, data_type    %in% input$map_type_filter)
-  #   if (length(input$map_project_filter) > 0) d <- dplyr::filter(d, project      %in% input$map_project_filter)
-  #   if (length(input$map_bait_filter)    > 0) d <- dplyr::filter(d, bait_history %in% input$map_bait_filter)
-  #   d
-  # })
+  surveys_raw_filtered <- reactive({
+    d <- surveys_raw
+    d <- dplyr::filter(d, survey_date >= safe_date(input$map_date_start, date_min),
+                          survey_date <= safe_date(input$map_date_end, date_max))
+    if (length(input$map_year_filter)    > 0) d <- dplyr::filter(d, year_adj     %in% input$map_year_filter)
+    if (length(input$map_season_filter)  > 0) d <- dplyr::filter(d, season       %in% input$map_season_filter)
+    if (length(input$map_type_filter)    > 0) d <- dplyr::filter(d, data_type    %in% input$map_type_filter)
+    if (length(input$map_project_filter) > 0) d <- dplyr::filter(d, project      %in% input$map_project_filter)
+    if (length(input$map_bait_filter)    > 0) d <- dplyr::filter(d, bait_history %in% input$map_bait_filter)
+    d
+  })
 
   # ── Trend tab filters ──────────────────────────────────────────────────────
   trend_aez_selected <- reactiveVal(character(0))
@@ -1152,7 +1196,7 @@ server <- function(input, output, session) {
   })
 
   # ── Map tab reactives ──────────────────────────────────────────────────────
-  mice_by_aez_r        <- reactive({ compute_mice_by_aez(surveys_filtered()) })
+  mice_by_aez_r        <- reactive({ compute_mice_by_aez(surveys_filtered(), zone_col_r()) })
   # n_days (the avg_daily_high denominator) is normally
   # map_date_end - map_date_start + 1 — the *selected* date window, regardless
   # of whether a survey happens to fall on its boundary dates — matching
@@ -1170,7 +1214,7 @@ server <- function(input, output, session) {
     } else {
       c(safe_date(input$map_date_start, date_min), safe_date(input$map_date_end, date_max))
     }
-    compute_mouse_alert_by_aez(d, date_range[1], date_range[2])
+    compute_mouse_alert_by_aez(d, date_range[1], date_range[2], zone_col_r())
   })
 
   # User-adjustable weights for the Mouse Activity Index, from the sliders
@@ -1189,10 +1233,12 @@ server <- function(input, output, session) {
 
   aez_display_r <- reactive({
     req(input$map_metric)
+    # All three branches produce a "zone" column (via zone_col_r()) so the final
+    # join onto zone_base_r() (which also exposes a "zone" column) is uniform.
     if (input$map_metric == "n_high_paddocks") {
       stats <- mouse_alert_by_aez_r() |>
         dplyr::transmute(
-          ae_zone       = ae_zone,
+          zone          = zone,
           n_sites       = NA_integer_,
           n_detected    = NA_integer_,
           display_val   = as.numeric(avg_daily_high),
@@ -1202,27 +1248,33 @@ server <- function(input, output, session) {
       # Continuous 0-1 combined index — see compute_activity_index().
       stats <- aez_summary_r() |>
         dplyr::transmute(
-          ae_zone       = ae_zone,
+          zone          = zone,
           n_sites       = n_paddocks,
           n_detected    = NA_integer_,
           display_val   = as.numeric(activity_index),
           traffic_light = NA_character_
         )
     } else {
-      stats <- compute_aez_display(surveys_filtered(), input$map_metric)
+      stats <- compute_aez_display(surveys_filtered(), input$map_metric, zone_col_r())
     }
-    dplyr::left_join(aez_base, stats, by = "ae_zone")
+    # zone_base_r() already has the polygon zone column renamed to "zone";
+    # join on that uniform column name.
+    dplyr::left_join(zone_base_r(), stats, by = "zone")
   })
 
   surveys_for_table <- reactive({
+    # The helper functions output a "zone" column (see compute_mice_by_aez() etc.);
+    # join that back onto the original zone column name in surveys_filtered() via
+    # setNames() so the survey rows gain pct_detected / n_high_reports etc.
+    zc <- zone_col_r()
     surveys_filtered() |>
       dplyr::left_join(
-        dplyr::select(mice_by_aez_r(), ae_zone, pct_detected, n_sites, n_detected),
-        by = "ae_zone"
+        dplyr::select(mice_by_aez_r(), zone, pct_detected, n_sites, n_detected),
+        by = setNames("zone", zc)
       ) |>
       dplyr::left_join(
-        dplyr::select(mouse_alert_by_aez_r(), ae_zone, n_high_reports, avg_daily_high),
-        by = "ae_zone"
+        dplyr::select(mouse_alert_by_aez_r(), zone, n_high_reports, avg_daily_high),
+        by = setNames("zone", zc)
       )
   })
 
@@ -1230,12 +1282,13 @@ server <- function(input, output, session) {
   # One row per AEZ with the five table metrics plus activity_index,
   # computed using the user's weight sliders.
   aez_summary_r <- reactive({
+    zc <- zone_col_r()
     surveys_for_table() |>
-      dplyr::filter(!is.na(ae_zone)) |>
-      dplyr::group_by(ae_zone) |>
+      dplyr::filter(!is.na(.data[[zc]])) |>
+      dplyr::group_by(.data[[zc]]) |>
       dplyr::summarise(
         # n_paddocks mirrors the denominator behind pct_detected (traps/rapid
-        # only) — NA (-> 0 below) where the AEZ has no systematic survey
+        # only) — NA (-> 0 below) where the zone has no systematic survey
         # paddocks at all.
         n_paddocks     = dplyr::first(n_sites),
         pct_detected   = dplyr::first(pct_detected),
@@ -1246,8 +1299,11 @@ server <- function(input, output, session) {
         avg_daily_high = dplyr::first(avg_daily_high),
         .groups = "drop"
       ) |>
+      # Rename whatever zone_col_r() produced to "zone" so the activity_index
+      # branch in aez_display_r() can always reference the "zone" column.
+      dplyr::rename(zone = dplyr::all_of(zc)) |>
       dplyr::mutate(
-        # An AEZ with zero traps/rapid paddocks is a known "0", not missing —
+        # A zone with zero traps/rapid paddocks is a known "0", not missing —
         # show it as such (no grey shading) rather than NA.
         n_paddocks    = dplyr::if_else(is.na(n_paddocks), 0L, n_paddocks),
         result_traps  = round(dplyr::if_else(is.nan(result_traps), NA_real_, result_traps), 3),
@@ -1257,7 +1313,7 @@ server <- function(input, output, session) {
       compute_activity_index(weights = activity_weights_r()) |>
       dplyr::mutate(
         # Zero systematic survey paddocks -> the Mouse Activity Index is "no
-        # data" overall, even if MouseAlert reports exist for the AEZ.
+        # data" overall, even if MouseAlert reports exist for the zone.
         # Citizen reports alone aren't a substitute for a survey baseline.
         activity_index = replace(activity_index, n_paddocks == 0, NA_real_)
       )
@@ -1278,16 +1334,25 @@ server <- function(input, output, session) {
             dplyr::n_distinct(d$paddock_id), nrow(d), dplyr::n_distinct(d$ae_zone))
   })
 
+  # ── Table heading — updates with the zone type toggle ─────────────────────
+  output$table_heading <- renderUI({
+    label <- if (isTRUE(input$zone_type == "grdc_subregion"))
+      "Summary statistics within GRDC Subregions"
+    else
+      "Summary statistics within GRDC Agro-Ecological Zones"
+    tags$h4(label)
+  })
+
   # ── Enable / disable download buttons ─────────────────────────────────────
-  # observe({
-  #   d <- surveys_raw_filtered()
-  #   if (nrow(dplyr::filter(d, data_type == "traps")) > 0) shinyjs::enable("download_traps")
-  #   else shinyjs::disable("download_traps")
-  #   if (nrow(dplyr::filter(d, data_type == "rapid")) > 0) shinyjs::enable("download_rapid")
-  #   else shinyjs::disable("download_rapid")
-  #   if (nrow(dplyr::filter(d, data_type == "observations")) > 0) shinyjs::enable("download_observations")
-  #   else shinyjs::disable("download_observations")
-  # })
+  observe({
+    d <- surveys_raw_filtered()
+    if (nrow(dplyr::filter(d, data_type == "traps")) > 0) shinyjs::enable("download_traps")
+    else shinyjs::disable("download_traps")
+    if (nrow(dplyr::filter(d, data_type == "rapid")) > 0) shinyjs::enable("download_rapid")
+    else shinyjs::disable("download_rapid")
+    if (nrow(dplyr::filter(d, data_type == "observations")) > 0) shinyjs::enable("download_observations")
+    else shinyjs::disable("download_observations")
+  })
 
   # ── Initial map render ─────────────────────────────────────────────────────
   output$map <- renderLeaflet({
@@ -1306,7 +1371,7 @@ server <- function(input, output, session) {
                 layerId = "aez_legend") |>
       addLayersControl(
         baseGroups    = c("Light (default)", "Satellite", "OpenStreetMap"),
-        overlayGroups = c("AEZ zones", "Survey sites"),
+        overlayGroups = c("Zone polygons", "Survey sites"),
         options       = layersControlOptions(collapsed = FALSE)
       ) |>
       addScaleBar(position = "topright", options = scaleBarOptions(imperial = FALSE))
@@ -1381,12 +1446,13 @@ server <- function(input, output, session) {
       activity_index  = "Mouse Activity Index"
     )
 
-    # Build per-AEZ popup text — branch outside mutate to avoid scalar-condition issues.
+    # Build per-zone popup text — branch outside mutate to avoid scalar-condition issues.
     # isTRUE() guards against zero-length metric which would crash if().
+    # aez_display_r() always has a "zone" column regardless of the zone system.
     if (isTRUE(metric == "pct_detected")) {
       aez <- dplyr::mutate(aez,
         popup_text = paste0(
-          "<b>AEZ:</b> ", ae_zone, "<br>",
+          "<b>Zone:</b> ", fmt_aez(zone), "<br>",
           "<b>Paddocks detected:</b> ",
           ifelse(is.na(display_val), "—",
                  paste0(n_detected, " / ", n_sites, " (", display_val, "%)"))
@@ -1395,7 +1461,7 @@ server <- function(input, output, session) {
     } else {
       aez <- dplyr::mutate(aez,
         popup_text = paste0(
-          "<b>AEZ:</b> ", ae_zone, "<br>",
+          "<b>Zone:</b> ", fmt_aez(zone), "<br>",
           "<b>", metric_label, ":</b> ",
           ifelse(is.na(display_val) | !is.finite(display_val), "—",
                  as.character(round(display_val, 2))), "<br>",
@@ -1405,16 +1471,16 @@ server <- function(input, output, session) {
     }
 
     proxy <- leafletProxy("map") |>
-      clearGroup("AEZ zones") |>
+      clearGroup("Zone polygons") |>
       addPolygons(
         data        = aez,
-        group       = "AEZ zones",
-        layerId     = ~ae_zone,
+        group       = "Zone polygons",
+        layerId     = ~zone,
         fillColor   = ~pal_fill(display_val),
         fillOpacity = 0.8,
         color       = "white",
         weight      = 1.2,
-        label       = ~ae_zone,
+        label       = ~fmt_aez(zone),
         popup       = ~popup_text,
         highlightOptions = highlightOptions(weight = 2.5, fillOpacity = 1.0, bringToFront = FALSE)
       ) |>
@@ -1448,9 +1514,9 @@ server <- function(input, output, session) {
             .groups       = "drop"
           ) |>
           dplyr::mutate(label_popup = paste0(
-            "<b>Paddock ID:</b> ", paddock_id, "<br>",
-            "<b>State:</b> ",      state,      "<br>",
-            "<b>AEZ:</b> ",        ae_zone,    "<br><br>",
+            "<b>Paddock ID:</b> ", paddock_id,       "<br>",
+            "<b>State:</b> ",      state,            "<br>",
+            "<b>AEZ:</b> ",        fmt_aez(ae_zone), "<br><br>",
             "<b>MouseAlert reports:</b> ", n_reports,
             " total (", n_high, " high)"
           ))
@@ -1522,9 +1588,9 @@ server <- function(input, output, session) {
           ) |>
           dplyr::mutate(
             label_popup = paste0(
-              "<b>Paddock ID:</b> ", paddock_id, "<br>",
-              "<b>State:</b> ",      state,      "<br>",
-              "<b>AEZ:</b> ",        ae_zone,    "<br><br>",
+              "<b>Paddock ID:</b> ", paddock_id,       "<br>",
+              "<b>State:</b> ",      state,            "<br>",
+              "<b>AEZ:</b> ",        fmt_aez(ae_zone), "<br><br>",
               "<b>", metric_col_label, " (", n_surveys, " surveys):</b> ",
               ifelse(is.finite(metric_val), metric_fmt_fn(metric_val), "—"), "<br>",
               "<b>Detected:</b> ", ifelse(mice_detected, "Yes", "No")
@@ -1554,6 +1620,7 @@ server <- function(input, output, session) {
       # rather than showing a mostly-empty/grey row. They still appear on the
       # map, shaded as "No data".
       dplyr::filter(n_paddocks > 0) |>
+      dplyr::mutate(zone = fmt_aez(zone)) |>
       dplyr::mutate(
         # Each systematic metric is greyed independently via
         # activity_gradient_color()'s own NA handling — i.e. only when 0
@@ -1568,7 +1635,7 @@ server <- function(input, output, session) {
         bg_avg_daily_high  = activity_gradient_color(avg_daily_high, gradient_max_avg_daily_high),
         bg_activity_index  = activity_gradient_color(activity_index, input$activity_index_gradient_max)
       ) |>
-      dplyr::arrange(ae_zone)
+      dplyr::arrange(zone)
 
     bg_style <- function(col) {
       # Converts hex to rgba(r,g,b,0.8) so cell background matches map opacity.
@@ -1594,7 +1661,7 @@ server <- function(input, output, session) {
     reactable::reactable(
       df,
       columns = list(
-        ae_zone         = reactable::colDef(name = "AEZ", minWidth = 160),
+        zone            = reactable::colDef(name = "Zone", minWidth = 160),
         n_paddocks      = reactable::colDef(name = "Paddocks surveyed", minWidth = 130),
         pct_detected    = reactable::colDef(name = "Paddocks detected (%)", minWidth = 130,
                             format = reactable::colFormat(suffix = "%", digits = 1),
@@ -1629,27 +1696,27 @@ server <- function(input, output, session) {
         reactable::colGroup(name = "Combined (all metrics)",
                             columns = "activity_index")
       ),
-      defaultSorted = list(ae_zone = "asc"),
+      defaultSorted = list(zone = "asc"),
       pagination = FALSE, bordered = TRUE, striped = FALSE, highlight = TRUE
     )
   })
 
   # ── Download handlers ──────────────────────────────────────────────────────
-  # output$download_traps <- downloadHandler(
-  #   filename = function() paste0("survey_traps_", Sys.Date(), ".csv"),
-  #   content  = function(file)
-  #     write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "traps"), file, row.names = FALSE)
-  # )
-  # output$download_rapid <- downloadHandler(
-  #   filename = function() paste0("survey_rapid_", Sys.Date(), ".csv"),
-  #   content  = function(file)
-  #     write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "rapid"), file, row.names = FALSE)
-  # )
-  # output$download_observations <- downloadHandler(
-  #   filename = function() paste0("survey_observations_", Sys.Date(), ".csv"),
-  #   content  = function(file)
-  #     write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "observations"), file, row.names = FALSE)
-  # )
+  output$download_traps <- downloadHandler(
+    filename = function() paste0("survey_traps_", Sys.Date(), ".csv"),
+    content  = function(file)
+      write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "traps"), file, row.names = FALSE)
+  )
+  output$download_rapid <- downloadHandler(
+    filename = function() paste0("survey_rapid_", Sys.Date(), ".csv"),
+    content  = function(file)
+      write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "rapid"), file, row.names = FALSE)
+  )
+  output$download_observations <- downloadHandler(
+    filename = function() paste0("survey_observations_", Sys.Date(), ".csv"),
+    content  = function(file)
+      write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "observations"), file, row.names = FALSE)
+  )
 
   # Contextual note below the min-paddocks input explaining what is filtered
   output$trend_min_pads_note <- renderUI({
@@ -2276,21 +2343,21 @@ server <- function(input, output, session) {
       ) |>
       addLayersControl(
         baseGroups    = c("Light (default)", "Satellite", "OpenStreetMap"),
-        overlayGroups = c("AEZ zones", "Survey paddocks"),
+        overlayGroups = c("Zone polygons", "Survey paddocks"),
         options       = layersControlOptions(collapsed = FALSE)
       ) |>
       addScaleBar(position = "topright", options = scaleBarOptions(imperial = FALSE)) |>
       addPolygons(
         data        = aez_sf,
-        group       = "AEZ zones",
+        group       = "Zone polygons",
         layerId     = ~ae_zone,
         fillColor   = ~pal_znp(overall_class),
         fillOpacity = 0.75,
         color       = "white",
         weight      = 1.2,
-        label       = ~ae_zone,
+        label       = ~fmt_aez(ae_zone),
         popup       = ~paste0(
-          "<b>AEZ:</b> ", ae_zone, "<br>",
+          "<b>AEZ:</b> ", fmt_aez(ae_zone), "<br>",
           "<b>ZNP50 classification:</b> ",
           ifelse(is.na(overall_class), "No data", overall_class), "<br>",
           "<b>Sites surveyed:</b> ", ifelse(is.na(n_sites), "—", as.character(n_sites)), "<br>",

@@ -463,12 +463,12 @@ aez_map <- aez_adj |>
 
 ## Pre-compute values used in the inline "In short" text and figure captions.
 
-## Formatter for AE zone names: apply title case then uppercase the leading
-## state abbreviation (e.g. "sa central" → "SA Central", "nsw n qld s" → "NSW N Qld S").
-## Uses a Perl back-reference \\U to uppercase the first captured word.
+## Formatter for AE zone names: apply title case then uppercase all short
+## words (≤ 3 letters), which covers state codes and directional abbreviations
+## (e.g. "nsw ne qld se" → "NSW NE QLD SE", "sa central" → "SA Central").
 fmt_aez <- function(x) {
   x <- stringr::str_to_title(as.character(x))
-  gsub("^([A-Z][a-z]+)(?=\\s|$)", "\\U\\1", x, perl = TRUE)
+  gsub("\\b([A-Za-z]{1,3})\\b", "\\U\\1", x, perl = TRUE)
 }
 
 ## Helper: format a character vector as natural-language prose.
@@ -516,11 +516,10 @@ nodata_sentence <- if (any(display_aez$activity_category == "No data")) {
 }
 
 cap_aez <- paste0(
-  "Expected current mouse activity across each GRDC agro-ecological zone. Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest). Activity estimates consider the number of paddocks with mouse presence, live-trapping rates, active burrows counts, chew cards assessments, and MouseAlert reports, comparing to all previous data to provide a relative estimate",
-  nodata_sentence,
-  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems.",
-  " ",
-  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
+  "Current mouse activity across each GRDC agro-ecological zone (broad regions defined by similar climate, soils, and farming systems). Activity estimates consider  live-trapping rates, active burrow counts, chew card assessments, the proportion of surveyed paddocks which detected mice and farmer observations (via MouseAlert). Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest).",
+  nodata_sentence
+#  " ",
+#  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
 )
 
 ```
@@ -730,7 +729,12 @@ plot_activity_trend <- function(trend_data) {
     # avoids that.
     ggplot2::guides(colour = ggplot2::guide_legend(title.position = "top")) +
     ggplot2::theme_minimal(base_size = 12) +
+    # Light grey panel background (with white gridlines, since theme_minimal's
+    # default grey92 gridlines would otherwise blend into a grey92 background)
+    # makes the zone colour lines/points stand out more.
     ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 0, hjust = 0.5),
+                   panel.background   = ggplot2::element_rect(fill = "grey92", colour = NA),
+                   panel.grid.major.y = ggplot2::element_line(colour = "white"),
                    panel.grid.major.x = ggplot2::element_blank(),
                    panel.grid.minor = ggplot2::element_blank(),
                    legend.text = ggplot2::element_text(size = 8),
@@ -771,7 +775,29 @@ p_aez
 
 ## Management recommendations
 
-{{< include _management.md >}}
+```{r}
+#| label: management-text
+#| results: asis
+
+# Read the hand-edited management recommendations template (_management.md).
+# The placeholder "(list zones)" is replaced at render time with a
+# natural-language list of AE zones currently showing moderate or high
+# mouse activity, derived from display_aez (computed in summary_text_prep).
+mgmt_path <- file.path(qmd_dir, "_management.md")
+mgmt_text <- paste(readLines(mgmt_path), collapse = "\n")
+
+# Combine high- and moderate-activity zones; format with title case and
+# uppercase state prefix (fmt_aez), then join as prose (list_names).
+zones_moderate_high <- c(as.character(aez_high), as.character(aez_med))
+zone_list <- if (length(zones_moderate_high) == 0) {
+  "none currently detected"
+} else {
+  list_names(zones_moderate_high, fmt = fmt_aez)
+}
+
+mgmt_text <- gsub("(list zones)", zone_list, mgmt_text, fixed = TRUE)
+cat(mgmt_text)
+```
 
 
 
@@ -795,21 +821,21 @@ We are actively developing new statistical models to improve mouse forecasts, an
 
 ### Monitoring data 
 Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
-Mice are surveyed through active burrow searches and chewcards. To calibrate this data against more robust population density measurements, we  conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
+Mice are surveyed through active burrow searches and chew cards. To calibrate this data against more robust population density measurements, we also conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
 
-Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We particularly thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We also thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
 
 We also receive reports from farmers, agronomists and other community members directly. This is key information we consider given we cannot feasibly survey every paddock across the entire grain growing region. 
 
 
 ## Report mouse activity
 
-
-You can quickly report sightings of mice on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
-
-We incorporate citizen observations with our scientific surveys to create these forecasts and improve our understanding of mouse populations.
-We are primarily using observations of mice within paddocks (not houses or sheds). If you've looked and found no sign or low mouse activity, this information is just as important as high mouse activity observations.
-
+Take 60 seconds to report mouse activity on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
+ 
+We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations,to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is also important to report as high mouse activity observations.
+ 
+ 
+ 
 ```{r}
 #We incorporate citizen observations of mice within paddocks (not houses or sheds) from the general public to supplement our scientific survey data. 
 #This information will potentially improve our understanding and forecasts of mouse populations. 
