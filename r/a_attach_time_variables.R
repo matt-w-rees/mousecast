@@ -2,12 +2,17 @@ attach_time_variables <- function(data) {
 
     season_levels <- c("Summer", "Autumn", "Winter", "Spring")
 
-    # Rapid data only has survey_date; derive temporary session dates so the
-    # rest of the function runs unchanged. Drop them again at the end.
+    # Rapid/observation data only has survey_date (a single-day event); derive
+    # temporary session dates so the rest of the function runs unchanged. Both
+    # set to survey_date (not survey_date - 1) so midpoint resolves to
+    # survey_date exactly -- offsetting session_start_date back a day would
+    # shift midpoint, year, month_year, season and year_adj a day earlier for
+    # every row, misclassifying surveys on the 1st of a season/year boundary
+    # month. Drop the temporary columns again at the end.
     has_session_dates <- all(c("session_start_date", "session_end_date") %in% names(data))
     if (!has_session_dates) {
       data <- dplyr::mutate(data,
-        session_start_date = survey_date - 1L,
+        session_start_date = survey_date,
         session_end_date   = survey_date
       )
     }

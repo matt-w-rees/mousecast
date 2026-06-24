@@ -397,12 +397,6 @@ get_all_variable_definitions <- function() {
     ),
 
     # --- Trapping-specific ---
-    session = list(
-      desc   = "Session identifier within a site",
-      type   = "Character/Integer",
-      values = "Session-specific identifier from database",
-      source = "Field data from database"
-    ),
     survey_night = list(
       desc   = "Night number within the trapping session",
       type   = "Integer",

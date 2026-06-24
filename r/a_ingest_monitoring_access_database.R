@@ -157,7 +157,14 @@ ingest_monitoring_access_database <- function(access_monitoring) {
   # Step 5: Add rapid assessment tables to base
   # ----------------------------------------------------------
   
-  DataRASouth <- left_join(base_south, tblRapidAssessSouth, by = "SessionID") %>%
+  # relationship = "one-to-many": base_south/base_north have one row per
+  # SessionID (verified against the live database); tblRapidAssessSouth/North
+  # legitimately have several rows per SessionID (one per transect/card), so
+  # this asserts the true cardinality rather than silently allowing the
+  # base_*-side duplication (a many-to-many cross-product, spuriously pairing
+  # transects with the wrong site/crop row) that "many-to-many" would permit
+  # if a future Access database refresh ever introduced it unnoticed.
+  DataRASouth <- left_join(base_south, tblRapidAssessSouth, by = "SessionID", relationship = "one-to-many") %>%
     filter(!is.na(RapidAssessmentID)) %>%
     select(-c(SiteDataID, SessionID, DataSiteName, CropType, CropStage)) %>%
     rename(
@@ -166,8 +173,8 @@ ingest_monitoring_access_database <- function(access_monitoring) {
       ActiveBurrow.350...375 = ActiveBurrow.350..375
     )
   DataRASouth$Total <- NULL
-  
-  DataRANorth <- left_join(base_north, tblRapidAssessNorth, by = "SessionID", relationship = "many-to-many") %>%
+
+  DataRANorth <- left_join(base_north, tblRapidAssessNorth, by = "SessionID", relationship = "one-to-many") %>%
     filter(!is.na(RapidAssessmentNorthID)) %>%
     select(-c(SiteDataID, SessionID, DataSiteNameNorth, CropType, CropStage))
   

@@ -1,58 +1,44 @@
-clean_data_access_ecology <- function(data_ecology_raw){
-  
-  
-  # REMOVE DATA  ---------------------------------------------------
-  data_filtered <- data_ecology_raw |>
-    # remove sessions after poison-baiting as this is biased popuation data, and we only want data from box traps - need to do this prior to reformatting
-    dplyr::filter(SessionName != "Parkes post-baiting" & TrapType == "1") |>
-    # we only want data which can reliably estimate density using CMR grids
-    dplyr::filter(TrapsSet >= 33) |>
-    # remove data from dam locations - just want crop and pasture
-    dplyr::filter(!(SiteName == "Dam- green")) |>
-    # remove post-baiting data for baited sites in April/May ZnP trials 2026
-    dplyr::filter(!(SessionName == "April 2026 - Postbaiting Adelaide Plains" & SiteName %in% c("Heaslip", "Jharkness", "Cemetery", "Clary", "Days Hill", "Parker")))
-  
+# Rename columns to standardized format and recode categorical variables
+# Harmonize column names between northern and southern datasets
 
-  # CLEAN DATA --------------------------------------------------------------
-  data_filtered_cleaned <- data_filtered |>
+clean_data_access_monitoring_traps <- function(data) {
+
+  cleaned <- data |>
+
+    # make all character variables lowercase and turn "" into NA
+    mutate(
+      across(
+        where(is.character),
+        ~ na_if(tolower(.x), "")
+      )
+    ) |>
     
-    # Make all character variables lowercase and turn "" into NA
-    # make all column names lowercase
-    rename_with(tolower) |>
-    
-      mutate(
-        across(
-          where(is.character),
-          ~ na_if(tolower(.x), "")
-        )
-      ) |>
-    
-    # rename / recode consistent with cleaned monitoring data
+    # now reformat
     transmute(
       
-      ## Spatial information
-  
       data_source = "ms_access",
-      project = "CSIRO_ecology",
-      longitude = easting,
-      latitude = northing,
+      project = "CSIRO_monitoring",
+      longitude,
+      latitude,
       farmer = farmername,
-      # make consistent with monitoring database region e.g., coonamble, adelaide plains, remove state name from trangie and coonamble
-      region_name = if_else(areaname == "central west nsw", "central west",
-                       if_else(areaname == "trangie nsw", "trangie",
-                               if_else(areaname == "coonamble nsw", "coonamble",
-                                       areaname))),
+      region_name = areaname,
       site_name = sitename,
-      subsite_name = sitename, # need this to relate sites to monitoring naming convention 
-      
+      subsite_name = datasitenameold,
+
       ## Session information (placeholder for now - calculated later)
-      session, # unique session ID in access used, will remove after caculating session dates 
-      session_start_date = NA, 
+      # session is the Access database's own session ID -- only needed
+      # internally to group rows into the same trapping session below; not
+      # meaningful outside this database, so it's dropped again once
+      # session_start_date/session_end_date are derived from it (a session is
+      # uniquely identified by region_name/site_name/subsite_name/dates from
+      # that point on, the same key used everywhere else in the pipeline).
+      session,
+      session_start_date = NA,
       session_end_date = NA,
       session_length_days = NA,
       # site information for this session
-      crop_type = cropname,
-      crop_stage = cropstage,
+      crop_type = tolower(cropname),
+      crop_stage = tolower(cropstageold),
       bait_history = "unsure",
       bait_dosage = NA, 
       # trap type: recode numerical value to meaningful character
@@ -69,11 +55,12 @@ clean_data_access_ecology <- function(data_ecology_raw){
       survey_night = NA,
       
       # effort and total captures per night
+      glm,
       number_traps_set = trapsset,
       number_phantoms = ifelse(is.na(phantoms), 0, phantoms),
       number_functional_traps = number_traps_set - number_phantoms,
       number_mice_caught = totalcaptures,
-      
+
       # location of trap in grid 
       grid_location_x = traplocationx,
       grid_location_y = traplocationy,
@@ -147,16 +134,38 @@ clean_data_access_ecology <- function(data_ecology_raw){
       survey_night = as.integer(survey_date - session_start_date + 1)
     ) |>
     ungroup() |>
-    
-    
-  # CHANGE SITE FEATURES ------------------------------------------------------
-    mutate(
-      # all quigleys operate as one
-      farmer = if_else(grepl("quigley", farmer, ignore.case = TRUE), "richard quigley", farmer),
-      subsite_name = if_else(site_name == "rk murphy", "rk murphy tg", subsite_name)
-    )    
+    select(-session) |>
 
-  # END  --------------------------------------------------------------------
-    return(data_filtered_cleaned)
-  
+
+    # Remove sessions that are known duplicates of ecology database records.
+    # The February 2020 session at paul lush m (jla tg, jlb tg) was entered into
+    # both the monitoring and ecology databases; the ecology record is kept as it
+    # is the complete version (5 nights vs 3 nights in the monitoring database).
+    dplyr::filter(!(subsite_name %in% c("jla tg", "jlb tg") &
+                    session_start_date == as.Date("2020-02-20"))) |>
+
+    # Remove placeholder farmer records — legacy Access entries where no farmer
+    # identity was recorded use "noname1", "noname2", etc. as stand-ins.
+    dplyr::filter(!grepl("noname", farmer, ignore.case = TRUE))
+
+  # Flag distinct subsites sharing identical coordinates — likely a data-entry
+  # error in the Access database's site reference table (e.g. multiple trap
+  # lines/grids at one site recorded with a single site-level coordinate
+  # instead of per-subsite coordinates), which causes downstream joins on
+  # (longitude, latitude) to merge those subsites into one paddock.
+  dup_coords <- cleaned |>
+    dplyr::distinct(longitude, latitude, site_name, subsite_name) |>
+    dplyr::group_by(longitude, latitude) |>
+    dplyr::filter(dplyr::n_distinct(subsite_name) > 1) |>
+    dplyr::ungroup() |>
+    dplyr::arrange(longitude, latitude, subsite_name)
+
+  if (nrow(dup_coords) > 0) {
+    message("clean_data_access_monitoring_traps(): subsites sharing identical coordinates:")
+    print(dup_coords, n = Inf)
+  }
+
+  cleaned
 }
+    
+

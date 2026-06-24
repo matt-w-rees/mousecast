@@ -54,9 +54,9 @@ targets::tar_load(c(surveys_all, metric_ranges, aez_adj, aus_shp), store = store
 ## Functions for drafting the "## Overview" / "## Management recommendations"
 ## text below (aez_zone_info() + generate_overview_text() + draft_overview_files()).
 r_path <- if (dir.exists("r")) "r" else "../../r"
-source(file.path(r_path, "1_aez_zone_info.R"))
-source(file.path(r_path, "1_generate_overview_text.R"))
-source(file.path(r_path, "1_draft_overview_files.R"))
+source(file.path(r_path, "a_aez_zone_info.R"))
+source(file.path(r_path, "a_generate_overview_text.R"))
+source(file.path(r_path, "a_draft_overview_files.R"))
 
 ## Earliest survey date included in this report's "current" calculations
 ## (format: dd-mm-yyyy). Set via the forecast_html target's execute_params.
@@ -435,7 +435,7 @@ display_aez <- compute_aez_summary(surveys_recent, data_from_date, date_max_all)
 ## by the National Mouse Group persist across renders. To start a new
 ## reporting cycle, render with -P draft_overview:true to overwrite those two
 ## files with a fresh draft from the current display_aez (see
-## r/1_draft_overview_files.R), then hand-edit before the final (default)
+## r/a_draft_overview_files.R), then hand-edit before the final (default)
 ## render.
 qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) "quarto_reports/mouseforecast.com" else "."
 if (isTRUE(params$draft_overview)) {

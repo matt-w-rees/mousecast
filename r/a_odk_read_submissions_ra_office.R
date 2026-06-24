@@ -2,8 +2,11 @@
 #
 # Use this as a drop-in replacement for odk_download_rapid_retro_submissions() when
 # the ODK API is unavailable. Point ODK Central to the retrospective form, click
-# "Export submissions" → "Export to CSV (with media)", and save the three files
-# to raw_data/survey_data/odk/rapid_assessment_retrospective/:
+# "Export submissions" → "Export to CSV (with media)", and save the export
+# to raw_data/survey_data/odk/rapid_assessment_retrospective.csv/. Takes the
+# vector of file paths returned by list.files() on that folder (so it doesn't
+# care which other files - e.g. media attachments - are mixed in) and picks
+# out the three CSVs it needs by name:
 #   rapid_assessment_retrospective.csv                  (main submissions)
 #   rapid_assessment_retrospective-burrow_transects.csv (repeat group)
 #   rapid_assessment_retrospective-chew_cards.csv       (repeat group)
@@ -16,12 +19,12 @@
 # and pivot one value column wide.
 # Returns a tibble keyed on PARENT_KEY.
 .odk_pivot_csv_wide <- function(path, value_col, name_prefix) {
-  
-  if (!file.exists(path)) {
+
+  if (length(path) == 0 || !file.exists(path)) {
     message("Sub-table not found, skipping: ", path)
     return(tibble::tibble(PARENT_KEY = character()))
   }
-  
+
   readr::read_csv(path, show_col_types = FALSE) |>
     dplyr::group_by(PARENT_KEY) |>
     dplyr::mutate(.row = dplyr::row_number()) |>
@@ -32,14 +35,22 @@
       values_from = dplyr::all_of(value_col),
       names_prefix = name_prefix
     )
-  
+
 }
 
-odk_csv_read_rapid_retro_submissions <- function(
-    main_file   = "raw_data/survey_data/odk/rapid_assessment_retrospective/rapid_assessment_retrospective.csv",
-    burrow_file = "raw_data/survey_data/odk/rapid_assessment_retrospective/rapid_assessment_retrospective-burrow_transects.csv",
-    chew_file   = "raw_data/survey_data/odk/rapid_assessment_retrospective/rapid_assessment_retrospective-chew_cards.csv"
+odk_read_submissions_ra_office <- function(
+    files = list.files("raw_data/survey_data/odk/rapid_assessment_retrospective.csv", full.names = TRUE, recursive = TRUE)
 ) {
+
+  # --- 0. Sort the incoming files into main / burrow / chew CSVs by name ---
+  # (ignores any non-csv files, e.g. media attachments, picked up by recursive listing)
+  csv_files   <- files[grepl("\\.csv$", files, ignore.case = TRUE)]
+  burrow_file <- csv_files[grepl("-burrow_transects\\.csv$", csv_files, ignore.case = TRUE)]
+  chew_file   <- csv_files[grepl("-chew_cards\\.csv$", csv_files, ignore.case = TRUE)]
+  main_file   <- setdiff(csv_files, c(burrow_file, chew_file))
+  if (length(main_file) != 1) {
+    stop("Expected exactly one main submissions CSV in `files`, found ", length(main_file))
+  }
 
   # --- 1. Read main submissions ---
   submissions <- readr::read_csv(

@@ -4,7 +4,7 @@
 #   - region_label: broad region grouping used to combine zones into one
 #                    paragraph per region in generate_overview_text().
 #
-# Used by generate_overview_text() (r/1_generate_overview_text.R). Includes
+# Used by generate_overview_text() (r/a_generate_overview_text.R). Includes
 # all 18 zones in aez_adj, not just the 11 currently in aez_surveyed, so the
 # lookup keeps working as the monitoring network expands.
 aez_zone_info <- function() {

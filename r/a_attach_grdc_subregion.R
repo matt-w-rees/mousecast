@@ -37,24 +37,13 @@ attach_grdc_subregion <- function(data, grdc_subregion_adj, data_list = NULL,
   if (length(unmatched_idx) > 0 && !is.null(snap_dist)) {
 
     if (!is.null(data_list)) {
-      systematic_coords <- purrr::map(
-        data_list[names(data_list) != "observations"],
-        ~ dplyr::select(.x, longitude, latitude)
-      ) |>
-        dplyr::bind_rows() |>
-        dplyr::distinct(longitude, latitude) |>
-        dplyr::filter(!is.na(longitude), !is.na(latitude)) |>
-        sf::st_as_sf(coords = c("longitude", "latitude"), crs = 4326) |>
-        sf::st_transform(crs = snap_crs)
-
-      unmatched_proj_sys <- sf::st_transform(joined[unmatched_idx, ], crs = snap_crs)
-      nn_sys   <- sf::st_nearest_feature(unmatched_proj_sys, systematic_coords)
-      dist_sys <- suppressWarnings(as.numeric(
-        sf::st_distance(unmatched_proj_sys, systematic_coords[nn_sys, ], by_element = TRUE)
-      ))
-
-      snap_idx     <- unmatched_idx[dist_sys <= 200]
-      obs_only_idx <- unmatched_idx[dist_sys > 200]
+      # Identify unmatched paddocks that have at least one systematic survey
+      # coordinate nearby (see classify_unmatched_by_systematic_distance()).
+      # Paddocks with no nearby systematic point are MouseAlert-only and are
+      # excluded from subregion snapping.
+      classified   <- classify_unmatched_by_systematic_distance(joined, unmatched_idx, data_list, snap_crs)
+      snap_idx     <- classified$snap_idx
+      obs_only_idx <- classified$obs_only_idx
     } else {
       snap_idx <- unmatched_idx
     }

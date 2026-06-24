@@ -1,7 +1,8 @@
 # Clean raw rapid assessment data from the monitoring project Access database.
 # Reformats columns to match the new CSV format (used from 2026 onwards) so that
 # old and new data can be combined with bind_rows().
-# Does NOT compute summary statistics — that is done by data_rapid_summarise().
+# Does NOT compute summary statistics — that is done downstream by
+# data_rapid_add_summaries(), once this is bound with the other rapid sources.
 
 clean_data_access_monitoring_rapid <- function(data) {
 

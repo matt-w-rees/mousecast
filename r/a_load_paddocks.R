@@ -45,16 +45,29 @@ load_paddocks <- function(
     dplyr::select(paddock_id = id)
   
   # Append hand-drawn paddocks if provided.
-  # Cast to POLYGON so geometry types are consistent; assign IDs from 9000001.
+  # Cast to POLYGON so geometry types are consistent with ePaddocks; assign
+  # IDs from 9000001. paddock_id is assigned before casting (one ID per
+  # original drawn feature) rather than after -- st_cast("POLYGON") silently
+  # splits any disjoint multi-part feature (e.g. a paddock drawn either side
+  # of a road) into one row per part, so assigning IDs after casting would
+  # give a single hand-drawn paddock multiple paddock_ids.
   if (!is.null(custom_paddocks_path)) {
     custom <- sf::read_sf(custom_paddocks_path) |>
       sf::st_transform(crs = 4326) |>
+      dplyr::mutate(paddock_id = 9000000 + dplyr::row_number())
+
+    n_features <- nrow(custom)
+    custom <- custom |>
       sf::st_cast("POLYGON") |>
-      dplyr::mutate(paddock_id = 9000000 + dplyr::row_number()) |>
       dplyr::select(paddock_id)
-    
+
+    if (nrow(custom) > n_features) {
+      message(nrow(custom) - n_features, " extra disjoint polygon part(s) found across ",
+              n_features, " hand-drawn paddock(s) -- each multi-part paddock keeps one shared paddock_id.")
+    }
+
     paddocks <- dplyr::bind_rows(paddocks, custom)
-    message("Appended ", nrow(custom), " hand-drawn paddock(s) from ",
+    message("Appended ", n_features, " hand-drawn paddock(s) from ",
             basename(custom_paddocks_path))
   }
   

@@ -1,11 +1,9 @@
-# MY ANALYSIS PROJECT ----
-# Author: Your Name
+# MOUSECAST ----
+# Author: Dr Matthew Rees (CSIRO)
 # Date:   2026-05-21
 
 # TO-DO ------------------------------------------------------------------
-# Update mouse updates so it reruns when data changes
-# combine nsw dpird and monitoring trap data processes in the pipeline
-# Add column for mouse baiting, update filter function to exclude these surveys 
+ 
 
 # SET-UP ------------------------------------------------------------------
 
@@ -20,10 +18,7 @@
 #plan(multisession, workers = 8)   # one worker per model
 
 # Set target options:
-# Suppress noisy package startup messages. options(tidyverse.quiet = TRUE) silences
-# the dplyr/tidyverse conflict report. Pre-loading viridis here means it is already
-# attached when targets loads it per-target, so "Loading required package: viridisLite"
-# never appears. This block is sourced by callr workers too, so it works in all backends.
+# Suppress noisy package startup messages. 
 options(tidyverse.quiet = TRUE)
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -31,7 +26,7 @@ suppressPackageStartupMessages({
 })
 
 tar_option_set(
-  packages = c("tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "ruODK", "fs", "lwgeom"), # packages that your targets need to run
+  packages = c("tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "fs", "lwgeom"), # packages that your targets need to run
   format = "qs", # faster RDS storage using qs2 package
   memory = "transient", # remove data from the R environment as soon as it is no longer needed
   garbage_collection = 5 # cleans up garbage every xth target
@@ -40,18 +35,26 @@ tar_option_set(
 options(timeout = 300) # Sets timeout to 300 seconds (5 minutes) for downloading files
 
 # load same packages for local testing 
-#lapply(c("targets", "tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "ruODK", "fs", "lwgeom"), require, character.only = TRUE)
+#lapply(c("targets", "tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "fs", "lwgeom"), require, character.only = TRUE)
 
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source("r/")
 
-## handy functions 
+# Subsites to exclude from analysis-ready survey data (clean_remove_data()'s
+# subsite_name argument) --  Defined once here, outside tar_plan(), so both call sites below (data_list_clean and the capture-history branch) share one list instead of duplicating it.
+excluded_subsites <- c(
+  # fenceline sites (from monitoring access database)
+  "gr2 fl 1 e-w", "gr2 fl 2 n-s", "bellfields roadside", "bthb fl", "jlaf1scrub", "jw1stubfence", "jw2edge", "rk murphy fl", "tuckeastfl", "jlbf2crop", "jwaf1crop", "jwaf2scrub", "trieline", "triwline", "bellfields roadside", "triwsnap", "triesnap",
+  # pasture sites (from ecology / dpird database)
+  "enmore pasture", "paper road pasture", "tottenham pasture", "rosedale pasture", "nardoo pasture"
+)
+
+## handy functions
 # visualising pipeline
 #tar_glimpse() # simple
 #tar_visnetwork() # shows up-to-date or not
 #tar_visnetwork(targets_only = TRUE)
 #tar_manifest()
-#tar_make(as_job = TRUE)
 
 
 # PIPELINE ----------------------------------------------------------------
@@ -68,19 +71,12 @@ tar_plan(
   aus_shp = sf::read_sf("raw_data/predictor_variables/australian_borders/aus_outline_states.shp") |>
     sf::st_transform(crs = "EPSG:4326"),
   
-  # GRDC "Agro-ecological" zones (used to link sites and derive seperate process models)
-  # this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main
+  # GRDC "Agro-ecological" zones (used to link sites and derive seperate process models), this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main
   aez_adj = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |>
     dplyr::rename(ae_zone = AEZ) |>
-    dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)), #|>
-    #dplyr::mutate(ae_zone = if_else(ae_zone %in% c("NSW NE Qld SE", "NSW NW Qld SW"), "NSW N Qld S", ae_zone)) |>
-    #dplyr::mutate(ae_zone = if_else(ae_zone %in% c("NSW Central", "NSW Vic Slopes"), "NSW Central Vic Slopes", ae_zone)),
-   #further adjust AE file to remove zones with no data (used in plotting functions)
-  #aez_adj_filtered = dplyr::filter(aez_adj, ae_zone %in% unique(model_data$ae_zone)),
-  # alter two QLD/NSW zones to have a north south rather than east west split (due to how sites are positioned)
-  #aez_adj = adjust_aez(aez, aus),
+    dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)), 
 
-  # GRDC growing subregions — finer-grained alternative zone system
+  # GRDC growing subregions — finer-grained alternative zone system, provided by GRDC
   grdc_subregion_adj = sf::read_sf("raw_data/predictor_variables/grdc_regions/growing_subregion/GRDC SubRegion_region.shp") |>
     dplyr::rename(grdc_subregion = SubRegion_) |>
     sf::st_transform(crs = "EPSG:4326"),
@@ -89,33 +85,27 @@ tar_plan(
   # 2) Load survey data --------------------------------------------------
 
   # i. ODK ---------------------------------------------
-  # Download submissions from ODK Central, requires ODKC_UN and ODKC_PW environment variables to be set in R, 
-  # The return-value hash means downstream targets only re-run when submissions change; cue = "always" forces a fresh download on every tar_make()
-  # Download rapid assessment surveys collected in the field (with slight cleaning)
-  #tar_target(raw_data_odk_rapid_field, odk_api_download_rapid_submissions(), cue = tar_cue(mode = "always")),
-
-  # Download rapid assessment surveys filled in retrospectively (has explicit survey_date and entered_by)
-  #tar_target(raw_data_odk_rapid_office, odk_api_download_rapid_retro_submissions(), cue = tar_cue(mode = "always")),
-
-  # --- Fallback: comment out the two tar_target()s above and uncomment these
-  #     when the ODK API is unavailable. Reads from manual CSV exports in:
-  #       raw_data/survey_data/odk/rapid_assessment.csv/
-  #       raw_data/survey_data/odk/rapid_assessment_retrospective/
+  # Current data entry process. 
+  # Download submissions from ODK Central into raw_data/survey_data/odk/, functions below read in csv files, joins into single dataframe and some cleaning
   
-  # Download rapid assessment surveys collected in the field (with slight cleaning)
-  tar_file(odk_field_main_file,    "raw_data/survey_data/odk/rapid_assessment.csv/rapid_assessment.csv"),
-  tar_file(odk_field_burrow_file,  "raw_data/survey_data/odk/rapid_assessment.csv/rapid_assessment-burrow_transects.csv"),
-  tar_file(odk_field_chew_file,    "raw_data/survey_data/odk/rapid_assessment.csv/rapid_assessment-chew_cards.csv"),
-  raw_data_odk_rapid_field = odk_csv_read_rapid_submissions(odk_field_main_file, odk_field_burrow_file, odk_field_chew_file),
+  # a) Rapid assessment (separate forms for field and retrospective submissions)
+  # Download rapid assessment surveys collected in the field 
+  tar_file(odk_ra_field_files, list.files("raw_data/survey_data/odk/rapid_assessment.csv", full.names = TRUE, recursive = TRUE)),
+  raw_data_odk_ra_field = odk_read_submissions_ra_field(odk_ra_field_files),
   
-  # Download rapid assessment surveys filled in retrospectively (has explicit survey_date and entered_by)
-  tar_file(odk_office_main_file,   "raw_data/survey_data/odk/rapid_assessment_retrospective.csv/rapid_assessment_retrospective.csv"),
-  tar_file(odk_office_burrow_file, "raw_data/survey_data/odk/rapid_assessment_retrospective.csv/rapid_assessment_retrospective-burrow_transects.csv"),
-  tar_file(odk_office_chew_file,   "raw_data/survey_data/odk/rapid_assessment_retrospective.csv/rapid_assessment_retrospective-chew_cards.csv"),
-  raw_data_odk_rapid_office = odk_csv_read_rapid_retro_submissions(odk_office_main_file, odk_office_burrow_file, odk_office_chew_file),
-
-  # Bind field and retro submissions, and clean up  
-  data_odk_rapid = clean_data_odk_rapid(raw_data_odk_rapid_field, raw_data_odk_rapid_office),
+  # Download rapid assessment surveys filled in retrospectively (key difference from above: has explicit survey_date and entered_by)
+  tar_file(odk_ra_office_files, list.files("raw_data/survey_data/odk/rapid_assessment_retrospective.csv", full.names = TRUE, recursive = TRUE)),
+  raw_data_odk_ra_office = odk_read_submissions_ra_office(odk_ra_office_files),
+  
+  # Bind field and retro submissions, and further clean up  
+  data_odk_rapid = clean_data_odk_rapid(raw_data_odk_ra_field, raw_data_odk_ra_office),
+  
+  # b) Live-trap (just retrospective submission)
+  tar_file(odk_trap_files, list.files("raw_data/survey_data/odk/mouse_livetrap.csv/", full.names = TRUE, recursive = TRUE)),
+  raw_data_odk_traps = odk_read_submissions_traps(odk_trap_files),
+  
+  # clean ODK live-trap submissions, mapped onto the canonical trap schema.
+  data_odk_traps = clean_data_odk_traps(raw_data_odk_traps),
   
   
   # ii. CSV files ---------------------------------------
@@ -136,7 +126,9 @@ tar_plan(
   tar_file(data_csv_dpird_traps_file, "raw_data/survey_data/csv_data_entry/nsw_dpird_trap_data/dpird_coonamble_rosedale_trapping_data.csv"),
   data_csv_dpird_traps = read_csv(data_csv_dpird_traps_file, show_col_types = FALSE, col_types = cols(session_start_date = col_date(format = "%d/%m/%Y"), session_end_date = col_date(format = "%d/%m/%Y"), survey_date = col_date(format = "%d/%m/%Y"), pit_tag_id = col_character())) |>
     # reformat "crop_type" and "crop_stage" columns in line with multiple choice odk format: "crop_group", "crop_variety", "crop_stage"
-    standardise_crop_variables(keep_raw = FALSE),
+    standardise_crop_variables(keep_raw = FALSE) |>
+    # drop session col as not used in other data sources
+    dplyr::select(-dplyr::any_of("session")),
   
   
   # iii. MS Access: Monitoring project  --------------------------
@@ -186,16 +178,20 @@ tar_plan(
 
 
   # ii. Live-traps  ----------------------------------
-  data_traps = bind_rows(data_access_monitoring_traps, data_access_ecology_traps, data_csv_dpird_traps, data_csv_traps) |>
-    # add session-level summaries (sex ratio, individual counts) while individual rows still present
-    data_traps_session_summary() |>
-    # collapse to one row per night, drop individual columns, sum trap effort per session
-    clean_traps_to_session_level(),
-  
-  
+
+  data_traps_combined = bind_rows(data_access_monitoring_traps, data_access_ecology_traps, data_csv_dpird_traps, data_csv_traps, data_odk_traps),
+
+  # add session-level summaries (sex ratio, individual counts) while individual rows still present
+  #-- split out as its own target (rather than inlined into data_traps below) so data_traps_capture_history() can reuse this same individual-level frame instead of recomputing it.
+  data_traps_individual = data_traps_session_summary(data_traps_combined),
+
+  # collapse to one row per night, drop individual columns, sum trap effort per session
+  data_traps = clean_traps_to_session_level(data_traps_individual),
+
+
   # iii. List all three together ---------------------------------
   data_list = list("traps" = data_traps, "rapid" = data_rapid, "observations" = data_mouse_alert),
-                   #"burrows" = data_rapid$burrows, "chewcards" = data_rapid$chewcards),
+
   
   
   # 4) Clean integrated data  --------------------------------------------------------
@@ -209,16 +205,13 @@ tar_plan(
 
     # remove unwanted rows: snapback traps, stale sites, fenceline/pasture subsites
     purrr::map(~ clean_remove_data(.x,
-      trap_type = "snapback", last_surveyed_before = 2016, subsite_name = c(
-        # fenceline sites (from monitoring access database)
-        "gr2 fl 1 e-w", "gr2 fl 2 n-s", "bellfields roadside", "bthb fl", "jlaf1scrub", "jw1stubfence", "jw2edge", "rk murphy fl", "tuckeastfl", "jlbf2crop", "jwaf1crop", "jwaf2scrub", "trieline", "triwline", "bellfields roadside", "triwsnap", "triesnap",
-        # pasture sites (from ecology / dpird database)
-        "enmore pasture", "paper road pasture", "tottenham pasture", "rosedale pasture", "nardoo pasture")
+      trap_type = "snapback", last_surveyed_before = 2016, subsite_name = excluded_subsites
     )),
   
  
 
   # 5) Link data to paddocks --------------------------------------------------------
+  # paddock equals unique survey site
   
   # track hand-drawn paddock file (paddocks missing from epaddocks) so downstream targets re-run when it changes
   tar_file(paddocks_by_hand, "raw_data/predictor_variables/paddocks_by_hand/paddocks_by_hand.gpkg"),
@@ -237,20 +230,42 @@ tar_plan(
     paddock_centroids(),
 
   # (ii) Match survey coordinates to paddock polygons and attach paddock covariates.
+  # Spatial match runs once on unique coordinates; all paddock columns returned directly. 
+  # Split out as its own target (rather than a local variable inside data_list_clean_paddocks below) so the capture-history branch can reuse this same lookup instead of recomputing the spatial join.
+  paddock_lookup = match_surveys_to_paddocks(data_list_clean, paddocks_sf, snap_dist = 150),
+
   # Returns a named list mirroring data_list_clean; rows that don't intersect or snap to a paddock (paddock_id is NA) are dropped, since downstream modelling requires paddock-linked covariates (ae_zone, soil_type, state, etc.).
   data_list_clean_paddocks = {
-    # Spatial match runs once on unique coordinates; all paddock columns returned directly.
-    paddock_lookup <- match_surveys_to_paddocks(data_list_clean, paddocks_sf, snap_dist = 150)
     joined <- purrr::map(data_list_clean, ~ dplyr::left_join(.x, paddock_lookup, by = c("longitude", "latitude")) |>
                  dplyr::filter(!is.na(paddock_id)))
-
     # Collapse genuine duplicate (paddock_id, survey_date) rows so downstream
     # consumers (shiny app, qmd reports) don't need their own dedup logic.
     joined$traps <- clean_deduplicate_surveys(joined$traps, survey_type = "traps")
     joined$rapid <- clean_deduplicate_surveys(joined$rapid, survey_type = "rapid")
-
     joined
   },
+
+  # (iii) Individual-level capture history (CMR density analysis) -- a
+  # separate, parallel branch from data_list/data_list_clean/data_list_clean_paddocks
+  # above, NOT a 4th entry in those lists: combine_survey_data() and
+  # export_with_metadata() both iterate generically over every entry of
+  # data_list_clean_paddocks and bind_rows() them into the shared surveys_all
+  # frame used by the shiny app/quarto report, so adding capture-history there
+  # would silently corrupt that production output. clean_deduplicate_surveys()
+  # is also deliberately skipped here -- it collapses duplicate
+  # (paddock_id, survey_date) rows, which capture history legitimately has many
+  # of (one per mouse caught on the same paddock/day).
+  data_traps_capture_history = build_capture_history(data_traps_individual),
+
+  data_traps_capture_history_clean = data_traps_capture_history |>
+    dplyr::mutate(dplyr::across(where(is.character), tolower)) |>
+    attach_time_variables() |>
+    clean_remove_data(trap_type = "snapback", last_surveyed_before = 2016, subsite_name = excluded_subsites),
+
+  data_traps_capture_history_paddocks = dplyr::left_join(data_traps_capture_history_clean, paddock_lookup, by = c("longitude", "latitude")) |>
+    dplyr::filter(!is.na(paddock_id)),
+
+  tar_file(capture_history_files, export_capture_history(data_traps_capture_history_paddocks)),
 
 
   # 6) Save cleaned data  --------------------------------------------------------
@@ -285,7 +300,7 @@ tar_plan(
 
   # 7) Shiny app for data exploration  --------------------------------------------------------
   # This target becomes outdated whenever the upstream data changes, signalling that the app should be re-deployed.
-  tar_target(
+  tar_file(
     shiny_raw_data_explorer_contents,
     { # create folder to house data used for the shiny app and deployment files
       dir.create("shiny/raw_data_explorer/data", showWarnings = FALSE, recursive = TRUE)
@@ -300,8 +315,7 @@ tar_plan(
         "shiny/raw_data_explorer/data/grdc_subregion_adj.rds",
         "shiny/raw_data_explorer/data/surveys_all.rds",
         "shiny/raw_data_explorer/data/metric_ranges.rds")
-    },
-    format = "file"),
+    }),
   
   # load shiny app in local browser
   #shiny::runApp("shiny/raw_data_explorer")
@@ -340,15 +354,8 @@ tar_plan(
   # {{< include >}}s the edited files as-is and re-renders whenever they change
   # (see extra_files below).
    tar_quarto(forecast_html, path = "quarto_reports/mouseforecast.com/raw_data_update.qmd",
-              # Hand-edited Overview / Management text (see
-              # r/1_draft_overview_files.R) -- {{< include >}}d by the qmd, so
-              # list here to force a re-render when these are edited. The css
-              # file is also listed so styling-only edits trigger a re-render.
-              extra_files = c(
-                "quarto_reports/mouseforecast.com/_overview.md",
-                "quarto_reports/mouseforecast.com/_management.md",
-                "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"
-              ),
+              # Hand-edited Overview / Management text (see r/a_draft_overview_files.R) -- {{< include >}}d by the qmd, so list here to force a re-render when these are edited. The css file is also listed so styling-only edits trigger a re-render.
+              extra_files = c("quarto_reports/mouseforecast.com/_overview.md", "quarto_reports/mouseforecast.com/_management.md", "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"),
               execute_params = list(
                 data_from_date        = "01-03-2026",
                 weight_pct_detected   = 1,
@@ -356,56 +363,44 @@ tar_plan(
                 weight_result_burrow  = 1,
                 weight_chew_per10     = 1,
                 weight_avg_daily_high = 0.5, # mousealert
-                # AE zone map: activity_index value at which the colour
-                # gradient reaches full red (yellow sits at half this value).
-                # Lower this to make red appear sooner.
+                # AE zone map: activity_index value at which the colour gradient reaches full red (yellow sits at half this value). Lower this to make red appear sooner.
                 activity_index_gradient_max = 1
               ), quiet = TRUE),
 
     # copy the rendered HTML to docs/index.html so GitHub Pages stays up to date; explicitly references forecast_html so this target re-runs after each render
-    tar_target(mouse_update_docs, {
+    tar_file(mouse_update_docs, {
       forecast_html  # dependency: re-copy whenever the report is re-rendered
       file.copy("quarto_reports/mouseforecast.com/raw_data_update.html", "docs/index.html", overwrite = TRUE)
       "docs/index.html"
-    }, format = "file"),
+    }),
 
     # Track the email QMD as a file target so edits to it invalidate email_draft.
-    tar_target(
+    tar_file(
       email_draft_qmd,
-      "quarto_reports/mouseforecast.com/email_draft.qmd",
-      format = "file"
-    ),
+      "quarto_reports/mouseforecast.com/email_draft.qmd"),
 
     # Draft HTML email for the current update. Embeds the map PNG saved as a
     # side-effect of forecast_html — no data recomputation or params needed.
     # Open email_draft.html in a browser, Ctrl+A -> Ctrl+C, paste into Gmail
     # (base64 image survives the paste). Edit the preamble before sending.
-    tar_target(
+    tar_file(
       email_draft,
       {
         forecast_html   # ensures forecast_html (and its email_map.png) runs first
         email_draft_qmd # re-render whenever the QMD content changes
-        quarto::quarto_render(
-          "quarto_reports/mouseforecast.com/email_draft.qmd",
-          quiet = TRUE
-        )
+        quarto::quarto_render("quarto_reports/mouseforecast.com/email_draft.qmd", quiet = TRUE)
         "quarto_reports/mouseforecast.com/email_draft.html"
-      },
-      format = "file"
-    ),
+      }),
 
     # Print the rendered HTML to a PDF copy in mouse_updates/, following the
     # "Mouse Monitoring project Update #<N> <Mon> <Year>.pdf" naming convention
     # used by past updates (see mouse_update_pdf_path()). Re-rendering within
     # the same month overwrites that month's PDF; a new month gets the next
     # update number, so each month's update is kept.
-    tar_target(forecast_pdf, {
+    tar_file(forecast_pdf, {
       forecast_html  # dependency: re-convert whenever the report is re-rendered
-      mouse_update_pdf_from_html(
-        html_path = "quarto_reports/mouseforecast.com/raw_data_update.html",
-        pdf_path  = mouse_update_pdf_path("mouse_updates")
-      )
-    }, format = "file"),
+      mouse_update_pdf_from_html(html_path = "quarto_reports/mouseforecast.com/raw_data_update.html", pdf_path  = mouse_update_pdf_path("mouse_updates"))
+    }),
   
   # Git commit of docs/index.html will then deploy to github pages
   
