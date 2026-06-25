@@ -164,11 +164,11 @@ cat(paste0(
 
 Hi all, 
 
-A new Mouse Forecast is now available, and some changes to the way we communicate these updates.
+A new Mouse Forecast is now available, along with some changes to the way we communicate these updates.
 
 **We have launched a new website - [mouseforecast.com](https://mouseforecast.com)** - where you can see the full report with the most up-to-date information. 
 
-Mouse activity estimates are now completely based on quantitative data. Live-trap, active burrow, chew card assessments are integrated with farmer observations via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding but shifted to a continuous scale to show detail. 
+Mouse activity estimates are now completely based on quantitative data. Live-trapping, active burrow, and chew card assessments are integrated with farmer observations via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding but shifted to a continuous scale to show detail. 
 We are actively refining statistical methods to improve estimates and their presentation.
 
 We will regularly refresh the website as new data comes in (and continue to send these emails at key times of the growing year). A pdf copy is also attached to this email, feel free to forward on to your relevant network along with the website URL.  

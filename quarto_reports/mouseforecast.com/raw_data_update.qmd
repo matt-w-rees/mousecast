@@ -832,15 +832,15 @@ plot_activity_trend(trend_activity_index)
 
 ## About
 
-Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data comes available. 
+Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data becomes available.
 
-We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meet three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities. 
+We are actively developing new statistical models to improve mouse forecasts, and working on their presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meets three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities. 
 
 ### Monitoring data 
 Mouse population surveys are conducted 2 - 3 times a year at each of the ~170 long-term monitoring sites.
 Mice are surveyed through active burrow searches and chew cards. To calibrate this data against more robust population density measurements, we also conduct live-trapping at 3 sites (Adelaide Plains SA, Northern Mallee VIC and Central West NSW). 
 
-Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, & Farmanco. We also thank NSW DPIRD who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, and Farmanco. We also thank NSW DPIRD, who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
 
 We also receive reports from farmers, agronomists and other community members directly. This is key information we consider given we cannot feasibly survey every paddock across the entire grain growing region. 
 
@@ -849,7 +849,7 @@ We also receive reports from farmers, agronomists and other community members di
 
 Take 60 seconds to report mouse activity on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
  
-We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations, to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is also important to report as high mouse activity observations.
+We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations, to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is just as important to report as high mouse activity observations.
  
  
  
