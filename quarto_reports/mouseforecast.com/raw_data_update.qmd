@@ -848,9 +848,12 @@ We also receive reports from farmers, agronomists and other community members di
 ## Report mouse activity
 
 Take 60 seconds to report mouse activity on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
- 
-We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations, to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is just as important to report as high mouse activity observations.
- 
+
+We are primarily seeking observations from within paddocks (not houses or farm sheds), and particularly encourage reporting of low activity - not just observations of high mouse activity.
+
+We incorporate these observations with our monitoring survey results to create these forecasts and improve understanding of mouse populations, to help keep producers informed.  
+
+
  
  
 ```{r}

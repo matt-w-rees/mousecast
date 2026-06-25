@@ -49,7 +49,6 @@ tar_source("r/")
 
 
 # PIPELINE ----------------------------------------------------------------
-# note the force_latest option in rain1_process_raster, may way specify this as TRUE so most recent rainfall amounts are present (should only matter at the start of the season though)
 
 # Target list:
 tar_plan(   
@@ -399,3 +398,7 @@ tar_plan(
   
 
 )
+
+
+# note the force_latest option in rain1_process_raster, may way specify this as TRUE so most recent rainfall amounts are present (should only matter at the start of the season though)
+
