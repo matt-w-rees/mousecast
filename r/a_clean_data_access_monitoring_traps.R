@@ -136,7 +136,6 @@ clean_data_access_monitoring_traps <- function(data) {
     ungroup() |>
     select(-session) |>
 
-
     # Remove sessions that are known duplicates of ecology database records.
     # The February 2020 session at paul lush m (jla tg, jlb tg) was entered into
     # both the monitoring and ecology databases; the ecology record is kept as it

@@ -14,6 +14,15 @@
 
 standardise_crop_variables <- function(data, keep_raw = FALSE) {
 
+  # "fence line" is a data-entry mistake (confirmed against the real data:
+  # a single row at jlhb, 2016-11-07, monitoring rapid -- an otherwise
+  # normal wheat/canola paddock with no other fence-line records) rather
+  # than a genuine description of non-crop vegetation, so it's dropped
+  # outright here. Unlike the "...road verge"/"...understorey" entries
+  # below (mapped to pasture instead), there's no reason to think this one
+  # reflects what was actually surveyed.
+  data <- dplyr::filter(data, is.na(crop_type) | tolower(trimws(crop_type)) != "fence line")
+
   # --- crop_type → crop_variety ---
   variety_lookup <- c(
     # cereals
@@ -57,8 +66,13 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
     "radish"                               = "oilseed_other",
     # cotton (no variety — group only)
     "cotton"                               = NA_character_,
-    # pasture (no variety — group only)
+    # pasture (no variety — group only). The road verge/understorey entries
+    # are margin vegetation recorded at otherwise-legitimate crop paddocks
+    # (see direct_group_lookup below) -- not a crop, so grouped with pasture.
     "pasture"                              = NA_character_,
+    "unburned/unmown road verge"           = NA_character_,
+    "mown road verge (recent)"             = NA_character_,
+    "trees, shrubs & grass understorey"    = NA_character_,
     # bare soil (no variety — group only)
     "fallow"                               = NA_character_,
     "fallow (bare surface)"                = NA_character_,
@@ -90,6 +104,9 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
     "cotton"                               = "cotton",
     "unknown"                              = "unknown",
     "pasture"                              = "pasture",
+    "unburned/unmown road verge"           = "pasture",
+    "mown road verge (recent)"             = "pasture",
+    "trees, shrubs & grass understorey"    = "pasture",
     "fallow"                               = "bare_soil",
     "fallow (bare surface)"                = "bare_soil",
     "plough (ploughed, some clumps remain)"= "bare_soil",
@@ -105,6 +122,9 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
     "germination"                       = "seedling",
     "young (no flowers/head)"           = "vegetative",
     "tillering"                         = "vegetative",
+    # Zadoks cereal growth-stage code: Z2x = tillering, same stage as
+    # "tillering" above, just recorded as the numeric code instead of the word.
+    "z22-23"                            = "vegetative",
     "in head"                           = "flowering",
     "flowering"                         = "flowering",
     "mature (flowers/heads)"            = "flowering",
@@ -117,7 +137,9 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
     "stubbele"                          = "stubble",
     "stubble  (heads harvested)"        = "stubble",
     "mulch (stubble cut/unploughed)"    = "stubble"
-    # "z22-23", "fallow", "cultivated", "n/a" are intentionally absent → map to NA
+    # "fallow" is handled separately above (reclassifies crop_group to
+    # bare_soil instead of mapping the stage directly); "cultivated", "n/a"
+    # are intentionally absent → map to NA
   )
 
   crop_type_lower <- tolower(trimws(data$crop_type))
@@ -136,10 +158,22 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
         unname(group_lookup[crop_variety]),
         unname(direct_group_lookup[crop_type_lower])
       ),
+      # A "fallow" stage on an otherwise-cropped paddock means the ground was
+      # observed bare at this visit -- the same real-world situation ODK
+      # records directly as bare_soil, regardless of what crop_type was last
+      # grown there (confirmed against the data: e.g. alawah's wheat-stubble
+      # -> wheat-fallow -> faba_bean-sown sequence shows crop_type tracking
+      # the paddock's rotation identity, not what's physically in the ground
+      # at each visit). Reclassify to match ODK's convention rather than
+      # leaving a contradictory "wheat, no stage" row.
+      crop_stage_is_fallow = !is.na(crop_stage) & tolower(trimws(crop_stage)) == "fallow",
+      crop_variety = dplyr::if_else(crop_stage_is_fallow & crop_group %in% crop_groups_with_stages, NA_character_, crop_variety),
+      crop_group   = dplyr::if_else(crop_stage_is_fallow & crop_group %in% crop_groups_with_stages, "bare_soil", crop_group),
       crop_stage     = unname(stage_lookup[tolower(trimws(crop_stage))]),
       # Pasture, bare_soil, and unrecognised sites cannot have a growth stage
       crop_stage     = dplyr::if_else(crop_group %in% crop_groups_with_stages, crop_stage, NA_character_)
     ) |>
+    dplyr::select(-crop_stage_is_fallow) |>
     dplyr::select(-crop_type) |>
     dplyr::relocate(crop_group, crop_variety, crop_stage, .before = dplyr::any_of("ground_cover_percent")) |>
     dplyr::relocate(crop_type_raw, crop_stage_raw, .after = dplyr::last_col())

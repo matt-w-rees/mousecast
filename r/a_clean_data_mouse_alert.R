@@ -54,9 +54,9 @@ clean_data_mouse_alert <- function(path) {
   )
 
   # --- 6. Select and rename to common schema --------------------------------
-  # NA columns are included so that shared pipeline steps (clean_remove_data,
-  # attach_time_variables, match_surveys_to_paddocks) find the columns they
-  # reference without erroring on the observations data frame.
+  # NA columns are included so that shared pipeline steps (attach_time_variables,
+  # match_surveys_to_paddocks) find the columns they reference without
+  # erroring on the observations data frame.
   cleaned <- dplyr::transmute(raw,
     # provenance
     observation_id = Id,

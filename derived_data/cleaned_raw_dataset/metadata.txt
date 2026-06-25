@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-06-19 14:00:26
+Generated: 2026-06-25 17:05:11
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -135,6 +135,9 @@ ae_zone
   Values:      e.g., SA Vic Mallee, NSW Central, Yorke Mid North
   Source:      Polygon-over-polygon join with GRDC AEZ layer in attach_aez()
 
+cropping_system
+  Description: [not yet documented]
+
 grdc_subregion
   Description: [not yet documented]
 
@@ -174,8 +177,8 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 1305
-  Number of columns: 43
+  Number of rows: 1388
+  Number of columns: 44
 
 UNIQUE VARIABLES (specific to traps dataset):
 ----------------------------------------------------------------------------
@@ -191,12 +194,6 @@ crop_variety
   Type:        Character
   Values:      e.g., wheat, barley, canola, lentils, fallow
   Source:      Field data, standardized to lowercase
-
-session
-  Description: Session identifier within a site
-  Type:        Character/Integer
-  Values:      Session-specific identifier from database
-  Source:      Field data from database
 
 session_start_date
   Description: First date of the trapping session
@@ -294,6 +291,9 @@ number_functional_traps_session
   Values:      > 0
   Source:      Sum of number_functional_traps across all nights in data_traps_session_summary()
 
+id_method
+  Description: [not yet documented]
+
 state
   Description: Australian state the paddock falls within
   Type:        Character
@@ -314,8 +314,8 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3686
-  Number of columns: 83
+  Number of rows: 3736
+  Number of columns: 84
 
 UNIQUE VARIABLES (specific to rapid dataset):
 ----------------------------------------------------------------------------

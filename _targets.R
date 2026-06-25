@@ -40,15 +40,6 @@ options(timeout = 300) # Sets timeout to 300 seconds (5 minutes) for downloading
 # Run the R scripts in the R/ folder with your custom functions:
 tar_source("r/")
 
-# Subsites to exclude from analysis-ready survey data (clean_remove_data()'s
-# subsite_name argument) --  Defined once here, outside tar_plan(), so both call sites below (data_list_clean and the capture-history branch) share one list instead of duplicating it.
-excluded_subsites <- c(
-  # fenceline sites (from monitoring access database)
-  "gr2 fl 1 e-w", "gr2 fl 2 n-s", "bellfields roadside", "bthb fl", "jlaf1scrub", "jw1stubfence", "jw2edge", "rk murphy fl", "tuckeastfl", "jlbf2crop", "jwaf1crop", "jwaf2scrub", "trieline", "triwline", "bellfields roadside", "triwsnap", "triesnap",
-  # pasture sites (from ecology / dpird database)
-  "enmore pasture", "paper road pasture", "tottenham pasture", "rosedale pasture", "nardoo pasture"
-)
-
 ## handy functions
 # visualising pipeline
 #tar_glimpse() # simple
@@ -134,14 +125,26 @@ tar_plan(
   # iii. MS Access: Monitoring project  --------------------------
   # Old Microsoft Access database for CSIRO Mouse monitoring project
   
-  # Extract raw tables from database, stitch back together, return as a list with trapping and rapid assessment data
-  data_access_monitoring_raw = ingest_monitoring_access_database("raw_data/survey_data/microsoft_access/MouseMonitoring.accdb"),
-  
+  # Extract raw tables from database, stitch back together, return as a list with trapping and rapid assessment data.
+  # Snapback traps and fenceline subsites are dropped here, plus (2nd group
+  # below) subsites whose most recent survey predates 2016 -- confirmed
+  # (by checking every group's max survey year across traps/rapid/observations)
+  # that this date-based exclusion only ever matched ms_access (monitoring)
+  # data, and none of these names are shared with any still-active site, so
+  # it's safe to convert to a one-off literal exclusion here rather than a
+  # recurring last_surveyed_before check on every pipeline run.
+  data_access_monitoring_raw = ingest_monitoring_access_database("raw_data/survey_data/microsoft_access/MouseMonitoring.accdb", exclude_subsites = c(
+    # fenceline subsites
+    "gr2 fl 1 e-w", "gr2 fl 2 n-s", "bellfields roadside", "bthb fl", "jlaf1scrub", "jw1stubfence", "jw2edge", "rk murphy fl", "tuckeastfl", "jlbf2crop", "jwaf1crop", "jwaf2scrub", "trieline", "triwline", "triwsnap", "triesnap",
+    # subsites not surveyed since before 2016 - data not very trustworthy
+    "ardnith 12", "ardnith 13", "calrossie", "forest", "ghos", "grandview  19", "grandview  20", "grandview 8", "grandview 9", "horsley cross 5", "horsley cross 6", "jambin 21", "jambin 22", "jlhb2", "jw1stubpad", "jw2crop", "jwc crop", "namgoori 6", "namgoori 7", "rosehill 17", "rosehill 18", "silverton 1", "silverton 2", "site 10", "site 11", "tallawanta 3", "tallawanta 4", "tallawanta 5", "toolangi 10", "toolangi 11", "toolangi 12", "toolangi 13", "toolangi 14", "toolangi 15", "toolangi 16e", "toolangi 8", "toolangi 9"
+  )),
+
   # Clean rapid assessment data: Separate out rapid assessment data and summarise burrow / chewcard columns
   data_access_monitoring_rapid = clean_data_access_monitoring_rapid(data_access_monitoring_raw$DataRA) |>
     # reformat "crop_type" and "crop_stage" columns in line with multiple choice odk format: "crop_group", "crop_variety", "crop_stage"
     standardise_crop_variables(keep_raw = FALSE),
-  
+
   # Clean trap data (note, biomass/groundcover for these sessions only contained in RA data)
   data_access_monitoring_traps = clean_data_access_monitoring_traps(data_access_monitoring_raw$DataCH) |>
     # reformat "crop_type" and "crop_stage" columns in line with multiple choice odk format: "crop_group", "crop_variety", "crop_stage"
@@ -154,9 +157,10 @@ tar_plan(
   # Track the database file for changes 
   tar_file(raw_data_access_ecology_traps_file, "raw_data/survey_data/microsoft_access/FreyaEco.accdb"),  
   
-  # Extract raw tables from database and stitch back together 
+  # Extract raw tables from database and stitch back together
   data_access_ecology_traps = ingest_ecology_database(raw_data_access_ecology_traps_file) |>
     # Clean (reformat, rename, filter some experimental data we don't want to use)
+   # clean_data_access_ecology(exclude_subsites = c("enmore pasture", "paper road pasture", "tottenham pasture", "rosedale pasture", "nardoo pasture")) |>
     clean_data_access_ecology() |>
     # reformat "crop_type" and "crop_stage" columns in line with multiple choice odk format: "crop_group", "crop_variety", "crop_stage"
     standardise_crop_variables(keep_raw = FALSE),
@@ -181,12 +185,19 @@ tar_plan(
 
   data_traps_combined = bind_rows(data_access_monitoring_traps, data_access_ecology_traps, data_csv_dpird_traps, data_csv_traps, data_odk_traps),
 
-  # add session-level summaries (sex ratio, individual counts) while individual rows still present
-  #-- split out as its own target (rather than inlined into data_traps below) so data_traps_capture_history() can reuse this same individual-level frame instead of recomputing it.
-  data_traps_individual = data_traps_session_summary(data_traps_combined),
+  # Individual-level capture log -- see r/a_build_individual_log.R for the
+  # column trimming/rationale (join keys + individual/capture-level columns
+  # only, no dependency on the paddocks_sf/paddock_lookup pipeline).
+  data_traps_individual_log = build_individual_log(data_traps_combined),
 
-  # collapse to one row per night, drop individual columns, sum trap effort per session
-  data_traps = clean_traps_to_session_level(data_traps_individual),
+  data_traps = data_traps_combined |>
+    # add session-level summaries (sex ratio, individual counts) while individual rows still present
+    data_traps_session_summary() |>
+    # collapse to one row per night, drop individual columns, sum trap effort per session
+    clean_traps_to_session_level() |>
+    # session-level id_method (pit_tag/ear_mark/mixed/unmarked/NA) -- see r/a_attach_session_id_method.R
+    attach_session_id_method(data_traps_individual_log),
+
 
 
   # iii. List all three together ---------------------------------
@@ -201,12 +212,7 @@ tar_plan(
     purrr::map(~ dplyr::mutate(.x, dplyr::across(where(is.character), tolower))) |>
 
     # add time variables: year, year_adj, month_year, season_year_adj (ordered factors)
-    purrr::map(attach_time_variables) |>
-
-    # remove unwanted rows: snapback traps, stale sites, fenceline/pasture subsites
-    purrr::map(~ clean_remove_data(.x,
-      trap_type = "snapback", last_surveyed_before = 2016, subsite_name = excluded_subsites
-    )),
+    purrr::map(attach_time_variables),
   
  
 
@@ -220,6 +226,8 @@ tar_plan(
   paddocks_sf = load_paddocks(data_list_clean, custom_paddocks_path = paddocks_by_hand) |>
     # ae_zone — intersection join then snap unmatched systematic paddocks to nearest AEZ; MouseAlert-only paddocks outside the AEZ boundary are left as NA (not snapped).
     attach_aez(aez_adj, data_list = data_list_clean, snap_dist = 15000) |>
+    # cropping_system — single (winter-only) vs dual (summer+winter) cropping system, derived from ae_zone
+    attach_cropping_system() |>
     # grdc_subregion — finer-grained zone; same intersection + snap logic as attach_aez()
     attach_grdc_subregion(grdc_subregion_adj, data_list = data_list_clean, snap_dist = 15000) |>
     # soil_type — raster extraction (modal): 38% of paddocks span multiple soil types
@@ -230,12 +238,10 @@ tar_plan(
     paddock_centroids(),
 
   # (ii) Match survey coordinates to paddock polygons and attach paddock covariates.
-  # Spatial match runs once on unique coordinates; all paddock columns returned directly. 
-  # Split out as its own target (rather than a local variable inside data_list_clean_paddocks below) so the capture-history branch can reuse this same lookup instead of recomputing the spatial join.
-  paddock_lookup = match_surveys_to_paddocks(data_list_clean, paddocks_sf, snap_dist = 150),
-
   # Returns a named list mirroring data_list_clean; rows that don't intersect or snap to a paddock (paddock_id is NA) are dropped, since downstream modelling requires paddock-linked covariates (ae_zone, soil_type, state, etc.).
   data_list_clean_paddocks = {
+    # Spatial match runs once on unique coordinates; all paddock columns returned directly.
+    paddock_lookup <- match_surveys_to_paddocks(data_list_clean, paddocks_sf, snap_dist = 150)
     joined <- purrr::map(data_list_clean, ~ dplyr::left_join(.x, paddock_lookup, by = c("longitude", "latitude")) |>
                  dplyr::filter(!is.na(paddock_id)))
     # Collapse genuine duplicate (paddock_id, survey_date) rows so downstream
@@ -245,32 +251,14 @@ tar_plan(
     joined
   },
 
-  # (iii) Individual-level capture history (CMR density analysis) -- a
-  # separate, parallel branch from data_list/data_list_clean/data_list_clean_paddocks
-  # above, NOT a 4th entry in those lists: combine_survey_data() and
-  # export_with_metadata() both iterate generically over every entry of
-  # data_list_clean_paddocks and bind_rows() them into the shared surveys_all
-  # frame used by the shiny app/quarto report, so adding capture-history there
-  # would silently corrupt that production output. clean_deduplicate_surveys()
-  # is also deliberately skipped here -- it collapses duplicate
-  # (paddock_id, survey_date) rows, which capture history legitimately has many
-  # of (one per mouse caught on the same paddock/day).
-  data_traps_capture_history = build_capture_history(data_traps_individual),
-
-  data_traps_capture_history_clean = data_traps_capture_history |>
-    dplyr::mutate(dplyr::across(where(is.character), tolower)) |>
-    attach_time_variables() |>
-    clean_remove_data(trap_type = "snapback", last_surveyed_before = 2016, subsite_name = excluded_subsites),
-
-  data_traps_capture_history_paddocks = dplyr::left_join(data_traps_capture_history_clean, paddock_lookup, by = c("longitude", "latitude")) |>
-    dplyr::filter(!is.na(paddock_id)),
-
-  tar_file(capture_history_files, export_capture_history(data_traps_capture_history_paddocks)),
-
 
   # 6) Save cleaned data  --------------------------------------------------------
   # save CSV file of each dataframe; create metadata document for explanation
   data_metadata = export_with_metadata(data_list_clean_paddocks, output_dir = "derived_data/cleaned_raw_dataset"),
+
+
+
+  # 7) Shiny app for data exploration  --------------------------------------------------------
 
   # Single flat, survey-level frame (traps + rapid + observations) shared by
   # the shiny app and the mouse update report — see r/combine_survey_data.R for
@@ -278,6 +266,14 @@ tar_plan(
   # and the dedup it applies. Computing this once here means both consumers
   # are guaranteed to see identical data.
   surveys_all = combine_survey_data(data_list_clean_paddocks),
+
+  # Diagnostic-only: rows whose crop_stage is agronomically implausible for
+  # their ae_zone's cropping system and survey month (e.g. "flowering" in
+  # February in a winter-only zone) -- see r/a_flag_crop_stage_anomalies.R for
+  # the month-by-stage rule tables. Not wired into surveys_all/the shiny app/
+  # report -- a standalone list for manual review, the same QA-flags-not-
+  # filters approach build_individual_log() uses.
+  crop_stage_anomalies = flag_crop_stage_anomalies(surveys_all),
 
   # Dataset-wide reference levels ("ranges") that both consumers scale their
   # metrics against — see r/compute_metric_ranges.R for the full list
@@ -289,17 +285,13 @@ tar_plan(
   # percentile of the data, the default) or index_max_value(x) (a fixed
   # value) — see index_max_percentile()/index_max_value() in
   # r/compute_metric_ranges.R.
-  metric_ranges = compute_metric_ranges(
-    surveys_all,
-    index_max_result_traps   = index_max_percentile(0.95),
-    index_max_result_burrow  = index_max_percentile(0.95),
-    index_max_chew_per10     = index_max_percentile(0.95),
-    index_max_avg_daily_high = index_max_percentile(0.95)
-  ),
-
-
-  # 7) Shiny app for data exploration  --------------------------------------------------------
-  # This target becomes outdated whenever the upstream data changes, signalling that the app should be re-deployed.
+  metric_ranges = compute_metric_ranges(surveys_all,
+                                        index_max_result_traps   = index_max_percentile(0.95),
+                                        index_max_result_burrow  = index_max_percentile(0.95),
+                                        index_max_chew_per10     = index_max_percentile(0.95),
+                                        index_max_avg_daily_high = index_max_percentile(0.95)),
+  
+   # This target becomes outdated whenever the upstream data changes, signalling that the app should be re-deployed.
   tar_file(
     shiny_raw_data_explorer_contents,
     { # create folder to house data used for the shiny app and deployment files
@@ -379,14 +371,15 @@ tar_plan(
       email_draft_qmd,
       "quarto_reports/mouseforecast.com/email_draft.qmd"),
 
-    # Draft HTML email for the current update. Embeds the map PNG saved as a
-    # side-effect of forecast_html — no data recomputation or params needed.
+    # Draft HTML email for the current update. Embeds the map PNG (and its
+    # caption, from email_caption.txt) saved as a side-effect of
+    # forecast_html — no data recomputation or params needed.
     # Open email_draft.html in a browser, Ctrl+A -> Ctrl+C, paste into Gmail
     # (base64 image survives the paste). Edit the preamble before sending.
     tar_file(
       email_draft,
       {
-        forecast_html   # ensures forecast_html (and its email_map.png) runs first
+        forecast_html   # ensures forecast_html (and its email_map.png/email_caption.txt) runs first
         email_draft_qmd # re-render whenever the QMD content changes
         quarto::quarto_render("quarto_reports/mouseforecast.com/email_draft.qmd", quiet = TRUE)
         "quarto_reports/mouseforecast.com/email_draft.html"

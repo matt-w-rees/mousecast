@@ -57,6 +57,7 @@ r_path <- if (dir.exists("r")) "r" else "../../r"
 source(file.path(r_path, "a_aez_zone_info.R"))
 source(file.path(r_path, "a_generate_overview_text.R"))
 source(file.path(r_path, "a_draft_overview_files.R"))
+source(file.path(r_path, "a_season_info.R"))
 
 ## Earliest survey date included in this report's "current" calculations
 ## (format: dd-mm-yyyy). Set via the forecast_html target's execute_params.
@@ -103,20 +104,43 @@ cat_colours <- c(
 #| results: asis
 #| include: true
 
-## Dynamically replace the "Current season" subtitle placeholder with the
-## current month and year at render time. Quarto renders the subtitle as a
-## <p class="subtitle"> element inside the title block; we update its text via
-## JavaScript at load time. This is the most reliable approach for dynamic
-## subtitles in self-contained HTML.
+## Build the title block as: title / "<season> <year> (<months>)" / tagline /
+## "Issued <date>". Quarto's fixed title-subtitle-description slots don't
+## match that order, so the "Current season" subtitle placeholder and the
+## static YAML description are both overwritten via JavaScript at load time
+## (the most reliable approach for dynamic text in self-contained HTML) --
+## season/year/month-range and the issue date come from season_info()
+## (r/a_season_info.R), so they advance automatically as seasons change
+## rather than needing a manual update.
+this_season <- season_info(Sys.Date())
+season_months <- paste(
+  format(this_season$season_start, "%B"), "-", format(this_season$season_end, "%B")
+)
+
 cat(sprintf(
   '<script>
     document.addEventListener("DOMContentLoaded", function () {
-      var el = document.querySelector("#title-block-header p.subtitle");
-      if (!el) el = document.querySelector("p.subtitle");
-      if (el) el.textContent = "%s";
+      var sub = document.querySelector("#title-block-header p.subtitle") || document.querySelector("p.subtitle");
+      var desc = document.querySelector("#title-block-header .description") || document.querySelector(".description");
+      if (desc) desc.style.display = "none";
+      if (sub) {
+        sub.textContent = "%s";
+        var seasonLine = document.createElement("p");
+        seasonLine.className = "subtitle";
+        seasonLine.textContent = "%s";
+        var issuedLine = document.createElement("p");
+        issuedLine.className = "subtitle";
+        issuedLine.style.fontSize = "0.8em";
+        issuedLine.style.color = "#666666";
+        issuedLine.textContent = "%s";
+        sub.insertAdjacentElement("afterend", seasonLine);
+        seasonLine.insertAdjacentElement("afterend", issuedLine);
+      }
     });
   </script>',
-  format(Sys.Date(), "%B %Y")
+  sprintf("%s (%s)", this_season$label, season_months),
+  "Predicted house mouse activity across Australian grain-growing regions",
+  sprintf("Issued %s", format(Sys.Date(), "%d %B %Y"))
 ))
 ```
 
@@ -540,27 +564,16 @@ cap_aez <- paste0(
 ## (Summer/Autumn/Winter/Spring -- each exactly 3 calendar months, see
 ## attach_time_variables()).
 
-## Start date of the season `report_date` (i.e. today) falls in -- the
-## previous season's end date is then just one day earlier.
-report_date <- Sys.Date()
-current_season_start <- dplyr::case_when(
-  lubridate::month(report_date) %in% 3:5  ~ as.Date(paste0(lubridate::year(report_date), "-03-01")),
-  lubridate::month(report_date) %in% 6:8  ~ as.Date(paste0(lubridate::year(report_date), "-06-01")),
-  lubridate::month(report_date) %in% 9:11 ~ as.Date(paste0(lubridate::year(report_date), "-09-01")),
-  lubridate::month(report_date) == 12     ~ as.Date(paste0(lubridate::year(report_date), "-12-01")),
-  TRUE ~ as.Date(paste0(lubridate::year(report_date) - 1, "-12-01")) # Jan/Feb -> previous Dec
-)
+## Most recently *completed* season relative to today (report_date) -- one
+## day before the current season's start, via season_info() (r/a_season_info.R,
+## also used for the dynamic subtitle above).
+report_date     <- Sys.Date()
+last_season_end <- season_info(report_date)$season_start - 1
+last_season     <- season_info(last_season_end)
 
-last_season_start <- current_season_start %m-% months(3)
-last_season_end   <- current_season_start - 1
-
-last_season_label <- dplyr::case_when(
-  lubridate::month(last_season_start) == 3  ~ "Autumn",
-  lubridate::month(last_season_start) == 6  ~ "Winter",
-  lubridate::month(last_season_start) == 9  ~ "Spring",
-  lubridate::month(last_season_start) == 12 ~ "Summer"
-)
-last_season_year <- lubridate::year(last_season_end)
+last_season_start <- last_season$season_start
+last_season_label <- last_season$season
+last_season_year  <- last_season$year_adj
 
 ## Same bait_history filter as surveys_recent (see data_prep chunk) -- a
 ## recently-baited paddock's reduced activity reflects the intervention
@@ -766,6 +779,10 @@ ggplot2::ggsave(
   plot = p_aez, width = 6.5, height = 6.5 * 0.82, dpi = 150, bg = "white"
 )
 
+# Same caption text alongside the map, so email_draft.qmd can show it under
+# the embedded image without recomputing display_aez/aez_high/aez_med etc.
+writeLines(cap_aez, file.path(qmd_dir, "email_caption.txt"))
+
 p_aez
 ```
 
@@ -832,7 +849,7 @@ We also receive reports from farmers, agronomists and other community members di
 
 Take 60 seconds to report mouse activity on your farm on [MouseAlert](https://feralscan.org.au/mousealert).
  
-We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations,to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is also important to report as high mouse activity observations.
+We incorporate observations of mouse activity (and reports of mouse damage) from farmers with our own monitoring surveys to create these forecasts and improve understanding of mouse populations, to help keep producers informed. We are primarily using observations of mouse activity within paddocks (not houses or farm sheds). If you have seen mice in your paddocks, report your observations into MouseAlert. If you’ve looked and found no mice, or low mouse activity, this information is also important to report as high mouse activity observations.
  
  
  

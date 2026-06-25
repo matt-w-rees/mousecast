@@ -6,7 +6,7 @@
 # note, ODBC drivers / R packages shift date origin to “days since 1970-01-01” -- see code below to account for this
 
 
-ingest_monitoring_access_database <- function(access_monitoring) {
+ingest_monitoring_access_database <- function(access_monitoring, exclude_subsites = NULL) {
   
   # ----------------------------------------------------------
   # Step 1: Determine OS
@@ -151,8 +151,15 @@ ingest_monitoring_access_database <- function(access_monitoring) {
   
   # now join north and south datasets together
   DataCH <- bind_rows(DataCHSouth, DataCHNorth)
-  
-  
+
+  # Remove snapback traps -- these kill the animal, so they aren't part of
+  # the live-capture (and potential future capture-recapture) dataset.
+  # traptype is the raw numeric Access code at this stage (1 = longworth,
+  # 2 = elliott, 3 = snapback); see clean_data_access_monitoring_traps() for
+  # where this gets recoded to the labelled trap_type column.
+  DataCH <- dplyr::filter(DataCH, traptype != 3)
+
+
   # ----------------------------------------------------------
   # Step 5: Add rapid assessment tables to base
   # ----------------------------------------------------------
@@ -186,9 +193,20 @@ ingest_monitoring_access_database <- function(access_monitoring) {
   
   # bind together but dont print messages
   DataRA <- suppressMessages(bind_rows(DataRANorth, DataRASouth))
-  
-  
-  
+
+  # Remove fenceline subsites (not true within-crop surveys) -- applied to
+  # both DataCH and DataRA here, since they share the same datasitenameold
+  # column from the same raw site table, rather than separately in each
+  # downstream cleaning function. tolower()/str_squish() handle case and
+  # whitespace on both sides of the comparison (this column isn't
+  # standardised yet at this stage, and some raw values have stray double
+  # spaces, e.g. "Grandview  19").
+  if (!is.null(exclude_subsites)) {
+    exclude_subsites <- tolower(stringr::str_squish(exclude_subsites))
+    DataCH <- dplyr::filter(DataCH, !(tolower(stringr::str_squish(datasitenameold)) %in% exclude_subsites))
+    DataRA <- dplyr::filter(DataRA, !(tolower(stringr::str_squish(datasitenameold)) %in% exclude_subsites))
+  }
+
   # ----------------------------------------------------------
   # Step 8: Combine as named list
   # ----------------------------------------------------------

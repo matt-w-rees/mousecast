@@ -1,4 +1,4 @@
-clean_data_access_ecology <- function(data_ecology_raw){
+clean_data_access_ecology <- function(data_ecology_raw, exclude_subsites = NULL){
   
   
   # REMOVE DATA  ---------------------------------------------------
@@ -53,7 +53,7 @@ clean_data_access_ecology <- function(data_ecology_raw){
       session_length_days = NA,
       # site information for this session
       crop_type = cropname,
-      crop_stage = cropstage,
+      crop_stage = cropstage.y,
       bait_dosage = if_else(sessionname == "parkes post-baiting" & sitename %in% c("bap west", "george shed", "rice south") | sessionname == "april 2026 - postbaiting adelaide plains"  & sitename %in% c("clary", "cemetery", "days hill"), "ZnP50",
                             if_else(sessionname == "parkes post-baiting" & sitename %in% c("george rail", "big red", "bap east") | sessionname == "april 2026 - postbaiting adelaide plains"  & sitename %in% c("parker", "jharkness", "heaslip"), "ZnP25",
                                     "no")),
@@ -154,14 +154,25 @@ clean_data_access_ecology <- function(data_ecology_raw){
     ungroup() |>
     select(-session) |>
 
+    # Remove snapback traps -- these kill the animal, so they aren't part of
+    # the live-capture (and potential future capture-recapture) dataset.
+    # Currently a no-op given the TrapType == "1" filter above already
+    # excludes snapback (TrapType 3), but kept explicit so the exclusion
+    # doesn't silently disappear if that earlier filter ever changes.
+    dplyr::filter(trap_type != "snapback") |>
 
   # CHANGE SITE FEATURES ------------------------------------------------------
     mutate(
       # all quigleys operate as one
       farmer = if_else(grepl("quigley", farmer, ignore.case = TRUE), "richard quigley", farmer),
       subsite_name = if_else(site_name == "rk murphy", "rk murphy tg", subsite_name)
-    )    
-  
+    ) |>
+
+    # Remove pasture subsites (not true within-crop surveys) -- see
+    # remove_exact_match() (r/a_remove_exact_match.R) for the whitespace
+    # handling / no-match warning. A no-op if exclude_subsites is NULL.
+    remove_exact_match("subsite_name", exclude_subsites)
+
 
 
   # END  --------------------------------------------------------------------
