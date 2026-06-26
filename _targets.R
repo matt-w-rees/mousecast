@@ -167,7 +167,7 @@ tar_plan(
   
   # v. MouseAlert ---------------------------------------------
   # Citizen-science mouse sightings from the FeralScan / MouseAlert platform. Each record is an ordinal abundance observation (none / low / medium / high) submitted by a farmer or member of the public.
-  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-6-18.csv"),
+  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-6-26.csv"),
   data_mouse_alert = clean_data_mouse_alert(mouse_alert_file),
 
 

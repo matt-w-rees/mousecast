@@ -539,8 +539,14 @@ nodata_sentence <- if (any(display_aez$activity_category == "No data")) {
   ""
 }
 
+## season_label is e.g. "Winter 2026 (June - August)" -- this_season$label and
+## season_months are computed in the title_block chunk (from season_info()).
+season_label <- paste0(this_season$label, " (", season_months, ")")
+
 cap_aez <- paste0(
-  "Current mouse activity across each GRDC agro-ecological zone (broad regions defined by similar climate, soils, and farming systems). Activity estimates consider  live-trapping rates, active burrow counts, chew card assessments, the proportion of surveyed paddocks which detected mice and farmer observations (via MouseAlert). Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest).",
+  "Estimated relative mouse activity in ", season_label, " across each GRDC agro-ecological zone (broad regions defined by similar climate, soils, and farming systems).",
+  " Estimates consider live-trapping rates, active burrow counts, chew card assessments, the proportion of surveyed paddocks which detected mice and farmer observations (via MouseAlert).",
+  " Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest).",
   nodata_sentence
 #  " ",
 #  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
@@ -594,12 +600,9 @@ trend_activity_index <- compute_trend_activity_index(
   dplyr::mutate(season_date = season_mid_date(year_adj, season))
 
 cap_trend <- paste0(
-  "Mouse Activity Index by GRDC agro-ecological zone over time, up to and including ",
-  last_season_label, " ", last_season_year,
-  ": each line combines the proportion of paddocks with mice detected, mice caught per trap night,",
-  " active burrows per transect, chew cards per 10 deployed, and MouseAlert reports of high mouse abundance for that zone and season.",
-  " Zone-seasons with no traps/rapid paddocks surveyed are omitted.",
-  " GRDC agro-ecological zones are broad regions of the Australian grain belt defined by similar climate, soils, and farming systems."
+  "Estimated relative mouse activity from Summer 2013 - ",
+    last_season_label, " ", last_season_year, " ",
+  "in each GRDC agro-ecological zone (broad regions of the Australian grain belt defined by similar climate, soils, and farming systems). Estimates consider live-trapping rates, active burrow counts, chew card assessments, the proportion of surveyed paddocks which detected mice and farmer observations (via MouseAlert)."
 )
 ```
 
@@ -874,7 +877,7 @@ We incorporate these observations with our monitoring survey results to create t
 
 ## Contact {#sec-contact}
 
-Questions about the project or forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](mailto:matt.rees@csiro.au)
+Questions about the forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](mailto:matt.rees@csiro.au).
 
 For media enquiries, contact Research Officer Steve Henry [steve.henry@csiro.au](mailto:steve.henry@csiro.au) or the [CSIRO media office](https://www.csiro.au/en/news/Media-Centre). 
 
