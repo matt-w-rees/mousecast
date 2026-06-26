@@ -36,8 +36,9 @@
 }
 
 /* ── Print styles ────────────────────────────────────────────────────────────
-   Reduce font size and spacing, and let content flow across pages naturally
-   (no forced page breaks) so there's no wasted whitespace between sections.  */
+   Reduce font size and spacing; each figure lands on its own page (forced
+   page-break-after on .quarto-figure) with content flowing naturally between
+   figures.  */
 @media print {
   /* Reduce the top and bottom page margins */
   @page { margin-top: 0.5cm; margin-bottom: 0.3cm; }
@@ -81,9 +82,13 @@
   .quarto-figure img,
   .cell-output-display img   { margin-bottom: 0; }
 
-  /* Keep each figure (image + caption) together if a page break falls nearby,
-     without forcing an extra break after every figure */
-  .quarto-figure { page-break-inside: avoid; }
+  /* Keep each figure (image + caption) together and force a page break after
+     each figure so figures and their captions each land on their own page */
+  .quarto-figure {
+    page-break-inside: avoid;
+    page-break-after: always;
+    break-after: page;  /* modern equivalent for broader browser support */
+  }
 
   /* Cap figure heights so they stay compact and don't dominate a page */
   .quarto-figure img,
@@ -94,6 +99,9 @@
 
   /* Hide tab navigation bar — only the active tab content prints */
   .nav-tabs { display: none; }
+
+  /* Hide the "Stay updated" (email signup) section — not useful in print */
+  .no-print { display: none; }
 
   /* Trim the footer's extra top spacing, and the horizontal rule above it,
      so the larger section gaps above don't push a near-empty page onto the

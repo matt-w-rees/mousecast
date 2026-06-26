@@ -883,9 +883,11 @@ For media enquiries, contact Research Officer Steve Henry [steve.henry@csiro.au]
 We value your feedback. 
 
 
+::: {.no-print}
+
 ## 📬 Stay updated
 
-Receive seasonal mouse forecasts to your inbox 
+Receive seasonal mouse forecasts to your inbox
 
 ```{=html}
 <!-- JSONP submission keeps the user on this page and shows inline feedback.
@@ -972,6 +974,8 @@ Receive seasonal mouse forecasts to your inbox
 })();
 </script>
 ```
+
+:::
 
 
 ---
