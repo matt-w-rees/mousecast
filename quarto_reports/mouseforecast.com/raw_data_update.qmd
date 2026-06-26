@@ -546,7 +546,6 @@ season_label <- paste0(this_season$label, " (", season_months, ")")
 cap_aez <- paste0(
   "Estimated relative mouse activity in ", season_label, " across each GRDC agro-ecological zone (broad regions defined by similar climate, soils, and farming systems).",
   " Estimates consider live-trapping rates, active burrow counts, chew card assessments, the proportion of surveyed paddocks which detected mice and farmer observations (via MouseAlert).",
-  " Zones with very low mouse activity are shown in dark green, low activity in light green; moderate activity in yellow;  orange - red shades indicating increasingly high activity (dark red = highest).",
   nodata_sentence
 #  " ",
 #  make_key_results(aez_high, aez_med, "zone", fmt = fmt_aez)
