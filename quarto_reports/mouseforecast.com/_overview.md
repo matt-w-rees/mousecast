@@ -10,4 +10,4 @@ However, mouse activity could increase as more food is now available.
 
 + [An emergency permit has been issued by the APVMA for the higher dose ZnP50 bait]{.underline}.
 Locations with permit access change on a fortnightly basis, based on APVMA-defined mouse activity categories (which differ from our mouse forecasts due to different data types, metrics and time periods).
-Check the [GRDC website](https://grdc.com.au/resources-and-publications/resources/mouse-management) for emergency permit information and [current access](https://grdc.com.au/resources-and-publications/resources/mouse-management/aez-lookup/aez-lookup-table-and-map).
+Check the [GRDC website](https://grdc.com.au/resources-and-publications/resources/mouse-management) for emergency permit information and current access.
