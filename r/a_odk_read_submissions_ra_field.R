@@ -12,8 +12,9 @@
 #   rapid_assessment-chew_cards.csv       (repeat group)
 #
 # Returns a tibble with the same schema as odk_download_rapid_submissions():
-#   active_burrows_tN and chewcard_percent_N already normalised, and
-#   date_today renamed to survey_date.
+#   active_burrows_tN and chewcard_percent_N already normalised, date_today
+#   renamed to survey_date, and bait_history "unknown" (newer form versions)
+#   recoded to "unsure" to match the rest of the pipeline.
 
 # Internal helper: read a repeat-group CSV, number rows within each parent,
 # and pivot one value column wide.
@@ -119,30 +120,41 @@ odk_read_submissions_ra_field <- function(
   # --- 5. Rename date_today → survey_date to match retro form and API output ---
   submissions <- dplyr::rename(submissions, survey_date = date_today)
 
+  # --- 5b. Recode bait_history "unknown" (newer form versions) back to "unsure" ---
+  # Some form versions renamed this choice from "unsure" to "unknown", but
+  # "unsure" is the value used for this category everywhere else in the
+  # pipeline (Access monitoring, MouseAlert, and the retrospective ODK form).
+  if ("bait_history" %in% names(submissions)) {
+    submissions <- dplyr::mutate(submissions,
+      bait_history = dplyr::if_else(bait_history == "unknown", "unsure", bait_history)
+    )
+  }
 
   # --- 6. Drop admin and uninformative columns (KEY retained until after joins) ---
   submissions <- dplyr::select(submissions, -dplyr::any_of(c(
-    "burrow_note", 
+    "burrow_note",
     "survey_design_diagram",
     "KEY",
-    "location-Altitude", 
-    "gps_accuracy", 
+    "location-Altitude",
+    "gps_accuracy",
     "burrow_low_warning",
-    "date_start_form", 
+    "date_start_form",
     "date_end_form",
-    "survey_summary", 
+    "survey_summary",
     "burrow_transects_warning",
-    "burrow_transects-generated_table_list_label_17", 
+    "burrow_transects-generated_table_list_label_17",
     "burrow_transects-generated_table_list_label_16",
     "chew_low_warning",
-    "SubmitterID", 
+    "bait_history_unknown_warning",
+    "bait_dosage_unknown_warning",
+    "SubmitterID",
     "DeviceID",
     "Edits",
-    "AttachmentsPresent", 
+    "AttachmentsPresent",
     "AttachmentsExpected",
-    "Status", 
-    "ReviewState", 
-    "burrow_note", 
+    "Status",
+    "ReviewState",
+    "burrow_note",
     "burrow_transects_warning"
   )))
   

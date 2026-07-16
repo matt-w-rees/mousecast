@@ -1,3 +1,6 @@
+# privacy 
+.Renviron
+
 # R history / workspace
 .Rhistory
 .RData

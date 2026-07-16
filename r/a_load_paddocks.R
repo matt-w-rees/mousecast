@@ -57,6 +57,10 @@ load_paddocks <- function(
       dplyr::mutate(paddock_id = 9000000 + dplyr::row_number())
 
     n_features <- nrow(custom)
+    # paddock_id is genuinely constant across any disjoint parts produced by
+    # the cast below (see comment above) -- telling sf this explicitly avoids
+    # its generic "repeating attributes for all sub-geometries" warning.
+    sf::st_agr(custom) <- "constant"
     custom <- custom |>
       sf::st_cast("POLYGON") |>
       dplyr::select(paddock_id)

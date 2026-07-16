@@ -26,7 +26,7 @@ suppressPackageStartupMessages({
 })
 
 tar_option_set(
-  packages = c("tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "fs", "lwgeom"), # packages that your targets need to run
+  packages = c("tidyverse", "Hmisc", "sjlabelled", "sf", "cropgrowdays", "RcppRoll", "readxl", "qs2", "terra", "visdat", "mvgam", "gratia", "marginaleffects", "tidybayes", "patchwork", "data.table", "scico", "flextable", "ggrepel", "ggnewscale", "xml2", "httr", "viridis", "gganimate", "gratia", "zoo", "rlang", "glue", "fs", "lwgeom"), # packages that your targets need to run
   format = "qs", # faster RDS storage using qs2 package
   memory = "transient", # remove data from the R environment as soon as it is no longer needed
   garbage_collection = 5 # cleans up garbage every xth target
@@ -167,7 +167,7 @@ tar_plan(
   
   # v. MouseAlert ---------------------------------------------
   # Citizen-science mouse sightings from the FeralScan / MouseAlert platform. Each record is an ordinal abundance observation (none / low / medium / high) submitted by a farmer or member of the public.
-  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-6-26.csv"),
+  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-7-16.csv"),
   data_mouse_alert = clean_data_mouse_alert(mouse_alert_file),
 
 
@@ -255,10 +255,6 @@ tar_plan(
   # save CSV file of each dataframe; create metadata document for explanation
   data_metadata = export_with_metadata(data_list_clean_paddocks, output_dir = "derived_data/cleaned_raw_dataset"),
 
-
-
-  # 7) Shiny app for data exploration  --------------------------------------------------------
-
   # Single flat, survey-level frame (traps + rapid + observations) shared by
   # the shiny app and the mouse update report — see r/combine_survey_data.R for
   # the derived columns it adds (effort/result/chew_per10/mice_detected/etc.)
@@ -266,6 +262,10 @@ tar_plan(
   # are guaranteed to see identical data.
   surveys_all = combine_survey_data(data_list_clean_paddocks),
 
+
+
+  # 7) Check for errors  --------------------------------------------------------
+  
   # Diagnostic-only: rows whose crop_stage is agronomically implausible for
   # their ae_zone's cropping system and survey month (e.g. "flowering" in
   # February in a winter-only zone) -- see r/a_flag_crop_stage_anomalies.R for
@@ -274,6 +274,21 @@ tar_plan(
   # filters approach build_individual_log() uses.
   crop_stage_anomalies = flag_crop_stage_anomalies(surveys_all),
 
+  # Diagnostic-only: two within-paddock consistency checks.
+  #   $name_conflicts  paddocks (pre-2026 data) where >1 distinct site_name
+  #                    maps to the same paddock_id; site names were a
+  #                    controlled vocabulary before 2026 so divergence suggests
+  #                    a GPS error or an ePaddock boundary spanning two farms.
+  #   $crop_conflicts  paddocks where the same (year_adj, season) has >1
+  #                    distinct crop_variety or crop_stage; applies to all
+  #                    years since crop info is not free-text.
+  # See r/a_flag_paddock_conflicts.R.
+  paddock_conflicts = flag_paddock_conflicts(surveys_all),
+
+  
+  # 8) Shiny app for data exploration  --------------------------------------------------------
+  
+  
   # Dataset-wide reference levels ("ranges") that both consumers scale their
   # metrics against — see r/compute_metric_ranges.R for the full list
   # (max_*, gradient_max_*, trend_max_*) and what each is used for.
@@ -311,11 +326,11 @@ tar_plan(
   # load shiny app in local browser
   #shiny::runApp("shiny/raw_data_explorer")
   
-  # deploy app to web using my account details
+  # deploy app to web using my account details (add as a proper target??)
   # rsconnect::deployApp("shiny/raw_data_explorer/")
 
   
-  # 8) Create Mouse Update quarto doc --------------------------------------------------------
+  # 9) Create Mouse Update quarto doc --------------------------------------------------------
   
   # i. tar_quarto document, scans the QMD for tar_load()/tar_read() calls and automatically adds those targets as dependencies,
   # data_from_date (dd-mm-yyyy) sets the earliest survey date the report summarises "current" activity from;
@@ -348,7 +363,7 @@ tar_plan(
               # Hand-edited Overview / Management text (see r/a_draft_overview_files.R) -- {{< include >}}d by the qmd, so list here to force a re-render when these are edited. The css file is also listed so styling-only edits trigger a re-render.
               extra_files = c("quarto_reports/mouseforecast.com/_overview.md", "quarto_reports/mouseforecast.com/_management.md", "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"),
               execute_params = list(
-                data_from_date        = "01-03-2026",
+                data_from_date        = "01-04-2026",
                 weight_pct_detected   = 1,
                 weight_result_traps   = 1,
                 weight_result_burrow  = 1,
