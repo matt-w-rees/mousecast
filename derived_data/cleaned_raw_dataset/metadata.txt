@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-07-16 14:19:02
+Generated: 2026-08-01 12:17:19
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -34,15 +34,15 @@ crop_stage
   Source:      Field data, standardized to lowercase
 
 data_source
-  Description: Source database or data entry method for this record
+  Description: Source data-entry system or archive this record came from (see raw_data/survey_data/README.md for full descriptions)
   Type:        Character
-  Values:      ms_access_monitoring, ms_access_ecology, odk_field, odk_office, csv
-  Source:      Set during data ingestion in clean_data_* functions
+  Values:      ms_access, odk, csv, mouse_alert, historic_walpeup, historic_roseworthy, historic_coleambally, historic_qld
+  Source:      Set during data ingestion in clean_data_*/clean_historic_data_* functions
 
 project
-  Description: Project under which the survey was conducted
+  Description: Project under which the survey was conducted -- finer-grained than data_source (e.g. distinguishes the two ms_access databases)
   Type:        Character
-  Values:      e.g., grdc_monitoring, grdc_ecology
+  Values:      CSIRO_monitoring, CSIRO_ecology, mouse_alert, dpird, walpeup_longterm, roseworthy_longterm, coleambally_longterm, qld_longterm
   Source:      Set during data ingestion
 
 longitude
@@ -136,16 +136,28 @@ ae_zone
   Source:      Polygon-over-polygon join with GRDC AEZ layer in attach_aez()
 
 cropping_system
-  Description: [not yet documented]
+  Description: Broad cropping calendar for the paddock's ae_zone: single winter crop per year, or summer+winter double cropping
+  Type:        Character
+  Values:      single (most of southern Australia + WA), dual (northern NSW + Qld); NA for WA Ord or no ae_zone
+  Source:      Lookup on ae_zone in attach_cropping_system()
 
 grdc_subregion
-  Description: [not yet documented]
+  Description: GRDC growing subregion covering the paddock polygon -- a finer-grained alternative to ae_zone
+  Type:        Character
+  Values:      e.g., Central West NSW, Yorke Peninsula
+  Source:      Polygon-over-polygon join (or nearest-subregion snap) with GRDC subregion layer in attach_grdc_subregion()
 
 soil_type
   Description: Dominant Australian Soil Classification within the paddock polygon
   Type:        Character
   Values:      ASC order codes (e.g., Chromosol, Vertosol)
   Source:      Modal raster extraction (terra::extract) in attach_soil_type(); 38% of paddocks span multiple types
+
+state
+  Description: Australian state the paddock falls within
+  Type:        Character
+  Values:      NSW, VIC, SA, QLD, WA
+  Source:      Polygon-over-polygon join with state boundaries in attach_state()
 
 longitude_paddock
   Description: Longitude of the paddock polygon centroid (WGS-84)
@@ -177,7 +189,7 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 1388
+  Number of rows: 3072
   Number of columns: 44
 
 UNIQUE VARIABLES (specific to traps dataset):
@@ -292,13 +304,10 @@ number_functional_traps_session
   Source:      Sum of number_functional_traps across all nights in data_traps_session_summary()
 
 id_method
-  Description: [not yet documented]
-
-state
-  Description: Australian state the paddock falls within
+  Description: Which (if any) marking method this capture's identity relies on -- the key data-quality flag for CMR use (see raw_data/survey_data/README.md's quality tiers)
   Type:        Character
-  Values:      NSW, VIC, SA, QLD, WA
-  Source:      Polygon-over-polygon join with state boundaries in attach_state()
+  Values:      pit_tag, ear_mark, unmarked
+  Source:      build_individual_log() (individual_captures); majority-vote session summary in attach_session_id_method() (traps)
 
 
 ################################################################################
@@ -314,7 +323,7 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3826
+  Number of rows: 3840
   Number of columns: 84
 
 UNIQUE VARIABLES (specific to rapid dataset):
@@ -398,23 +407,218 @@ biomass
   Values:      Low, Medium, High
   Source:      Field assessment
 
-state
-  Description: Australian state the paddock falls within
-  Type:        Character
-  Values:      NSW, VIC, SA, QLD, WA
-  Source:      Polygon-over-polygon join with state boundaries in attach_state()
-
 active_burrows_t1 ... active_burrows_t6  [6 columns]
-  Description: Active burrow count for each individual 100 m transect
+  Description: Active burrow count for an individual 100 m transect (one column per transect surveyed at the subsite)
   Type:        Integer
-  Values:      >= 0; NA if transect not surveyed
+  Values:      >= 0; NA if that transect was not surveyed
   Source:      Field data; column N corresponds to transect N at the subsite
 
 chewcard_percent_1 ... chewcard_percent_40  [40 columns]
-  Description: Percentage of each individual chewcard eaten (0-100)
+  Description: Percentage of an individual chewcard eaten (one column per chewcard deployed at the subsite)
   Type:        Numeric
-  Values:      0-100; NA if card not deployed or recovered
+  Values:      0-100; NA if that card was not deployed or recovered
   Source:      Field data; column N corresponds to chewcard N at the subsite
+
+
+################################################################################
+DATAFRAME: observations
+################################################################################
+
+DESCRIPTION:
+Citizen-science mouse sightings from the FeralScan / MouseAlert platform.
+Each row is a single ordinal abundance report (none/low/medium/high) submitted
+by a farmer or member of the public -- a point-in-time observation, not a
+structured survey with a fixed method or effort measure. Considered less
+reliable than the traps/rapid datasets and weighted accordingly downstream.
+
+DATA STRUCTURE:
+  Number of rows: 1393
+  Number of columns: 30
+
+UNIQUE VARIABLES (specific to observations dataset):
+----------------------------------------------------------------------------
+
+observation_id
+  Description: FeralScan/MouseAlert record ID; a comma-separated list if multiple raw submissions were merged into this row (see clean_data_mouse_alert())
+  Type:        Character
+  Values:      FeralScan-assigned numeric IDs
+  Source:      Field data from FeralScan export
+
+mouse_abundance
+  Description: Citizen-reported ordinal mouse abundance category -- the core MouseAlert response variable
+  Type:        Ordered factor
+  Values:      none < low < medium < high
+  Source:      Standardized from FeralScan's verbose MouseAbundance labels in clean_data_mouse_alert()
+
+mouse_abundance_estimate
+  Description: Optional free-entry numeric estimate of mouse numbers accompanying the categorical report
+  Type:        Numeric
+  Values:      >= 0; NA if not provided
+  Source:      Field data from FeralScan export
+
+comments
+  Description: Free-text field notes from the surveyor
+  Type:        Character
+  Values:      Free text; NA if no notes
+  Source:      Field data
+
+observer_name
+  Description: Name of the citizen-science reporter (anonymous for most records)
+  Type:        Character
+  Values:      Free text; NA if not provided
+  Source:      Field data from FeralScan export
+
+
+################################################################################
+DATAFRAME: individual_captures (data_traps_individual_log)
+################################################################################
+
+DESCRIPTION:
+One row per captured animal (not per survey night), reconstructed from every
+live-trap source in `traps`. Supports future capture-recapture analyses --
+see r/a_build_individual_log.R for how individual identity is (or isn't)
+recoverable depending on which marking method (pit tag vs ear mark vs none)
+was used for a given capture.
+
+DATA STRUCTURE:
+  Number of rows: 28908
+  Number of columns: 28
+
+VARIABLES (specific to individual_captures; join keys shared with traps
+are documented in the COMMON VARIABLES section above):
+----------------------------------------------------------------------------
+
+session_start_date
+  Description: First date of the trapping session
+  Type:        Date
+  Values:      YYYY-MM-DD
+  Source:      Field data
+
+session_end_date
+  Description: Last date of the trapping session
+  Type:        Date
+  Values:      YYYY-MM-DD
+  Source:      Field data
+
+survey_night
+  Description: Night number within the trapping session
+  Type:        Integer
+  Values:      1, 2, 3 (occasionally 4 or 5)
+  Source:      Derived from capture dates within session
+
+pit_tag_id
+  Description: Physically-unique individual tag code (PIT tag, or a numbered ear tag for historic_walpeup) -- the only reliable cross-session individual identifier. See id_method/individual_id
+  Type:        Character
+  Values:      Free-form tag code; NA if not tagged this capture
+  Source:      Field data from database
+
+ear_mark
+  Description: Fallback marking code used for animals not pit-tagged this capture -- NOT a reliable individual identifier (values are reused across sessions and even within the same session)
+  Type:        Character
+  Values:      1, 2, 3; NA if not ear-marked
+  Source:      Field data from database
+
+class
+  Description: Capture status of this individual capture event
+  Type:        Character
+  Values:      first_capture, recapture_within_trip, recapture_bw_trips, recapture_tag_lost, phantom (DPIRD only; dropped before individual_captures), escape
+  Source:      Field data from database, recoded from source-specific numeric/text codes
+
+id_method
+  Description: Which (if any) marking method this capture's identity relies on -- the key data-quality flag for CMR use (see raw_data/survey_data/README.md's quality tiers)
+  Type:        Character
+  Values:      pit_tag, ear_mark, unmarked
+  Source:      build_individual_log() (individual_captures); majority-vote session summary in attach_session_id_method() (traps)
+
+individual_id
+  Description: Reconstructed individual identifier -- equals pit_tag_id (lowercased) when id_method == "pit_tag", else NA (ear_mark/unmarked captures have no reliable cross-row identity)
+  Type:        Character
+  Values:      Lowercased tag code, or NA
+  Source:      build_individual_log()
+
+is_recapture
+  Description: Whether this row's own class value indicates a recapture -- usable regardless of id_method, since it only needs this row's class, not a cross-row identity link
+  Type:        Logical
+  Values:      TRUE, FALSE, NA (class not recorded)
+  Source:      build_individual_log(), derived from class
+
+pit_tag_id_suspect
+  Description: TRUE if pit_tag_id is present but doesn't look like a plausible tag code (fewer than 4 hex characters, or contains non-hex characters)
+  Type:        Logical
+  Values:      TRUE, FALSE
+  Source:      build_individual_log(); skipped for historic_walpeup, whose short decimal ear-tag codes are already validated in r/a_clean_historic_data_walpeup.R
+
+recapture_link_broken
+  Description: TRUE if is_recapture is TRUE and id_method == "pit_tag", but no earlier row (by survey_date) shares this individual_id -- a recapture claimed with no substantiating first capture in this dataset
+  Type:        Logical
+  Values:      TRUE, FALSE
+  Source:      build_individual_log()
+
+sex_conflict
+  Description: TRUE if this individual_id has more than one distinct sex recorded anywhere in the dataset (pit_tag tier only) -- a data-quality flag, not filtered out
+  Type:        Logical
+  Values:      TRUE, FALSE
+  Source:      build_individual_log()
+
+sex
+  Description: Sex of the captured animal
+  Type:        Character
+  Values:      male, female, NA
+  Source:      Field data from database
+
+vagina
+  Description: Vaginal condition (female captures only) -- a breeding-status indicator
+  Type:        Character
+  Values:      not_open, not_open_no_membrane, pin_hole, large_opening
+  Source:      Field data from database
+
+teats
+  Description: Teat condition (female captures only) -- a breeding-status indicator
+  Type:        Character
+  Values:      not_visible, present_fur_at_base, present_large_fur_not_at_base
+  Source:      Field data from database
+
+pregnant
+  Description: Whether the animal was visibly pregnant (female captures only)
+  Type:        Character
+  Values:      yes, no
+  Source:      Field data from database
+
+weight_g
+  Description: Body weight of the captured animal
+  Type:        Numeric
+  Values:      Grams
+  Source:      Field data from database
+
+length_mm
+  Description: Body length of the captured animal
+  Type:        Numeric
+  Values:      Millimetres
+  Source:      Field data from database
+
+fate
+  Description: Outcome of this capture
+  Type:        Character
+  Values:      released, dead, released_no_mark, dead_to_lab
+  Source:      Field data from database
+
+comments
+  Description: Free-text field notes from the surveyor
+  Type:        Character
+  Values:      Free text; NA if no notes
+  Source:      Field data
+
+grid_location_x
+  Description: Trap-station X coordinate within the grid (local grid units, not GPS)
+  Type:        Numeric
+  Values:      >= 0; NA where the source records no station-level position
+  Source:      Field data from database
+
+grid_location_y
+  Description: Trap-station Y coordinate within the grid (local grid units, not GPS)
+  Type:        Numeric
+  Values:      >= 0; NA where the source records no station-level position
+  Source:      Field data from database
 
 
 ================================================================================

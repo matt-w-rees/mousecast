@@ -1,10 +1,19 @@
-export_with_metadata <- function(data, output_dir = "derived_data") {
+export_with_metadata <- function(data, individual_log = NULL, output_dir = "derived_data") {
 
   # Saves each data frame in the list as a CSV and writes a single metadata.txt
   # describing all variables. Common columns are documented once at the top;
   # dataset-specific columns appear under each dataset section.
   # Individual chewcard_percent_N and active_burrows_tN columns are grouped
   # into a single entry each rather than listed one-by-one.
+  #
+  # individual_log (optional): data_traps_individual_log, the one-row-per-capture
+  # table from build_individual_log(). Documented as its own section (against
+  # the same common_columns computed from `data`) and saved as its own CSV, but
+  # deliberately NOT included in `data`/common_columns itself -- it's a
+  # different row grain (one row per capture, not per survey), so mixing it in
+  # would incorrectly mark join-key columns it shares with traps (e.g. sex,
+  # weight_g are individual-only and dropped from the session-level traps
+  # table by clean_traps_to_session_level()) as "common".
   #
   # Returns a character vector of all created file paths (for targets format = "file").
 
@@ -106,6 +115,32 @@ export_with_metadata <- function(data, output_dir = "derived_data") {
     metadata <- append_unique_variables(metadata, all_var_definitions, unique_rapid_cols)
   }
 
+  if ("observations" %in% names(data)) {
+    metadata <- c(metadata,
+      "",
+      "################################################################################",
+      "DATAFRAME: observations",
+      "################################################################################",
+      "",
+      "DESCRIPTION:",
+      "Citizen-science mouse sightings from the FeralScan / MouseAlert platform.",
+      "Each row is a single ordinal abundance report (none/low/medium/high) submitted",
+      "by a farmer or member of the public -- a point-in-time observation, not a",
+      "structured survey with a fixed method or effort measure. Considered less",
+      "reliable than the traps/rapid datasets and weighted accordingly downstream.",
+      "",
+      "DATA STRUCTURE:",
+      paste0("  Number of rows: ", nrow(data$observations)),
+      paste0("  Number of columns: ", ncol(data$observations)),
+      "",
+      "UNIQUE VARIABLES (specific to observations dataset):",
+      "----------------------------------------------------------------------------",
+      ""
+    )
+    unique_obs_cols <- setdiff(names(data$observations), common_columns)
+    metadata <- append_unique_variables(metadata, all_var_definitions, unique_obs_cols)
+  }
+
   # Keep burrows/chewcards sections for backwards compatibility if those keys exist
   if ("burrows" %in% names(data)) {
     metadata <- c(metadata,
@@ -141,6 +176,32 @@ export_with_metadata <- function(data, output_dir = "derived_data") {
     metadata <- append_unique_variables(metadata, all_var_definitions, setdiff(names(data$chewcards), common_columns))
   }
 
+  if (!is.null(individual_log)) {
+    metadata <- c(metadata,
+      "",
+      "################################################################################",
+      "DATAFRAME: individual_captures (data_traps_individual_log)",
+      "################################################################################",
+      "",
+      "DESCRIPTION:",
+      "One row per captured animal (not per survey night), reconstructed from every",
+      "live-trap source in `traps`. Supports future capture-recapture analyses --",
+      "see r/a_build_individual_log.R for how individual identity is (or isn't)",
+      "recoverable depending on which marking method (pit tag vs ear mark vs none)",
+      "was used for a given capture.",
+      "",
+      "DATA STRUCTURE:",
+      paste0("  Number of rows: ", nrow(individual_log)),
+      paste0("  Number of columns: ", ncol(individual_log)),
+      "",
+      "VARIABLES (specific to individual_captures; join keys shared with traps",
+      "are documented in the COMMON VARIABLES section above):",
+      "----------------------------------------------------------------------------",
+      ""
+    )
+    metadata <- append_unique_variables(metadata, all_var_definitions, setdiff(names(individual_log), common_columns))
+  }
+
   metadata <- c(metadata,
     "",
     "================================================================================",
@@ -152,6 +213,13 @@ export_with_metadata <- function(data, output_dir = "derived_data") {
     csv_path <- file.path(output_dir, paste0("data_", df_name, ".csv"))
     write.csv(data[[df_name]], csv_path, row.names = FALSE)
     created_files[[paste0("csv_", df_name)]] <- csv_path
+    message("Saved: ", csv_path)
+  }
+
+  if (!is.null(individual_log)) {
+    csv_path <- file.path(output_dir, "data_individual_captures.csv")
+    write.csv(individual_log, csv_path, row.names = FALSE)
+    created_files[["csv_individual_captures"]] <- csv_path
     message("Saved: ", csv_path)
   }
 
@@ -172,15 +240,15 @@ get_all_variable_definitions <- function() {
 
     # --- Data provenance ---
     data_source = list(
-      desc   = "Source database or data entry method for this record",
+      desc   = "Source data-entry system or archive this record came from (see raw_data/survey_data/README.md for full descriptions)",
       type   = "Character",
-      values = "ms_access_monitoring, ms_access_ecology, odk_field, odk_office, csv",
-      source = "Set during data ingestion in clean_data_* functions"
+      values = "ms_access, odk, csv, mouse_alert, historic_walpeup, historic_roseworthy, historic_coleambally, historic_qld",
+      source = "Set during data ingestion in clean_data_*/clean_historic_data_* functions"
     ),
     project = list(
-      desc   = "Project under which the survey was conducted",
+      desc   = "Project under which the survey was conducted -- finer-grained than data_source (e.g. distinguishes the two ms_access databases)",
       type   = "Character",
-      values = "e.g., grdc_monitoring, grdc_ecology",
+      values = "CSIRO_monitoring, CSIRO_ecology, mouse_alert, dpird, walpeup_longterm, roseworthy_longterm, coleambally_longterm, qld_longterm",
       source = "Set during data ingestion"
     ),
 
@@ -252,6 +320,18 @@ get_all_variable_definitions <- function() {
       type   = "Character",
       values = "NSW, VIC, SA, QLD, WA",
       source = "Polygon-over-polygon join with state boundaries in attach_state()"
+    ),
+    cropping_system = list(
+      desc   = "Broad cropping calendar for the paddock's ae_zone: single winter crop per year, or summer+winter double cropping",
+      type   = "Character",
+      values = "single (most of southern Australia + WA), dual (northern NSW + Qld); NA for WA Ord or no ae_zone",
+      source = "Lookup on ae_zone in attach_cropping_system()"
+    ),
+    grdc_subregion = list(
+      desc   = "GRDC growing subregion covering the paddock polygon -- a finer-grained alternative to ae_zone",
+      type   = "Character",
+      values = "e.g., Central West NSW, Yorke Peninsula",
+      source = "Polygon-over-polygon join (or nearest-subregion snap) with GRDC subregion layer in attach_grdc_subregion()"
     ),
     longitude_paddock = list(
       desc   = "Longitude of the paddock polygon centroid (WGS-84)",
@@ -484,6 +564,168 @@ get_all_variable_definitions <- function() {
       type   = "Integer",
       values = "0 to chewcards_deployed",
       source = "Count of chewcard_percent_N columns where value > 0"
+    ),
+    # grouped columns: chewcard_percent_1, chewcard_percent_2, ... and
+    # active_burrows_t1, active_burrows_t2, ... -- one column per individual
+    # chewcard/transect at a subsite. Documented once here under a shared
+    # "_N" key rather than one entry per column (see append_unique_variables()
+    # / build_variable_dictionary(), which both match real column names
+    # against this "_N" pattern).
+    chewcard_percent_N = list(
+      desc   = "Percentage of an individual chewcard eaten (one column per chewcard deployed at the subsite)",
+      type   = "Numeric",
+      values = "0-100; NA if that card was not deployed or recovered",
+      source = "Field data; column N corresponds to chewcard N at the subsite"
+    ),
+    active_burrows_tN = list(
+      desc   = "Active burrow count for an individual 100 m transect (one column per transect surveyed at the subsite)",
+      type   = "Integer",
+      values = ">= 0; NA if that transect was not surveyed",
+      source = "Field data; column N corresponds to transect N at the subsite"
+    ),
+
+    # --- Individual-capture-specific (data_traps_individual_log only; ---
+    # --- dropped from the session-level traps table by                ---
+    # --- clean_traps_to_session_level(), see r/a_build_individual_log.R) ---
+    grid_location_x = list(
+      desc   = "Trap-station X coordinate within the grid (local grid units, not GPS)",
+      type   = "Numeric",
+      values = ">= 0; NA where the source records no station-level position",
+      source = "Field data from database"
+    ),
+    grid_location_y = list(
+      desc   = "Trap-station Y coordinate within the grid (local grid units, not GPS)",
+      type   = "Numeric",
+      values = ">= 0; NA where the source records no station-level position",
+      source = "Field data from database"
+    ),
+    glm = list(
+      desc   = "Whether this trap-line was set within the crop/pasture paddock (1) or along a margin -- channel bank, roadside, fenceline (2/3). Only glm == 1 rows are kept in this project",
+      type   = "Integer",
+      values = "1 (paddock); margin codes never appear here, since they're filtered out during cleaning",
+      source = "Field data from database"
+    ),
+    pit_tag_id = list(
+      desc   = "Physically-unique individual tag code (PIT tag, or a numbered ear tag for historic_walpeup) -- the only reliable cross-session individual identifier. See id_method/individual_id",
+      type   = "Character",
+      values = "Free-form tag code; NA if not tagged this capture",
+      source = "Field data from database"
+    ),
+    ear_mark = list(
+      desc   = "Fallback marking code used for animals not pit-tagged this capture -- NOT a reliable individual identifier (values are reused across sessions and even within the same session)",
+      type   = "Character",
+      values = "1, 2, 3; NA if not ear-marked",
+      source = "Field data from database"
+    ),
+    id_method = list(
+      desc   = "Which (if any) marking method this capture's identity relies on -- the key data-quality flag for CMR use (see raw_data/survey_data/README.md's quality tiers)",
+      type   = "Character",
+      values = "pit_tag, ear_mark, unmarked",
+      source = "build_individual_log() (individual_captures); majority-vote session summary in attach_session_id_method() (traps)"
+    ),
+    individual_id = list(
+      desc   = "Reconstructed individual identifier -- equals pit_tag_id (lowercased) when id_method == \"pit_tag\", else NA (ear_mark/unmarked captures have no reliable cross-row identity)",
+      type   = "Character",
+      values = "Lowercased tag code, or NA",
+      source = "build_individual_log()"
+    ),
+    is_recapture = list(
+      desc   = "Whether this row's own class value indicates a recapture -- usable regardless of id_method, since it only needs this row's class, not a cross-row identity link",
+      type   = "Logical",
+      values = "TRUE, FALSE, NA (class not recorded)",
+      source = "build_individual_log(), derived from class"
+    ),
+    pit_tag_id_suspect = list(
+      desc   = "TRUE if pit_tag_id is present but doesn't look like a plausible tag code (fewer than 4 hex characters, or contains non-hex characters)",
+      type   = "Logical",
+      values = "TRUE, FALSE",
+      source = "build_individual_log(); skipped for historic_walpeup, whose short decimal ear-tag codes are already validated in r/a_clean_historic_data_walpeup.R"
+    ),
+    recapture_link_broken = list(
+      desc   = "TRUE if is_recapture is TRUE and id_method == \"pit_tag\", but no earlier row (by survey_date) shares this individual_id -- a recapture claimed with no substantiating first capture in this dataset",
+      type   = "Logical",
+      values = "TRUE, FALSE",
+      source = "build_individual_log()"
+    ),
+    sex_conflict = list(
+      desc   = "TRUE if this individual_id has more than one distinct sex recorded anywhere in the dataset (pit_tag tier only) -- a data-quality flag, not filtered out",
+      type   = "Logical",
+      values = "TRUE, FALSE",
+      source = "build_individual_log()"
+    ),
+    class = list(
+      desc   = "Capture status of this individual capture event",
+      type   = "Character",
+      values = "first_capture, recapture_within_trip, recapture_bw_trips, recapture_tag_lost, phantom (DPIRD only; dropped before individual_captures), escape",
+      source = "Field data from database, recoded from source-specific numeric/text codes"
+    ),
+    sex = list(
+      desc   = "Sex of the captured animal",
+      type   = "Character",
+      values = "male, female, NA",
+      source = "Field data from database"
+    ),
+    vagina = list(
+      desc   = "Vaginal condition (female captures only) -- a breeding-status indicator",
+      type   = "Character",
+      values = "not_open, not_open_no_membrane, pin_hole, large_opening",
+      source = "Field data from database"
+    ),
+    teats = list(
+      desc   = "Teat condition (female captures only) -- a breeding-status indicator",
+      type   = "Character",
+      values = "not_visible, present_fur_at_base, present_large_fur_not_at_base",
+      source = "Field data from database"
+    ),
+    pregnant = list(
+      desc   = "Whether the animal was visibly pregnant (female captures only)",
+      type   = "Character",
+      values = "yes, no",
+      source = "Field data from database"
+    ),
+    weight_g = list(
+      desc   = "Body weight of the captured animal",
+      type   = "Numeric",
+      values = "Grams",
+      source = "Field data from database"
+    ),
+    length_mm = list(
+      desc   = "Body length of the captured animal",
+      type   = "Numeric",
+      values = "Millimetres",
+      source = "Field data from database"
+    ),
+    fate = list(
+      desc   = "Outcome of this capture",
+      type   = "Character",
+      values = "released, dead, released_no_mark, dead_to_lab",
+      source = "Field data from database"
+    ),
+
+    # --- MouseAlert / observations-specific ---
+    observation_id = list(
+      desc   = "FeralScan/MouseAlert record ID; a comma-separated list if multiple raw submissions were merged into this row (see clean_data_mouse_alert())",
+      type   = "Character",
+      values = "FeralScan-assigned numeric IDs",
+      source = "Field data from FeralScan export"
+    ),
+    mouse_abundance = list(
+      desc   = "Citizen-reported ordinal mouse abundance category -- the core MouseAlert response variable",
+      type   = "Ordered factor",
+      values = "none < low < medium < high",
+      source = "Standardized from FeralScan's verbose MouseAbundance labels in clean_data_mouse_alert()"
+    ),
+    mouse_abundance_estimate = list(
+      desc   = "Optional free-entry numeric estimate of mouse numbers accompanying the categorical report",
+      type   = "Numeric",
+      values = ">= 0; NA if not provided",
+      source = "Field data from FeralScan export"
+    ),
+    observer_name = list(
+      desc   = "Name of the citizen-science reporter (anonymous for most records)",
+      type   = "Character",
+      values = "Free text; NA if not provided",
+      source = "Field data from FeralScan export"
     )
   )
 }
@@ -547,25 +789,27 @@ append_unique_variables <- function(metadata, var_definitions, unique_vars) {
   }
 
   if (length(burrow_cols) > 0) {
+    v <- var_definitions[["active_burrows_tN"]]
     metadata <- c(metadata,
       paste0("active_burrows_t1 ... active_burrows_t", length(burrow_cols),
              "  [", length(burrow_cols), " columns]"),
-      "  Description: Active burrow count for each individual 100 m transect",
-      "  Type:        Integer",
-      "  Values:      >= 0; NA if transect not surveyed",
-      "  Source:      Field data; column N corresponds to transect N at the subsite",
+      paste0("  Description: ", v$desc),
+      paste0("  Type:        ", v$type),
+      paste0("  Values:      ", v$values),
+      paste0("  Source:      ", v$source),
       ""
     )
   }
 
   if (length(chewcard_cols) > 0) {
+    v <- var_definitions[["chewcard_percent_N"]]
     metadata <- c(metadata,
       paste0("chewcard_percent_1 ... chewcard_percent_", length(chewcard_cols),
              "  [", length(chewcard_cols), " columns]"),
-      "  Description: Percentage of each individual chewcard eaten (0-100)",
-      "  Type:        Numeric",
-      "  Values:      0-100; NA if card not deployed or recovered",
-      "  Source:      Field data; column N corresponds to chewcard N at the subsite",
+      paste0("  Description: ", v$desc),
+      paste0("  Type:        ", v$type),
+      paste0("  Values:      ", v$values),
+      paste0("  Source:      ", v$source),
       ""
     )
   }

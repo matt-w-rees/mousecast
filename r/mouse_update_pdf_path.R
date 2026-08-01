@@ -17,7 +17,9 @@ mouse_update_pdf_path <- function(dir, date = Sys.Date()) {
   }
 
   numbers     <- as.integer(sub("^Mouse Monitoring project Update #([0-9]+).*", "\\1", existing))
-  next_number <- max(numbers, na.rm = TRUE) + 1
+  # No prior update PDFs in `dir` yet (or none matched the naming pattern):
+  # max(integer(0)) would return -Inf, which sprintf() can't format with %d.
+  next_number <- if (length(numbers) == 0 || all(is.na(numbers))) 1 else max(numbers, na.rm = TRUE) + 1
 
   file.path(dir, sprintf("Mouse Monitoring project Update #%d %s.pdf", next_number, month_label))
 }

@@ -1,0 +1,43 @@
+# Resample a raster onto another raster's exact grid (extent, resolution,
+# CRS), via an area-weighted average of every source cell within each
+# destination cell (terra::resample(method = "average")) -- the correct way
+# to downsample a finer raster onto a coarser one, as opposed to point-vs-
+# point extraction at mismatched resolutions (see r/b_check_gpp_pml_bias.R's
+# header for why that distinction matters: comparing a single fine pixel
+# against a coarse pixel confounds a genuine covariate difference with a
+# pure scale/heterogeneity artifact).
+#
+# Generalises the crop-then-resample pattern first written in
+# check_gpp_pml_bias() (r/b_check_gpp_pml_bias.R) for reuse across every
+# covariate this pipeline coarsens onto PML-V2's 0.1 degree grid (rain,
+# soil moisture, MOD17/VNP17 GPP -- see _targets.R's coarse/anomaly section).
+#
+# template is cropped to source's own extent (+ margin) before resampling,
+# so this only ever processes the relevant region -- matters most when
+# template is a much larger raster than source actually needs (e.g. before
+# pml_gpp_rast was itself cropped to study_area at its own build step,
+# _targets.R's section 6.i, it was PML-V2's full near-global grid).
+#
+# Arguments:
+#   source      SpatRaster to resample (the finer/native-resolution raster)
+#   template    SpatRaster whose grid (extent, resolution, CRS) source is
+#               resampled onto -- only its geometry is used, not its values
+#               (only the first layer is read, since resample() needs just
+#               one layer's grid definition)
+#   margin_deg  degrees of margin added around source's own extent before
+#               cropping template (default 0.5, generous relative to
+#               PML's 0.1 degree cells)
+#
+# Returns a SpatRaster on template's grid, one layer per source layer
+# (layer names preserved).
+
+resample_to_grid <- function(source, template, margin_deg = 0.5) {
+
+  source_ext <- terra::ext(source)
+  template_cropped <- terra::crop(template[[1]], terra::ext(
+    source_ext$xmin - margin_deg, source_ext$xmax + margin_deg,
+    source_ext$ymin - margin_deg, source_ext$ymax + margin_deg
+  ))
+
+  terra::resample(source, template_cropped, method = "average")
+}

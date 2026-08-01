@@ -85,7 +85,19 @@ build_individual_log <- function(data) {
   data <- data |>
     dplyr::mutate(
       pit_tag_id_lower   = tolower(pit_tag_id),
-      pit_tag_id_suspect = !is.na(pit_tag_id) & !grepl("^[0-9a-f]{4,}$", pit_tag_id_lower),
+      # historic_walpeup's pit_tag_id (from EarTag) is a plain decimal number,
+      # often 1-3 digits (e.g. "376") -- the hex/length>=4 rule below was
+      # calibrated against the Access database's longer hex-style tags (e.g.
+      # "f7f816") and would wrongly flag most of Walpeup's genuinely reliable
+      # short tags as suspect. This source's own data-quality investigation
+      # (see r/a_clean_historic_data_walpeup.R) already found and fixed the
+      # one known EarTag data-entry artifact (newline-duplicated values), so
+      # any non-missing value here is trusted outright.
+      pit_tag_id_suspect = dplyr::if_else(
+        data_source == "historic_walpeup",
+        FALSE,
+        !is.na(pit_tag_id) & !grepl("^[0-9a-f]{4,}$", pit_tag_id_lower)
+      ),
       id_method = dplyr::case_when(
         !is.na(pit_tag_id) & !pit_tag_id_suspect ~ "pit_tag",
         !is.na(ear_mark) ~ "ear_mark",
@@ -102,15 +114,23 @@ build_individual_log <- function(data) {
 
   # Cross-row QA flags -- only meaningful for the pit_tag tier, which has a
   # real individual_id to check against.
+  data <- dplyr::mutate(data, .row_id = dplyr::row_number())
   pit_rows <- dplyr::filter(data, id_method == "pit_tag")
 
-  broken_ids <- pit_rows |>
+  # recapture_link_broken flags exactly the row(s) that are a recapture with
+  # no earlier row (by survey_date) sharing this individual_id anywhere in
+  # the dataset. Only an individual's own chronologically-first row can ever
+  # satisfy that -- every later row of the same individual always has at
+  # least this first row before it -- so broken_row_ids identifies exactly
+  # those first-and-broken rows by .row_id, not every row sharing that
+  # individual_id (which would also wrongly flag that individual's later,
+  # legitimate recaptures -- confirmed this was happening before this fix).
+  broken_row_ids <- pit_rows |>
     dplyr::arrange(individual_id, survey_date) |>
     dplyr::group_by(individual_id) |>
-    dplyr::filter(is_recapture & dplyr::row_number() == 1) |>
+    dplyr::filter(dplyr::row_number() == 1, is_recapture) |>
     dplyr::ungroup() |>
-    dplyr::pull(individual_id) |>
-    unique()
+    dplyr::pull(.row_id)
 
   sex_conflict_ids <- pit_rows |>
     dplyr::filter(!is.na(sex)) |>
@@ -121,9 +141,10 @@ build_individual_log <- function(data) {
 
   data <- data |>
     dplyr::mutate(
-      recapture_link_broken = individual_id %in% broken_ids,
+      recapture_link_broken = .row_id %in% broken_row_ids,
       sex_conflict          = individual_id %in% sex_conflict_ids
-    )
+    ) |>
+    dplyr::select(-.row_id)
 
   data |>
     dplyr::select(

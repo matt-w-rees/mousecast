@@ -101,6 +101,28 @@ merge_rapid_wide_columns <- function(combined, group) {
 #   - otherwise, only the row with the highest value_col is kept and the
 #     rest are dropped (conflicting/duplicate entries)
 #
+# EXCEPTION: historic_walpeup, historic_roseworthy, historic_coleambally and
+# historic_qld rows are grouped on (paddock_id, subsite_name, survey_date)
+# instead. Walpeup/Roseworthy/Coleambally all use one fixed coordinate per
+# site (see r/a_clean_historic_data_walpeup.R, r/a_clean_historic_data_roseworthy.R
+# and r/a_clean_historic_data_coleambally.R), so multiple physically separate
+# grids/traplines trapped concurrently always collapse to the same
+# paddock_id (e.g. Walpeup's concurrent wheat/ryecorn grids; Roseworthy's
+# Crop and Pasture traplines; Coleambally's concurrent crop grids at one
+# Farm). Queensland (r/a_clean_historic_data_qld.R) is different -- most
+# traplines have their own genuinely distinct coordinate -- but 11 of 81
+# paddock traplines still happen to share a coordinate with a different
+# paddock trapline, so the same collision risk applies there too. Grouping
+# on paddock_id alone would treat them
+# exactly like the monitoring database's same-paddock-different-subsite case
+# below and merge/drop them, silently discarding whichever grid didn't have
+# the highest capture count. subsite_name is what actually distinguishes
+# them, so including it in the key here keeps them apart. Not applied to
+# every source: for the monitoring database, differently-named subsites
+# sharing one real paddock_id genuinely are the same survey split across
+# named lines, and are meant to be merged -- widening the key for every
+# source would stop that from happening.
+#
 # Run this after data has been joined to paddock_id (match_surveys_to_paddocks),
 # so that downstream consumers (shiny app, qmd reports) never see duplicate
 # (paddock_id, survey_date) rows and don't need their own dedup logic.
@@ -121,17 +143,28 @@ clean_deduplicate_surveys <- function(data, survey_type = c("traps", "rapid")) {
     value_col <- "burrow_total_count"
   }
 
+  # dedup_id: paddock_id for every source except historic_walpeup/
+  # historic_roseworthy/historic_coleambally/historic_qld, where subsite_name
+  # is appended (see header comment) -- used only to find and group
+  # duplicates below, never included in the returned data
+  data <- data |>
+    dplyr::mutate(dedup_id = dplyr::if_else(
+      data_source %in% c("historic_walpeup", "historic_roseworthy", "historic_coleambally", "historic_qld"),
+      paste(paddock_id, subsite_name),
+      as.character(paddock_id)
+    ))
+
   dup_keys <- data |>
-    dplyr::count(paddock_id, survey_date, name = "n") |>
+    dplyr::count(dedup_id, survey_date, name = "n") |>
     dplyr::filter(n > 1)
 
-  if (nrow(dup_keys) == 0) return(data)
+  if (nrow(dup_keys) == 0) return(dplyr::select(data, -dedup_id))
 
-  unique_rows <- data |> dplyr::anti_join(dup_keys, by = c("paddock_id", "survey_date"))
-  dup_rows    <- data |> dplyr::semi_join(dup_keys, by = c("paddock_id", "survey_date"))
+  unique_rows <- data |> dplyr::anti_join(dup_keys, by = c("dedup_id", "survey_date"))
+  dup_rows    <- data |> dplyr::semi_join(dup_keys, by = c("dedup_id", "survey_date"))
 
   groups <- dup_rows |>
-    dplyr::group_by(paddock_id, survey_date) |>
+    dplyr::group_by(dedup_id, survey_date) |>
     dplyr::group_split()
 
   resolved <- purrr::map(groups, resolve_duplicate_group,
@@ -158,5 +191,6 @@ clean_deduplicate_surveys <- function(data, survey_type = c("traps", "rapid")) {
     survey_type, length(groups), n_combined, n_merged, n_kept_max, keep_desc, n_dropped
   ))
 
-  dplyr::bind_rows(unique_rows, resolved_data)
+  dplyr::bind_rows(unique_rows, resolved_data) |>
+    dplyr::select(-dedup_id)
 }

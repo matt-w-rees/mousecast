@@ -1,0 +1,984 @@
+---
+title: "Section B Covariates: Sources, Processing & Outcomes"
+subtitle: "How each temporally-varying covariate is built, and why"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fig-width: 8
+    fig-asp: 0.55
+    code-fold: true
+    code-summary: "Show code"
+toc: true
+toc-depth: 3
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(targets)
+library(terra)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(gt)
+
+## Handle both pipeline rendering (from project root) and standalone rendering
+## (from inside quarto_reports/), same convention as raw_data_update.qmd.
+store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+r_path     <- if (dir.exists("_targets")) "r" else "../r"
+
+## raster_mean_series() (r/b_raster_mean_series.R) -- collapses a SpatRaster
+## to a tidy one-row-per-layer mean series, nationally or at points, used
+## throughout this report. raster_map_df() (r/b_raster_map_df.R) is its
+## spatial counterpart -- keeps the spatial variation a mean series
+## collapses away, for maps of the most recent period(s). Both sourced
+## directly (not tar_load()'d, since they're plain functions, not targets)
+## so this report and the pipeline itself share one implementation instead
+## of the qmd keeping its own local copy.
+source(file.path(r_path, "b_raster_mean_series.R"))
+source(file.path(r_path, "b_raster_map_df.R"))
+
+## rain_raster_coarse/min_temp_raster deliberately not loaded here -- neither
+## is ever used as an R object in this report (both only ever appeared as
+## plain text inside the pipeline-reference table's own string literals),
+## so loading them just adds dead weight (large multi-decade SpatRaster
+## stacks) to every render.
+tar_load(
+  c(
+    gpp_raster_coarse,
+    gpp_rolling_raster_6, gpp_rolling_anomaly_raster_6,
+    gpp_rolling_raster_12, gpp_rolling_anomaly_raster_12,
+    gpp_seasonal_raster, gpp_seasonal_anomaly_raster,
+    gpp_whiplash_trough_to_peak, gpp_whiplash_peak_to_trough,
+    gpp_gf_bias_correction, gpp_gf_bias_check,
+    gpp_pml_bias_correction, gpp_pml_bias_ratio, gpp_pml_pixel_ratio_rast, gpp_pml_bias_check, pml_gpp_rast,
+    gpp_gf_pixel_ratio_rast,
+    gpp_modis_national_mean, gpp_viirs_gf_national_mean, gpp_viirs_nongf_national_mean,
+    gpp_pml_paddock_mean, gpp_modis_paddock_mean, gpp_viirs_gf_paddock_mean,
+    gpp_viirs_nongf_paddock_mean, gpp_corrected_paddock_mean,
+    gpp_viirs_frozen_blocks, gpp_viirs_recent_blocks,
+    paddocks_sf, structured_paddock_ids,
+    rain_winter_window_raster, rain_anomaly_raster,
+    rain_rolling_raster_6, rain_rolling_anomaly_raster_6,
+    rain_rolling_raster_12, rain_rolling_anomaly_raster_12,
+    rain_seasonal_raster, rain_seasonal_anomaly_raster,
+    rain_whiplash_trough_to_peak, rain_whiplash_peak_to_trough,
+    soil_moisture_raster_coarse, soil_moisture_anomaly_raster,
+    soil_moisture_whiplash_trough_to_peak, soil_moisture_whiplash_peak_to_trough,
+    min_temp_seasonal_raster, min_temp_year_blocks,
+    paddock_season_covs
+  ),
+  store = store_path
+)
+
+## Years covered by each of the two most recent (non-frozen) GPP blocks --
+## used below to annotate which months of the final GPP series could contain
+## near-real-time, non-gap-filled-sourced data, and to report the frozen/
+## recent boundary in prose without hard-coding it.
+gpp_recent_years <- sort(unlist(gpp_viirs_recent_blocks))
+gpp_last_frozen_year <- max(unlist(gpp_viirs_frozen_blocks))
+
+## Diagnostic: how badly would the OLD (additive, mean(pml - our)) PML
+## correction have overshot into physically-impossible negative GPP, at
+## national vs. structured-survey-paddock scope -- referenced inline in the
+## PML source bullet and the "how well do the four GPP products agree?"
+## subsection below. Computed once here (pml_gpp_rast is already on PML's
+## own coarse 0.1 degree grid, so this is cheap) rather than left as
+## hand-transcribed numbers in prose, matching this report's own
+## reproducibility principle (see "Reproducing this from scratch").
+pml_pre2000_layers <- names(pml_gpp_rast)[as.integer(sub(".*_", "", names(pml_gpp_rast))) < 2000]
+pml_pre2000_rast    <- pml_gpp_rast[[pml_pre2000_layers]]
+pml_pre2000_months  <- as.integer(sub("_.*", "", names(pml_pre2000_rast)))
+
+## National scope: every pixel, additive correction applied uniformly.
+national_pct_negative_by_month <- purrr::map_dfr(sort(unique(pml_pre2000_months)), function(m) {
+  correction <- gpp_pml_bias_correction$bias_correction[gpp_pml_bias_correction$month == m]
+  vals <- terra::values(pml_pre2000_rast[[names(pml_pre2000_rast)[pml_pre2000_months == m]]], na.rm = TRUE)
+  tibble::tibble(month = m, pct_negative = 100 * sum(vals - correction < 0) / length(vals))
+})
+national_worst_month     <- month.name[national_pct_negative_by_month$month[which.max(national_pct_negative_by_month$pct_negative)]]
+national_worst_month_pct <- max(national_pct_negative_by_month$pct_negative)
+
+## Paddock scope: extract at structured-survey paddock points specifically
+## (what attach_raster_covs() actually reads and what the correction is
+## calibrated against), not a national spatial average.
+paddocks_structured <- dplyr::filter(paddocks_sf, paddock_id %in% structured_paddock_ids)
+paddock_points_vect <- terra::vect(
+  sf::st_drop_geometry(paddocks_structured),
+  geom = c("longitude_paddock", "latitude_paddock"), crs = "EPSG:4326"
+)
+pml_paddock_extract  <- terra::extract(pml_pre2000_rast, paddock_points_vect, ID = FALSE)
+additive_by_layer     <- gpp_pml_bias_correction$bias_correction[match(pml_pre2000_months, gpp_pml_bias_correction$month)]
+paddock_old_corrected <- sweep(as.matrix(pml_paddock_extract), 2, additive_by_layer, "-")
+pct_paddock_negative  <- 100 * sum(paddock_old_corrected < 0, na.rm = TRUE) / sum(!is.na(paddock_old_corrected))
+
+pml_paddock_monthly_mean <- gpp_pml_paddock_mean |>
+  dplyr::filter(lubridate::year(date) < 2000) |>
+  dplyr::mutate(month = lubridate::month(date)) |>
+  dplyr::group_by(month) |>
+  dplyr::summarise(value = mean(value), .groups = "drop")
+pml_paddock_swing <- diff(range(pml_paddock_monthly_mean$value))
+pml_correction_swing <- diff(range(gpp_pml_bias_correction$bias_correction))
+
+## National-mean counterpart to pml_paddock_monthly_mean, same pre-2000
+## years -- referenced alongside it to illustrate the national/paddock gap
+## inline rather than as hand-transcribed numbers.
+pml_national_monthly_mean <- tibble::tibble(
+  month = pml_pre2000_months,
+  value = terra::global(pml_pre2000_rast, "mean", na.rm = TRUE)[[1]]
+) |>
+  dplyr::group_by(month) |>
+  dplyr::summarise(value = mean(value), .groups = "drop")
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+)
+
+## Computed once here and reused everywhere below (the summary table, the
+## GPP source prose and the raw-monthly figure) -- gpp_raster_coarse (not
+## monthly_gpp_rast) specifically: same full 1982-present monthly record,
+## already resampled onto PML's coarse 0.1 degree grid, so terra::global()'s
+## spatial mean is cheap here instead of running it over 300+ layers at
+## GPP's native 500m resolution.
+gpp_monthly_df <- raster_mean_series(gpp_raster_coarse) |>
+  dplyr::mutate(recent_block = lubridate::year(date) %in% gpp_recent_years)
+gpp_latest_month <- format(max(gpp_monthly_df$date), "%B %Y")
+```
+
+## Overview
+
+This section of the pipeline (`_targets.R`, section B) attaches four temporally-varying covariates -- Gross Primary Productivity (GPP), rainfall, soil moisture and minimum temperature -- to every structured-survey paddock, at a **seasonal** time step (with December considered Summer of the following year). Each covariate is downloaded from its own raw data source, processed through its own pipeline, and given whichever mix of a shared treatment menu (rolling averages of one or more window lengths, a fixed calendar window, a raw snapshot, a per-season mean, and a "whiplash" swing measure) actually matches how that variable behaves ecologically -- not a single one-size-fits-all approach.
+
+The final output of section B is `paddock_season_covs`: one row per paddock x season, feeding directly into the forecasting model.
+
+```{r}
+#| label: paddock-season-covs-glimpse
+
+## One representative column per covariate "family" (level + whichever
+## treatment is newest), not every column paddock_season_covs actually has
+## (22 covariate columns total -- see the "At a glance" table below for the
+## full list) -- this is just a glimpse of the final shape, not a full dump.
+paddock_season_covs |>
+  dplyr::select(paddock_id, season_year_adj, gpp_rolling6, gpp, gpp_seasonal,
+                gpp_whiplash_trough_to_peak, rain, rain_rolling12, rain_seasonal,
+                rain_whiplash_trough_to_peak, soil_moisture,
+                soil_moisture_whiplash_trough_to_peak, min_temp) |>
+  head(5) |>
+  gt::gt() |>
+  gt::fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gt::tab_options(table.font.size = "0.75em")
+```
+
+### At a glance
+
+```{r}
+#| label: summary-table
+
+mt_latest_year <- max(unlist(min_temp_year_blocks))
+gpp_history     <- paste0("1982-", gpp_latest_month, " (near-real-time)")
+
+summary_tbl <- tibble::tribble(
+  ~Covariate,             ~Source,                                                    ~`Native resolution`, ~`History used`,     ~`Temporal treatment`,                                                    ~`Final column(s)`,
+  "GPP (rolling 6)",      "MODIS + VIIRS gap-filled/non-gap-filled (AppEEARS) / PML-V2", "500 m / 0.1°",     gpp_history,          "Trailing 6-month rolling average",                                       "gpp_rolling6, gpp_rolling6_anomaly",
+  "GPP (rolling 12)",     "MODIS + VIIRS gap-filled/non-gap-filled (AppEEARS) / PML-V2", "500 m / 0.1°",     gpp_history,          "Trailing 12-month rolling average",                                      "gpp, gpp_anomaly",
+  "GPP (seasonal)",       "MODIS + VIIRS gap-filled/non-gap-filled (AppEEARS) / PML-V2", "500 m / 0.1°",     gpp_history,          "This season's own mean daily rate, no rolling",                          "gpp_seasonal, gpp_seasonal_anomaly",
+  "GPP (whiplash)",       "MODIS + VIIRS gap-filled/non-gap-filled (AppEEARS) / PML-V2", "500 m / 0.1°",     gpp_history,          "Sharpest trough-to-peak/peak-to-trough swing, trailing 2 years of gpp anomaly",  "gpp_whiplash_trough_to_peak, gpp_whiplash_peak_to_trough",
+  "Rainfall (window)",    "SILO monthly rainfall",                                    "0.05°",              "1982+",              "Fixed Apr-Oct growing-season sum",                                       "rain, rain_anomaly",
+  "Rainfall (rolling 6/12)", "SILO monthly rainfall",                                 "0.05°",              "1982+",              "Trailing 6- and 12-month rolling average",                               "rain_rolling6, rain_rolling6_anomaly, rain_rolling12, rain_rolling12_anomaly",
+  "Rainfall (seasonal)",  "SILO monthly rainfall",                                    "0.05°",              "1982+",              "Sum within each of the 4 seasons",                                       "rain_seasonal, rain_seasonal_anomaly",
+  "Rainfall (whiplash)",  "SILO monthly rainfall",                                    "0.05°",              "1982+",              "Sharpest trough-to-peak/peak-to-trough swing, trailing 2 years of rain_rolling12 anomaly", "rain_whiplash_trough_to_peak, rain_whiplash_peak_to_trough",
+  "Soil moisture",        "AWRA-L v7 (sm_pct)",                                       "~5 km",              "1982+",              "Raw current-season snapshot, no windowing",                              "soil_moisture, soil_moisture_anomaly",
+  "Soil moisture (whiplash)", "AWRA-L v7 (sm_pct)",                                   "~5 km",              "1982+",              "Sharpest swing, trailing 2 years of soil_moisture anomaly",              "soil_moisture_whiplash_trough_to_peak, soil_moisture_whiplash_peak_to_trough",
+  "Min temperature",      "SILO daily min_temp",                                      "0.05°",              paste0("1980-", mt_latest_year, " (5-year blocks)"), "Raw mean within each of the 4 seasons",            "min_temp"
+)
+
+summary_tbl |>
+  gt::gt() |>
+  gt::tab_options(table.font.size = "0.78em") |>
+  gt::cols_width(Covariate ~ px(150))
+```
+
+All four covariates are coarsened onto PML-V2's shared 0.1&deg; grid before any temporal processing, so GPP, rainfall and soil moisture are directly comparable pixel-for-pixel (min_temp stays on SILO's native 0.05&deg; grid, extracted at each paddock's own point instead).
+
+## Why different temporal treatments?
+
+GPP, rainfall and soil moisture now draw from the same shared treatment menu -- a trailing rolling average (any window length, via `_targets.R`'s `gpp_rolling_windows`/`rain_rolling_windows`), a non-rolling per-season total or mean, and a "whiplash" swing measure (below) -- rather than each having its own bespoke, one-off calculation. What differs between them is **which items off that menu actually make ecological sense**, not the mechanics of computing them:
+
+- **GPP** reflects whatever a farmer actually planted (or didn't) -- a decision made by the farmer, not fixed by the calendar. It gets the fullest treatment: a trailing **12-month rolling average** (`gpp`) captures whatever crop was grown regardless of when it was sown; a shorter **6-month rolling average** (`gpp_rolling6`) is a more responsive alternative alongside it, not a replacement; a non-rolling **this-season's-own-mean** (`gpp_seasonal`) is kept as the simplest possible comparison point; and **whiplash** (`gpp_whiplash_trough_to_peak`/`peak_to_trough`) flags a sharp recent swing in growing conditions that a smooth rolling average would wash out.
+- **Rainfall** isn't a farmer decision, so there's no ecological reason to prefer one window over another a priori -- it gets the identical rolling-6/rolling-12/whiplash treatment as GPP, plus two rainfall-specific totals kept from before this generalisation: a **fixed Apr-Oct calendar window** (the winter growing season, applied uniformly even in northern dual-cropping zones, since true double-cropping is rare in practice) and a simpler **sum within each season** on its own, both kept alongside the rolling versions to check how much they actually differ (see [How redundant are the rainfall versions?](#how-redundant-are-the-rainfall-versions) below).
+- **Soil moisture** is already an integrated state variable -- the AWRA water-balance model has already folded rainfall, evapotranspiration and drainage history into one number, so rolling or seasonally-summing it further would double-count memory that's already built in. It's used as-is: **whatever the most recent value is**. Whiplash doesn't have that problem (it measures how sharply an already-integrated value is swinging, rather than adding another layer of smoothing), so it's the one extra item soil moisture does get from the menu.
+- **Min temperature** represents a fixed physiological breeding-season switch (mice breed once winter cold eases), not a relative-to-local-norms effect -- so unlike the other three, it's **never converted to an anomaly**, and gets none of the rolling/seasonal/whiplash menu at all. Standardising or windowing it would risk masking the actual biological threshold that matters, regardless of what's "normal" for that particular paddock or how it got there.
+
+```{r}
+#| label: fig-lag-comparison
+#| fig-cap: "How each covariate's value at a given season is actually built from raw monthly/daily data. GPP and rainfall's rolling windows slide forward every season; rainfall's fixed window is pinned to the same calendar months every year; soil moisture and min_temp use only that season's own data, with no history carried in. Whiplash isn't shown here -- see 'What is whiplash?' below -- since it measures a swing across a window rather than an average within one."
+#| fig-asp: 0.5
+
+gpp12_row <- tibble::tibble(covariate = "GPP\n(rolling 12-month avg)", months_back = 0:11)
+gpp6_row  <- tibble::tibble(covariate = "GPP\n(rolling 6-month avg)", months_back = 0:5)
+rain_win_row <- tibble::tibble(covariate = "Rainfall (window)\n(fixed Apr-Oct)", months_back = 0:6) # 7 months, illustrative
+rain12_row <- tibble::tibble(covariate = "Rainfall\n(rolling 12-month avg)", months_back = 0:11)
+rain6_row  <- tibble::tibble(covariate = "Rainfall\n(rolling 6-month avg)", months_back = 0:5)
+sm_row <- tibble::tibble(covariate = "Soil moisture\n(current snapshot)", months_back = 0)
+mt_row <- tibble::tibble(covariate = "Min temp\n(that season only)", months_back = 0:2) # that season's 3 months
+
+diagram_data <- dplyr::bind_rows(gpp12_row, gpp6_row, rain_win_row, rain12_row, rain6_row, sm_row, mt_row) |>
+  dplyr::mutate(covariate = factor(covariate, levels = rev(unique(covariate))))
+
+ggplot(diagram_data, aes(x = -months_back, y = covariate, fill = covariate)) +
+  geom_tile(height = 0.6, show.legend = FALSE) +
+  scale_x_continuous(breaks = seq(-12, 0, 2), name = "Months before the season-end (0 = the season being scored)") +
+  labs(y = NULL) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+### What is "whiplash"? {#sec-whiplash}
+
+A rapid trough-to-peak or peak-to-trough swing can matter for mouse populations even when it doesn't show up in a rolling average -- a sharp recovery buried inside an otherwise unremarkable trailing window looks the same as a slow, steady rise once averaged. Whiplash (`r/b_compute_whiplash_raster.R`) measures that swing directly: a rolling-window generalisation of Swain et al. (2018)'s year-over-year "precipitation whiplash" definition, applied here to *any* trailing window and to GPP/soil moisture as well as rainfall.
+
+At every point in time, `compute_whiplash_raster()` sweeps forward through that point's own trailing window (`gpp_whiplash_window`/`rain_whiplash_window`/`soil_moisture_whiplash_window`, all currently 8 season-end periods = 2 years) tracking a running minimum (for `trough_to_peak`) or running maximum (for `peak_to_trough`), and reports the biggest gap between that running extreme and the current value anywhere in the window -- not just "global min vs. global max", which would miss a genuine swing whenever the window contains more than one up-and-down wiggle.
+
+```{r}
+#| label: fig-whiplash-illustration
+#| fig-cap: "How whiplash is measured (an illustrative synthetic example, not real pipeline data): at each point, the algorithm tracks the lowest anomaly seen so far within the trailing window (grey line) and reports how far above that trough the current value has climbed. The arrow marks the single biggest such recovery anywhere in this window -- that's the trough_to_peak whiplash value reported for this point. peak_to_trough is the mirror image, tracking the running maximum instead."
+#| fig-asp: 0.45
+
+## Reproduces compute_whiplash_raster()'s own running-min sweep
+## (r/b_compute_whiplash_raster.R), on a plain illustrative vector instead of
+## a SpatRaster -- not a call to the real pipeline function itself.
+example_anomaly <- tibble::tibble(
+  period  = 1:16,
+  anomaly = c(0.3, -0.5, -1.8, -0.9, 0.4, 1.6, 0.8, -0.2, -1.1, -0.3, 0.9, 2.1, 1.0, -0.6, -1.4, 0.5)
+) |>
+  dplyr::mutate(running_min = cummin(anomaly), swing = anomaly - running_min)
+
+best_point   <- example_anomaly[which.max(example_anomaly$swing), ]
+trough_point <- example_anomaly |>
+  dplyr::filter(period <= best_point$period, anomaly == best_point$running_min) |>
+  dplyr::slice(1)
+
+ggplot(example_anomaly, aes(period, anomaly)) +
+  geom_hline(yintercept = 0, colour = "grey70") +
+  geom_step(aes(y = running_min), colour = "grey50", linetype = "dashed") +
+  geom_line(colour = "grey30") +
+  geom_point(size = 1.8) +
+  geom_segment(
+    x = trough_point$period, xend = best_point$period,
+    y = trough_point$anomaly, yend = best_point$anomaly,
+    arrow = arrow(length = unit(0.2, "cm")), colour = "#2166ac", linewidth = 0.8
+  ) +
+  annotate(
+    "text", x = (trough_point$period + best_point$period) / 2, y = (trough_point$anomaly + best_point$anomaly) / 2,
+    label = paste0("swing = ", round(best_point$swing, 1)), vjust = -0.8, colour = "#2166ac", size = 3.5
+  ) +
+  labs(x = "Period (trailing window)", y = "Anomaly (z-score)")
+```
+
+Each variable's whiplash is sourced from its own anomaly series -- currently `gpp_rolling_anomaly_raster_12`, `rain_rolling_anomaly_raster_12` and `soil_moisture_anomaly_raster` respectively -- but `compute_whiplash_raster()`'s first argument is exactly "which series to measure whiplash against", so redirecting any of these later (e.g. GPP's to its 6-month rolling anomaly instead) is a one-line change in `_targets.R`, not a redesign.
+
+## GPP {#sec-gpp}
+
+**Source:** four products, spliced into one continuous monthly record from 1982 to the present month (`r gpp_latest_month` as of this report):
+
+- **PML-V2** (TPDC), 1982-1999 -- a different GPP model, ratio-corrected month-by-month **and pixel-by-pixel** against the MODIS/VIIRS record over their shared 2000+ overlap before splicing. Two things had to change from the obvious first approach (a single flat correction) to get here: (1) not a flat *additive* offset (mean(pml &minus; our), low ~`r round(min(gpp_pml_bias_correction$bias_correction), 1)` gC/m²/day in summer/autumn, up to ~`r round(max(gpp_pml_bias_correction$bias_correction), 1)` in August/September -- @fig-pml-bias-by-month) -- a correction this large, subtracted uniformly, routinely drove the result negative, which isn't physically possible for GPP (confirmed on ~`r round(national_worst_month_pct)`% of pixels in the worst month, `r national_worst_month`); a *ratio* correction (mean(our)/mean(pml)) rescales PML's own signal proportionally instead, and can't turn a non-negative value negative. (2) Not a single *national* ratio either -- PML's raw value at structured-survey paddocks differs hugely from its national mean (paddocks sit in productive grain-growing regions, nothing like the vast, much-lower-GPP arid interior that dominates a national figure), so a correction calibrated at paddocks and applied everywhere doesn't generalise. The pipeline instead computes the our/pml ratio independently **at every pixel** (`build_gpp_pml_pixel_ratio_raster()` -- @fig-pml-pixel-ratio-map), matching how PML-V2's own developers handle the structurally identical AVHRR-to-MODIS/VIIRS splice inside PML-V2 itself (Xu, Zhang et al., ESSD preprint essd-2026-94 -- see @sec-gpp-agreement).
+- **MODIS** (MOD17A2HGF.061), 2000-2011, and **VIIRS gap-filled** (VNP17A2GF.002), 2012-`r gpp_last_frozen_year` -- both 8-day composites at 500 m via NASA's AppEEARS. Each calendar year is downloaded and aggregated as its own independent block (`download_gpp_block()`, `build_seasonal_gpp_raster()`) rather than reprocessed as one multi-decade command -- the same memory-bounding approach used for minimum temperature below (`r length(unlist(gpp_viirs_frozen_blocks)) + length(gpp_recent_years)` years total).
+- **VIIRS non-gap-filled** (VNP17A2.002), `r min(gpp_recent_years)`-present -- gap-filled VIIRS is rigorously quality-controlled but lags real time by several months (it's a second-pass reprocessing, not an operational near-real-time product). For only the two most recent years (`r paste(gpp_recent_years, collapse = " and ")`), whichever composite dates gap-filled hasn't published yet are filled in from this near-real-time sibling instead, after bias-correcting it against gap-filled composites over their shared overlap in `r min(gpp_recent_years)` (table below).
+
+**Processing:** decode 8-day composites &rarr; mask non-Australian/fill-value cells &rarr; aggregate to monthly means, one calendar year at a time &rarr; for the two most recent years only, splice in bias-corrected non-gap-filled composites for any date gap-filled hasn't published yet (`compare_viirs_gpp_products()` + `summarise_gpp_bias_by_month()`; `build_seasonal_gpp_raster()`'s `fallback_files`/`fallback_bias_correction` arguments) &rarr; concatenate every year's block into one continuous stack (`combine_spatraster_list()`) &rarr; resample onto PML's 0.1&deg; grid &rarr; splice ratio-corrected PML (pre-2000) onto the MODIS/VIIRS+near-real-time record (2000+) &rarr; **four parallel temporal treatments**: trailing 6- and 12-month rolling averages (`tar_map()` over `gpp_rolling_windows`), a non-rolling this-season mean, and whiplash (@sec-whiplash) &rarr; each rolling/seasonal version gets its own leave-one-out z-score anomaly (neighbour-blended: a 3x3 focal smooth of the anomaly baseline, since GPP's baseline is noisier pixel-to-pixel than rainfall/soil moisture's already-smoothed sources). See [How well do the four GPP products agree?](#sec-gpp-agreement) below for how well each splice actually holds up.
+
+::: {.callout-note}
+#### The gap-filled / non-gap-filled correction
+
+Computed once from `r min(gpp_recent_years)`'s overlap (the most recent year both products fully cover), and **multiplied** (per pixel, by its own calendar month) into a raw non-gap-filled composite before it's spliced in -- shifting it up (or down) to gap-filled's own typical level at that pixel, so the substitution doesn't show up as a discontinuity right where a near-term forecast's covariate matters most. The table below is a paddock-only, additive diagnostic (`compare_viirs_gpp_products()`, `summarise_gpp_bias_by_month()`) -- kept for scale, but not what's actually applied: the same national/paddock and additive/ratio reasoning that motivated PML's pixel-scale correction (@sec-gpp-agreement) applies here too, just at much lower stakes (gap-filled and non-gap-filled VIIRS are the same sensor/algorithm, so the correction needed is far smaller either way). What's actually applied is `gpp_gf_pixel_ratio_rast` -- a per-pixel, per-month ratio (`build_gpp_pixel_ratio_raster()`), same as PML's.
+:::
+
+```{r}
+#| label: gpp-bias-correction-table
+
+gpp_gf_bias_correction |>
+  dplyr::mutate(month = month.name[month]) |>
+  gt::gt() |>
+  gt::fmt_number(columns = bias_correction, decimals = 4) |>
+  gt::cols_label(month = "Month", bias_correction = "Paddock-only, additive diagnostic (gC/m²/8-day) -- not applied") |>
+  gt::tab_options(table.font.size = "0.8em")
+```
+
+### How well do the four GPP products agree? {#sec-gpp-agreement}
+
+Two of the three splices in the GPP record are bridged by a correction, computed from wherever the two products genuinely overlap in time (`check_gpp_pml_bias()`, `compare_viirs_gpp_products()`). The third (MODIS into VIIRS) isn't corrected at all -- the two products never share a date to compare directly, so they're treated as already continuous. This section shows how much correction each bridged splice actually needed, whether the result is genuinely continuous across the boundary, and why the uncorrected MODIS/VIIRS splice is a reasonable thing to have left alone.
+
+```{r}
+#| label: fig-gpp-all-sources
+#| fig-cap: "All four raw GPP sources (coloured, each over its own native date range, uncorrected) against the pipeline's actual corrected/spliced output (black, gpp_raster_coarse). The black line tracks whichever coloured source is in use at each point in time, but nudged onto a common level by the corrections detailed below -- it should never look like an unexplained jump away from the coloured source underneath it."
+#| fig-asp: 0.5
+
+all_sources_df <- dplyr::bind_rows(
+  raster_mean_series(pml_gpp_rast)   |> dplyr::mutate(source = "PML-V2 (raw)"),
+  gpp_modis_national_mean               |> dplyr::mutate(source = "MODIS (raw)"),
+  gpp_viirs_gf_national_mean            |> dplyr::mutate(source = "VIIRS gap-filled (raw)"),
+  gpp_viirs_nongf_national_mean         |> dplyr::mutate(source = "VIIRS non-gap-filled (raw)")
+)
+
+ggplot() +
+  geom_line(data = all_sources_df, aes(date, value, colour = source), linewidth = 0.4, alpha = 0.8) +
+  geom_line(data = gpp_monthly_df, aes(date, value, linetype = "Pipeline output (corrected/spliced)"), colour = "black", linewidth = 0.6) +
+  scale_colour_brewer(palette = "Set2", name = NULL) +
+  scale_linetype_manual(values = c(`Pipeline output (corrected/spliced)` = "solid"), name = NULL) +
+  labs(x = NULL, y = "GPP (gC/m²/day)") +
+  guides(colour = guide_legend(order = 1), linetype = guide_legend(order = 2))
+```
+
+The view above is a **national** spatial mean, but `gpp_pml_bias_ratio` is calibrated from -- and `attach_raster_covs()` only ever reads a raster's value at -- structured-survey **paddock locations**, not a national average. Those two don't have to look alike: PML's own raw national mean in August (pre-2000) is ~`r round(pml_national_monthly_mean$value[pml_national_monthly_mean$month == 8], 1)` gC/m²/day, but its mean *at survey paddocks specifically* is ~`r round(pml_paddock_monthly_mean$value[pml_paddock_monthly_mean$month == 8], 1)` -- paddocks sit in productive grain-growing regions, nothing like the vast, much-lower-GPP arid interior that dominates the national figure above. So the same plot restricted to paddock locations -- the actually relevant check, since that's what the correction is calibrated against and what the model actually consumes -- is shown next.
+
+```{r}
+#| label: fig-gpp-all-sources-paddocks
+#| fig-cap: "The same four raw sources and corrected pipeline output as fig-gpp-all-sources, but averaged only at structured-survey paddock locations rather than nationally -- the comparison that actually matters, since this is what gpp_pml_bias_ratio is calibrated against and what attach_raster_covs() reads."
+#| fig-asp: 0.5
+
+all_sources_paddock_df <- dplyr::bind_rows(
+  gpp_pml_paddock_mean         |> dplyr::mutate(source = "PML-V2 (raw)"),
+  gpp_modis_paddock_mean       |> dplyr::mutate(source = "MODIS (raw)"),
+  gpp_viirs_gf_paddock_mean    |> dplyr::mutate(source = "VIIRS gap-filled (raw)"),
+  gpp_viirs_nongf_paddock_mean |> dplyr::mutate(source = "VIIRS non-gap-filled (raw)")
+)
+
+ggplot() +
+  geom_line(data = all_sources_paddock_df, aes(date, value, colour = source), linewidth = 0.4, alpha = 0.8) +
+  geom_line(data = gpp_corrected_paddock_mean, aes(date, value, linetype = "Pipeline output (corrected/spliced)"), colour = "black", linewidth = 0.6) +
+  scale_colour_brewer(palette = "Set2", name = NULL) +
+  scale_linetype_manual(values = c(`Pipeline output (corrected/spliced)` = "solid"), name = NULL) +
+  labs(x = NULL, y = "GPP at paddocks (gC/m²/day)") +
+  guides(colour = guide_legend(order = 1), linetype = guide_legend(order = 2))
+```
+
+#### PML-V2 vs MOD17/VNP17 (pre-2000 splice)
+
+Two dead ends before arriving at what's actually applied. **First**, a flat per-month additive correction (mean(pml &minus; our), below): calibrated from structured-survey paddocks, where PML's own seasonal swing (~`r round(pml_paddock_swing, 1)` gC/m²/day peak-to-trough, pre-2000) is actually comfortably bigger than the correction's own swing (~`r round(pml_correction_swing, 1)`), so on *average* across paddocks it doesn't overshoot -- but applied to the full national raster (which is what `build_gpp_historic_corrected_raster()` actually corrects, not just paddock points), PML's typical value away from paddocks is far smaller, and the same paddock-sized correction overshoots badly there -- confirmed on ~`r round(national_worst_month_pct)`% of pixels in the worst month (`r national_worst_month`) (@fig-pml-splice-continuity, further down, is itself a national mean, which is why the overshoot shows up so starkly there). Even restricted to individual paddocks alone, a flat correction isn't fully safe either: `r round(pct_paddock_negative, 1)`% of paddock-month combinations still went negative. **Second**, a flat per-month *ratio* correction (mean(our)/mean(pml), same paddocks) fixes the negative-value problem (a ratio can't push a non-negative value negative) but is still a single **national** factor, calibrated at paddocks and applied to every pixel -- and PML's raw value at paddocks differs hugely from its national mean (paddocks sit in productive grain-growing regions, nothing like the vast, much-lower-GPP arid interior that dominates the rest of the country), so the correction still doesn't generalise spatially, even though it no longer goes negative. **What's actually applied**: the same ratio, computed independently **at every pixel** of PML's own grid (`build_gpp_pml_pixel_ratio_raster()`, @fig-pml-pixel-ratio-map) -- this is also how PML-V2's own developers handle the structurally identical AVHRR-to-MODIS/VIIRS splice inside PML-V2 itself: their ESSD preprint (Xu, Zhang et al., essd-2026-94) explicitly rejects a "unidirectional" (i.e. single, uniformly-applied) scaling correction there too, in favour of what they call a "pixel-scale bidirectional consolidation."
+
+```{r}
+#| label: fig-pml-bias-by-month
+#| fig-cap: "PML-V2 minus MOD17/VNP17, averaged by calendar month over their full 2000+ overlap -- diagnostic only (not what's actually applied, see fig-pml-ratio-by-month below): consistently higher, and most different in Aug/Sep."
+#| fig-asp: 0.35
+
+gpp_pml_bias_correction |>
+  dplyr::mutate(month = factor(month.abb[month], levels = month.abb)) |>
+  ggplot(aes(month, bias_correction)) +
+  geom_col(fill = "#8c510a") +
+  labs(x = NULL, y = "PML − MOD17/VNP17 (gC/m²/day)")
+```
+
+```{r}
+#| label: fig-pml-ratio-by-month
+#| fig-cap: "The national (paddock-only-calibrated) ratio correction -- a dead end, not what's actually applied (see fig-pml-pixel-ratio-map below) -- shown only as the second step in the additive-to-national-ratio-to-pixel-ratio progression described above. A dashed line at 1 marks no correction; PML is scaled up everywhere, most in Aug/Sep, matching the bias pattern above but multiplicatively rather than additively."
+#| fig-asp: 0.35
+
+gpp_pml_bias_ratio |>
+  dplyr::mutate(month = factor(month.abb[month], levels = month.abb)) |>
+  ggplot(aes(month, ratio_correction)) +
+  geom_col(fill = "#8c510a") +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "grey40") +
+  labs(x = NULL, y = "MOD17/VNP17 ÷ PML-V2 (ratio)")
+```
+
+```{r}
+#| label: fig-pml-pixel-ratio-map
+#| fig-cap: "The pixel-scale ratio correction actually applied to pre-2000 PML (mean(our)/mean(pml) at every 0.1° pixel, one season-representative month shown per panel) -- unlike the single national factor above, this varies substantially in space: some regions need PML scaled up far more than the national average, some far less."
+#| fig-asp: 0.65
+
+ratio_map_df <- as.data.frame(gpp_pml_pixel_ratio_rast[[c("1", "4", "7", "10")]], xy = TRUE) |>
+  tidyr::pivot_longer(-c(x, y), names_to = "month", values_to = "ratio") |>
+  dplyr::mutate(month = factor(month.name[as.integer(month)], levels = month.name[c(1, 4, 7, 10)]))
+
+ggplot(ratio_map_df, aes(x, y, fill = ratio)) +
+  geom_raster() +
+  facet_wrap(~month) +
+  coord_equal() +
+  scale_fill_viridis_c(name = "MOD17/VNP17 ÷\nPML-V2 (ratio)", option = "C") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+```{r}
+#| label: fig-pml-agreement-over-time
+#| fig-cap: "PML-V2 vs MOD17/VNP17 agreement across their full overlap: paddock-level correlation (top) and mean bias (bottom), one point per calendar month of overlap."
+#| fig-asp: 0.5
+
+pml_check_long <- gpp_pml_bias_check |>
+  dplyr::mutate(
+    month = as.integer(sub("_.*", "", month_year)),
+    year  = as.integer(sub(".*_", "", month_year)),
+    date  = as.Date(paste(year, month, "15", sep = "-"))
+  ) |>
+  dplyr::select(date, correlation, bias_mean) |>
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+
+ggplot(pml_check_long, aes(date, value)) +
+  geom_line(colour = "#8c510a") +
+  facet_wrap(~series, scales = "free_y", ncol = 1,
+             labeller = as_labeller(c(correlation = "Paddock-level correlation", bias_mean = "Mean bias (gC/m²/day)"))) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+#| label: fig-pml-splice-continuity
+#| fig-cap: "The pre-2000/2000+ splice, close up: raw (uncorrected) PML would carry its own systematic offset straight into the real MOD17/VNP17 record; the pixel-scale ratio-corrected version actually used in the pipeline (gpp_raster_coarse) does not."
+#| fig-asp: 0.4
+
+splice_window <- 1996:2004
+
+raw_pml_df <- raster_mean_series(pml_gpp_rast) |>
+  dplyr::filter(lubridate::year(date) %in% splice_window) |>
+  dplyr::mutate(series = "Raw PML (uncorrected)")
+
+pipeline_df <- gpp_monthly_df |>
+  dplyr::filter(lubridate::year(date) %in% splice_window) |>
+  dplyr::mutate(series = "Pipeline output (corrected pre-2000, real MOD17/VNP17 2000+)")
+
+dplyr::bind_rows(raw_pml_df, pipeline_df) |>
+  ggplot(aes(date, value, colour = series)) +
+  geom_line() +
+  geom_vline(xintercept = as.Date("2000-01-01"), linetype = "dashed", colour = "grey50") +
+  labs(x = NULL, y = "GPP (gC/m²/day)", colour = NULL) +
+  scale_colour_brewer(palette = "Set1") +
+  theme(legend.position = "bottom", legend.direction = "vertical")
+```
+
+#### VIIRS gap-filled vs non-gap-filled (near-real-time splice)
+
+```{r}
+#| label: fig-gf-bias-by-month
+#| fig-cap: "Gap-filled minus non-gap-filled VIIRS, averaged by calendar month over their shared overlap -- note the y-axis scale against the PML correction above (units differ too: this is per 8-day composite, not day-normalised) -- the magnitude comparison below quantifies just how much smaller this correction is."
+#| fig-asp: 0.35
+
+gpp_gf_bias_correction |>
+  dplyr::mutate(month = factor(month.abb[month], levels = month.abb)) |>
+  ggplot(aes(month, bias_correction)) +
+  geom_col(fill = "#1b7837") +
+  labs(x = NULL, y = "Gap-filled − non-gap-filled (gC/m²/8-day)")
+```
+
+```{r}
+#| label: fig-gf-pixel-ratio-map
+#| fig-cap: "The pixel-scale ratio correction actually applied (gap-filled ÷ non-gap-filled at every 500 m pixel, one representative month per panel) -- values stay close to 1 nearly everywhere, unlike PML's pixel-ratio map, consistent with gap-filled and non-gap-filled VIIRS being the same sensor/algorithm rather than genuinely different models."
+#| fig-asp: 0.65
+
+available_gf_months <- as.integer(names(gpp_gf_pixel_ratio_rast))
+gf_ratio_months <- available_gf_months[round(seq(1, length(available_gf_months), length.out = min(4, length(available_gf_months))))]
+
+gf_ratio_map_df <- as.data.frame(gpp_gf_pixel_ratio_rast[[as.character(gf_ratio_months)]], xy = TRUE) |>
+  tidyr::pivot_longer(-c(x, y), names_to = "month", values_to = "ratio") |>
+  dplyr::mutate(month = factor(month.name[as.integer(month)], levels = month.name[sort(gf_ratio_months)]))
+
+ggplot(gf_ratio_map_df, aes(x, y, fill = ratio)) +
+  geom_raster() +
+  facet_wrap(~month) +
+  coord_equal() +
+  scale_fill_viridis_c(name = "Gap-filled ÷\nnon-gap-filled", option = "C") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+```{r}
+#| label: fig-gf-agreement-over-time
+#| fig-cap: "Gap-filled vs non-gap-filled VIIRS agreement across their overlap: paddock-level correlation (top) and mean bias (bottom), one point per 8-day composite date."
+#| fig-asp: 0.5
+
+gf_check_long <- gpp_gf_bias_check |>
+  dplyr::select(date, correlation, bias_mean) |>
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+
+ggplot(gf_check_long, aes(date, value)) +
+  geom_line(colour = "#1b7837") +
+  geom_point(size = 0.8, colour = "#1b7837") +
+  facet_wrap(~series, scales = "free_y", ncol = 1,
+             labeller = as_labeller(c(correlation = "Paddock-level correlation", bias_mean = "Mean bias (gC/m²/8-day)"))) +
+  labs(x = NULL, y = NULL)
+```
+
+#### The two disagreements, side by side
+
+`gpp_pml_bias_correction` is used here only as a common (additive) yardstick for how much PML and MOD17/VNP17 disagree in absolute terms -- the correction actually applied to PML (`gpp_pml_pixel_ratio_rast`, a pixel-scale ratio, above) is multiplicative and spatially-varying, not this flat additive figure. The two aren't on the same scale by default either way -- PML's is already day-normalised (`build_pml_gpp_raster()` divides by days-in-month), while `gpp_gf_bias_correction` is derived straight from `compare_viirs_gpp_products()`'s raw composite comparison, still in the raw AppEEARS kg C/m²/8-day scale (that comparison runs directly on the source files, upstream of `build_seasonal_gpp_raster()`'s own gC/m²/day conversion -- see that function's own header). The table below converts the VIIRS figure the same way (&times;1000 for kg&rarr;g, &divide;8 for an 8-day total&rarr;daily rate, i.e. &times;125) so both rows are directly comparable.
+
+```{r}
+#| label: correction-magnitude-table
+
+pml_mean_abs      <- mean(abs(gpp_pml_bias_correction$bias_correction))
+gf_mean_abs_raw   <- mean(abs(gpp_gf_bias_correction$bias_correction))
+gf_mean_abs       <- gf_mean_abs_raw * (1000 / 8)
+magnitude_ratio   <- pml_mean_abs / gf_mean_abs
+
+dplyr::bind_rows(
+  gpp_pml_bias_correction |> dplyr::mutate(splice = "PML → MOD17/VNP17 (pre-2000)", bias_correction = bias_correction),
+  gpp_gf_bias_correction |> dplyr::mutate(splice = "Gap-filled → non-gap-filled VIIRS (near-real-time)", bias_correction = bias_correction * (1000 / 8))
+) |>
+  dplyr::group_by(Splice = splice) |>
+  dplyr::summarise(
+    `Mean |correction| (gC/m²/day)` = mean(abs(bias_correction)),
+    `Max |correction| (gC/m²/day)`  = max(abs(bias_correction)),
+    .groups = "drop"
+  ) |>
+  gt::gt() |>
+  gt::fmt_number(columns = where(is.numeric), decimals = 3) |>
+  gt::tab_options(table.font.size = "0.85em")
+```
+
+Once both are expressed as a gC/m²/day equivalent, the gap-filled/non-gap-filled correction (mean |correction| `r round(gf_mean_abs, 3)` gC/m²/day) is about **`r round(magnitude_ratio, 1)`&times;** smaller than the PML correction (mean |correction| `r round(pml_mean_abs, 2)` gC/m²/day) -- a real difference, but nowhere near the orders-of-magnitude gap the raw (unconverted) figures would suggest (`r format(round(gf_mean_abs_raw, 4), scientific = FALSE)` gC/m²/8-day, which reads as tiny purely because it's a kg, per-8-day-period figure, not because the underlying agreement is that much better). This is consistent with the two VIIRS products sharing the same sensor and underlying algorithm (only the gap-filling step differs between them), versus PML-V2 being a genuinely different GPP model altogether. It's also part of why the near-real-time splice is a comparatively low-risk substitution: gap-filled and non-gap-filled VIIRS already agree far more closely than PML and MOD17/VNP17 do.
+
+#### MODIS vs VIIRS (2011/2012 splice, uncorrected)
+
+MODIS and VIIRS never cover the same dates, so there's no paddock-level overlap to compare the way the two splices above can be -- both products are instead treated as already continuous, based on NASA's own documentation that VIIRS's GPP algorithm is the designed operational continuation of MODIS's (confirmed live via `appeears::rs_products()`/`rs_layers()`: identical layer names, fill-value codes, scale factor and 8-day cadence). The closest check available is visual: does the national mean look continuous across the boundary, with no correction applied?
+
+```{r}
+#| label: fig-modis-viirs-continuity
+#| fig-cap: "MODIS (2000-2011) into VIIRS gap-filled (2012+), close up -- unlike the other two splices, no bias correction is applied here at all; this just shows whether that's visually reasonable."
+#| fig-asp: 0.4
+
+modis_viirs_window <- 2009:2014
+
+gpp_monthly_df |>
+  dplyr::filter(lubridate::year(date) %in% modis_viirs_window) |>
+  dplyr::mutate(product = ifelse(lubridate::year(date) <= 2011, "MODIS", "VIIRS gap-filled")) |>
+  ggplot(aes(date, value, colour = product)) +
+  geom_line(aes(group = 1), colour = "grey70") +
+  geom_point(size = 1.3) +
+  geom_vline(xintercept = as.Date("2012-01-01"), linetype = "dashed", colour = "grey50") +
+  labs(x = NULL, y = "GPP (gC/m²/day)", colour = NULL) +
+  scale_colour_brewer(palette = "Set2")
+```
+
+### The corrected GPP record
+
+With the splices and their corrections established above, this is what the pipeline's final, corrected GPP record (`gpp_raster_coarse`) actually looks like once it's rolled, seasonally summarised, and measured for whiplash.
+
+```{r}
+#| label: fig-gpp-raw-monthly
+#| fig-cap: "Raw monthly GPP (national mean), not yet rolling-averaged -- every point is one calendar month's own value. Points in the last two years (red) may include months filled in from the bias-corrected non-gap-filled splice rather than gap-filled composites alone; everything before that is gap-filled-only and permanently frozen."
+#| fig-asp: 0.4
+
+ggplot(gpp_monthly_df, aes(date, value)) +
+  geom_line(colour = "grey60", linewidth = 0.3) +
+  geom_point(aes(colour = recent_block), size = 1.3) +
+  scale_colour_manual(
+    values = c(`FALSE` = "#1b7837", `TRUE` = "#e41a1c"),
+    labels = c(`FALSE` = "Gap-filled, frozen", `TRUE` = "Recent block (gap-filled + possible near-real-time splice)"),
+    name = NULL
+  ) +
+  labs(x = NULL, y = "GPP (gC/m²/day)")
+```
+
+```{r}
+#| label: fig-gpp-timeseries
+#| fig-cap: "GPP: national mean of the 12-month rolling average and its anomaly, at each season-end month."
+
+gpp_df <- raster_mean_series(gpp_rolling_raster_12) |> dplyr::rename(gpp = value)
+gpp_anom_df <- raster_mean_series(gpp_rolling_anomaly_raster_12) |> dplyr::rename(gpp_anomaly = value)
+
+gpp_combined <- dplyr::full_join(gpp_df, gpp_anom_df, by = "date") |>
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+
+ggplot(gpp_combined, aes(date, value)) +
+  geom_line(colour = "#1b7837") +
+  facet_wrap(~series, scales = "free_y", ncol = 1,
+             labeller = as_labeller(c(gpp = "GPP rolling 12-month average (gC/m²/day)", gpp_anomaly = "GPP anomaly (z-score)"))) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+#| label: fig-gpp-anomaly-map
+#| fig-cap: "GPP anomaly (12-month rolling, z-score): spatial pattern over the 4 most recent season-end periods -- the same series as the anomaly panel above, national mean, but keeping the regional variation a single national number collapses away."
+#| fig-asp: 0.65
+
+gpp_anomaly_map_df <- raster_map_df(gpp_rolling_anomaly_raster_12[[tail(names(gpp_rolling_anomaly_raster_12), 4)]])
+
+ggplot(gpp_anomaly_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~label) +
+  coord_equal() +
+  scale_fill_distiller(palette = "RdBu", direction = 1, name = "GPP anomaly\n(z-score)") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+```{r}
+#| label: fig-gpp-rolling-comparison
+#| fig-cap: "GPP's three non-whiplash temporal treatments, national mean: rolling 6- and 12-month averages against the non-rolling this-season mean. The 6-month version reacts faster and swings further; the seasonal mean is the noisiest of the three, with no averaging across months at all."
+#| fig-asp: 0.4
+
+gpp_rolling_compare_df <- dplyr::bind_rows(
+  raster_mean_series(gpp_rolling_raster_6)  |> dplyr::mutate(series = "Rolling 6-month (gpp_rolling6)"),
+  raster_mean_series(gpp_rolling_raster_12) |> dplyr::mutate(series = "Rolling 12-month (gpp)"),
+  raster_mean_series(gpp_seasonal_raster)   |> dplyr::mutate(series = "This-season mean (gpp_seasonal)")
+)
+
+ggplot(gpp_rolling_compare_df, aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "GPP (gC/m²/day)", colour = NULL) +
+  scale_colour_brewer(palette = "Dark2")
+```
+
+```{r}
+#| label: fig-gpp-whiplash
+#| fig-cap: "GPP whiplash, national mean: the sharpest trough-to-peak and peak-to-trough swing within each trailing 2-year window of the rolling-12 anomaly. Sourced from gpp_rolling_anomaly_raster_12 -- see @sec-whiplash for the algorithm."
+#| fig-asp: 0.4
+
+gpp_whiplash_df <- dplyr::bind_rows(
+  raster_mean_series(gpp_whiplash_trough_to_peak) |> dplyr::mutate(series = "Trough-to-peak"),
+  raster_mean_series(gpp_whiplash_peak_to_trough) |> dplyr::mutate(series = "Peak-to-trough")
+)
+
+ggplot(gpp_whiplash_df, aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Whiplash swing (z-score units)", colour = NULL) +
+  scale_colour_manual(values = c(`Trough-to-peak` = "#2166ac", `Peak-to-trough` = "#b2182b"))
+```
+
+```{r}
+#| label: fig-gpp-whiplash-map
+#| fig-cap: "GPP whiplash, spatial pattern at the most recent season-end period: trough-to-peak (left) and peak-to-trough (right). A national mean (above) can look unremarkable even when a real, sharp swing is happening in one specific region -- this is the check for that."
+#| fig-asp: 0.45
+
+gpp_whiplash_map_df <- dplyr::bind_rows(
+  raster_map_df(gpp_whiplash_trough_to_peak[[tail(names(gpp_whiplash_trough_to_peak), 1)]]) |> dplyr::mutate(direction = "Trough-to-peak"),
+  raster_map_df(gpp_whiplash_peak_to_trough[[tail(names(gpp_whiplash_peak_to_trough), 1)]]) |> dplyr::mutate(direction = "Peak-to-trough")
+)
+
+ggplot(gpp_whiplash_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~direction) +
+  coord_equal() +
+  scale_fill_viridis_c(option = "C", name = "Whiplash\nswing") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+## Rainfall {#sec-rainfall}
+
+**Source:** SILO's pre-aggregated monthly rainfall totals (Bureau of Meteorology, 1889+), downloaded directly (no daily aggregation needed).
+
+**Processing:** resample onto PML's 0.1&deg; grid &rarr; trim to 1982+ &rarr; **four parallel versions**: (1) summed over a fixed Apr-Oct window every year, (2) trailing 6- and 12-month rolling averages (`tar_map()` over `rain_rolling_windows`, the identical mechanism GPP uses above), (3) summed within each of the 4 calendar seasons independently, plus (4) whiplash (@sec-whiplash). Each rolling/window/seasonal version gets its own leave-one-out z-score anomaly (purely per-pixel, no neighbour-blending -- SILO is already a smoothed national surface).
+
+```{r}
+#| label: fig-rain-timeseries
+#| fig-cap: "Rainfall: fixed Apr-Oct window total vs. per-season totals, national mean."
+
+rain_window_df <- raster_mean_series(rain_winter_window_raster) |> dplyr::mutate(series = "Apr-Oct window total (mm)")
+rain_seasonal_df <- raster_mean_series(rain_seasonal_raster) |> dplyr::mutate(series = "Per-season total (mm)")
+
+dplyr::bind_rows(rain_window_df, rain_seasonal_df) |>
+  ggplot(aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Rainfall total (mm)", colour = NULL) +
+  scale_colour_brewer(palette = "Dark2")
+```
+
+```{r}
+#| label: fig-rain-anomaly
+#| fig-cap: "Rainfall anomalies (z-score): fixed window vs. per-season."
+
+rain_window_anom_df <- raster_mean_series(rain_anomaly_raster) |> dplyr::mutate(series = "Apr-Oct window anomaly")
+rain_seasonal_anom_df <- raster_mean_series(rain_seasonal_anomaly_raster) |> dplyr::mutate(series = "Per-season anomaly")
+
+dplyr::bind_rows(rain_window_anom_df, rain_seasonal_anom_df) |>
+  ggplot(aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Anomaly (z-score)", colour = NULL) +
+  scale_colour_brewer(palette = "Dark2")
+```
+
+```{r}
+#| label: fig-rain-rolling-comparison
+#| fig-cap: "Rainfall's rolling 6- and 12-month averages, national mean -- the same tar_map()-generated treatment as GPP's own rolling averages above."
+#| fig-asp: 0.4
+
+rain_rolling_compare_df <- dplyr::bind_rows(
+  raster_mean_series(rain_rolling_raster_6)  |> dplyr::mutate(series = "Rolling 6-month (rain_rolling6)"),
+  raster_mean_series(rain_rolling_raster_12) |> dplyr::mutate(series = "Rolling 12-month (rain_rolling12)")
+)
+
+ggplot(rain_rolling_compare_df, aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Rainfall rolling average (mm/month)", colour = NULL) +
+  scale_colour_brewer(palette = "Dark2")
+```
+
+```{r}
+#| label: fig-rain-anomaly-map
+#| fig-cap: "Rainfall anomaly (12-month rolling, z-score): spatial pattern over the 4 most recent season-end periods -- winter-dominant rainfall in the south vs. summer-dominant rainfall in the north means a national mean can mix two quite different stories together."
+#| fig-asp: 0.65
+
+rain_anomaly_map_df <- raster_map_df(rain_rolling_anomaly_raster_12[[tail(names(rain_rolling_anomaly_raster_12), 4)]])
+
+ggplot(rain_anomaly_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~label) +
+  coord_equal() +
+  scale_fill_distiller(palette = "RdBu", direction = 1, name = "Rainfall anomaly\n(z-score)") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+```{r}
+#| label: fig-rain-whiplash
+#| fig-cap: "Rainfall whiplash, national mean: the sharpest trough-to-peak and peak-to-trough swing within each trailing 2-year window of the rolling-12 anomaly. Sourced from rain_rolling_anomaly_raster_12 -- see @sec-whiplash for the algorithm."
+#| fig-asp: 0.4
+
+rain_whiplash_df <- dplyr::bind_rows(
+  raster_mean_series(rain_whiplash_trough_to_peak) |> dplyr::mutate(series = "Trough-to-peak"),
+  raster_mean_series(rain_whiplash_peak_to_trough) |> dplyr::mutate(series = "Peak-to-trough")
+)
+
+ggplot(rain_whiplash_df, aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Whiplash swing (z-score units)", colour = NULL) +
+  scale_colour_manual(values = c(`Trough-to-peak` = "#2166ac", `Peak-to-trough` = "#b2182b"))
+```
+
+```{r}
+#| label: fig-rain-whiplash-map
+#| fig-cap: "Rainfall whiplash, spatial pattern at the most recent season-end period: trough-to-peak (left) and peak-to-trough (right)."
+#| fig-asp: 0.45
+
+rain_whiplash_map_df <- dplyr::bind_rows(
+  raster_map_df(rain_whiplash_trough_to_peak[[tail(names(rain_whiplash_trough_to_peak), 1)]]) |> dplyr::mutate(direction = "Trough-to-peak"),
+  raster_map_df(rain_whiplash_peak_to_trough[[tail(names(rain_whiplash_peak_to_trough), 1)]]) |> dplyr::mutate(direction = "Peak-to-trough")
+)
+
+ggplot(rain_whiplash_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~direction) +
+  coord_equal() +
+  scale_fill_viridis_c(option = "C", name = "Whiplash\nswing") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+### How redundant are the rainfall versions?
+
+```{r}
+#| label: rain-correlation
+
+rain_cor <- paddock_season_covs |>
+  dplyr::select(rain, rain_rolling6, rain_rolling12, rain_seasonal,
+                rain_whiplash_trough_to_peak, rain_whiplash_peak_to_trough) |>
+  tidyr::drop_na() |>
+  cor() |>
+  round(2)
+
+rain_cor |> as.data.frame() |> gt::gt(rownames_to_stub = TRUE) |> gt::tab_options(table.font.size = "0.8em")
+```
+
+## Soil moisture {#sec-soilmoisture}
+
+**Source:** AWRA-L v7's rootzone soil moisture (`sm_pct`, BOM/CSIRO's Australian Water Resources Assessment model, 1911+), served as one whole-history file, updated periodically as new months are appended.
+
+**Processing:** resample onto PML's 0.1&deg; grid &rarr; trim to 1982+ &rarr; used directly, with **no rolling window or seasonal summing** -- AWRA's own water-balance model has already integrated rainfall/evapotranspiration/drainage history into this single value, so any further windowing would double-count memory already built in. Leave-one-out z-score anomaly, purely per-pixel (no neighbour-blending). It does still get one item from the shared treatment menu though: **whiplash** (@sec-whiplash), which measures how sharply this already-integrated value is swinging rather than adding another layer of smoothing on top of it.
+
+```{r}
+#| label: fig-soilmoisture-timeseries
+#| fig-cap: "Soil moisture: national mean of the raw value and its anomaly, at each season-end month."
+
+sm_df <- raster_mean_series(soil_moisture_raster_coarse) |> dplyr::rename(soil_moisture = value)
+sm_anom_df <- raster_mean_series(soil_moisture_anomaly_raster) |> dplyr::rename(soil_moisture_anomaly = value)
+
+sm_combined <- dplyr::full_join(sm_df, sm_anom_df, by = "date") |>
+  tidyr::pivot_longer(-date, names_to = "series", values_to = "value")
+
+ggplot(sm_combined, aes(date, value)) +
+  geom_line(colour = "#2166ac") +
+  facet_wrap(~series, scales = "free_y", ncol = 1,
+             labeller = as_labeller(c(soil_moisture = "Soil moisture (% full)", soil_moisture_anomaly = "Soil moisture anomaly (z-score)"))) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+#| label: fig-soilmoisture-anomaly-map
+#| fig-cap: "Soil moisture anomaly (z-score): spatial pattern over the 4 most recent season-end periods."
+#| fig-asp: 0.65
+
+sm_anomaly_map_df <- raster_map_df(soil_moisture_anomaly_raster[[tail(names(soil_moisture_anomaly_raster), 4)]])
+
+ggplot(sm_anomaly_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~label) +
+  coord_equal() +
+  scale_fill_distiller(palette = "RdBu", direction = 1, name = "Soil moisture\nanomaly (z-score)") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+```{r}
+#| label: fig-soilmoisture-whiplash
+#| fig-cap: "Soil moisture whiplash, national mean: the sharpest trough-to-peak and peak-to-trough swing within each trailing 2-year window of the raw-value anomaly. Sourced from soil_moisture_anomaly_raster -- see @sec-whiplash for the algorithm."
+#| fig-asp: 0.4
+
+sm_whiplash_df <- dplyr::bind_rows(
+  raster_mean_series(soil_moisture_whiplash_trough_to_peak) |> dplyr::mutate(series = "Trough-to-peak"),
+  raster_mean_series(soil_moisture_whiplash_peak_to_trough) |> dplyr::mutate(series = "Peak-to-trough")
+)
+
+ggplot(sm_whiplash_df, aes(date, value, colour = series)) +
+  geom_line() +
+  labs(x = NULL, y = "Whiplash swing (z-score units)", colour = NULL) +
+  scale_colour_manual(values = c(`Trough-to-peak` = "#2166ac", `Peak-to-trough` = "#b2182b"))
+```
+
+```{r}
+#| label: fig-soilmoisture-whiplash-map
+#| fig-cap: "Soil moisture whiplash, spatial pattern at the most recent season-end period: trough-to-peak (left) and peak-to-trough (right)."
+#| fig-asp: 0.45
+
+sm_whiplash_map_df <- dplyr::bind_rows(
+  raster_map_df(soil_moisture_whiplash_trough_to_peak[[tail(names(soil_moisture_whiplash_trough_to_peak), 1)]]) |> dplyr::mutate(direction = "Trough-to-peak"),
+  raster_map_df(soil_moisture_whiplash_peak_to_trough[[tail(names(soil_moisture_whiplash_peak_to_trough), 1)]]) |> dplyr::mutate(direction = "Peak-to-trough")
+)
+
+ggplot(sm_whiplash_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~direction) +
+  coord_equal() +
+  scale_fill_viridis_c(option = "C", name = "Whiplash\nswing") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+## Minimum temperature {#sec-mintemp}
+
+**Source:** SILO's daily minimum temperature (Bureau of Meteorology, 1980+) -- no pre-aggregated monthly/seasonal product exists for this variable, unlike rainfall, so daily files are downloaded and aggregated by this pipeline itself, one netCDF per calendar year (`download_silo_daily_data()`).
+
+**Processing:** aggregate daily composites to monthly means in `r length(min_temp_year_blocks)` independent, fixed 5-year blocks spanning `r min(unlist(min_temp_year_blocks))`-`r max(unlist(min_temp_year_blocks))` (`build_year_blocks()`, `summarise_silo_to_month()`), not as one command covering the whole record &rarr; concatenate every block into one continuous stack (`combine_spatraster_list()`) &rarr; average within each of the 4 seasons (`build_seasonal_raster()`). **Deliberately kept as a raw value, never converted to an anomaly** -- winter cold is used directly as a breeding-relevant threshold, not as a deviation from that paddock's own long-term norm.
+
+::: {.callout-note}
+#### Why blocks, not one 46-year command
+
+SILO's daily NetCDF files store each day as one indivisible chunk covering the *entire country* -- there's no way to decompress a spatial subset without loading the whole day, and processing all `r max(unlist(min_temp_year_blocks)) - min(unlist(min_temp_year_blocks)) + 1` years at once as a single `terra::tapp()` call repeatedly exhausted memory and was killed partway through, hours in. Splitting the record into fixed 5-year blocks bounds peak memory to one block at a time, lets independent blocks build concurrently, and means a killed block only costs re-running that one block -- not the whole record.
+:::
+
+```{r}
+#| label: fig-mintemp-blocks
+#| fig-cap: "Minimum temperature's daily SILO record is aggregated in independent 5-year blocks (not one command spanning the whole record) -- each block builds and caches on its own."
+#| fig-asp: 0.22
+
+mt_blocks_df <- purrr::imap_dfr(min_temp_year_blocks, ~ tibble::tibble(block = .y, start = min(.x), end = max(.x)))
+
+ggplot(mt_blocks_df, aes(xmin = start, xmax = end + 1, ymin = 0, ymax = 1, fill = block)) +
+  geom_rect(colour = "white", show.legend = FALSE) +
+  geom_text(aes(x = (start + end + 1) / 2, y = 0.5, label = paste0(start, "-", end)), size = 3, colour = "white") +
+  scale_fill_brewer(palette = "Paired") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 10), name = NULL) +
+  labs(y = NULL) +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank())
+```
+
+```{r}
+#| label: fig-mintemp-timeseries
+#| fig-cap: "Minimum temperature: national mean seasonal average, all 4 seasons (not just winter)."
+
+## raster_mean_series() assigns each season a fixed representative month
+## (Summer -> Jan, Autumn -> Apr, Winter -> Jul, Spring -> Oct) -- reverse
+## that same mapping here rather than re-deriving season from the raster's
+## own (differently-ordered) layer names, which would risk misaligning once
+## the series has been sorted by date.
+mt_df <- raster_mean_series(min_temp_seasonal_raster) |>
+  dplyr::mutate(
+    season = factor(
+      c(`1` = "Summer", `4` = "Autumn", `7` = "Winter", `10` = "Spring")[as.character(lubridate::month(date))],
+      levels = c("Summer", "Autumn", "Winter", "Spring")
+    )
+  )
+
+ggplot(mt_df, aes(date, value, colour = season)) +
+  geom_line(aes(group = 1), colour = "grey70") +
+  geom_point(size = 1.5) +
+  labs(x = NULL, y = "Mean minimum temperature (°C)", colour = "Season") +
+  scale_colour_manual(values = c(Summer = "#e41a1c", Autumn = "#ff7f00", Winter = "#377eb8", Spring = "#4daf4a"))
+```
+
+```{r}
+#| label: fig-mintemp-map
+#| fig-cap: "Minimum temperature, most recent instance of each season: the latitudinal breeding-threshold gradient this covariate is meant to capture is a spatial pattern by nature, so unlike every other covariate above, the most informative view of min_temp is a map even at a single point in time, not a national mean series."
+#| fig-asp: 0.65
+
+mt_labels <- names(min_temp_seasonal_raster)
+mt_seasons_all <- sub("-.*", "", mt_labels)
+mt_years_all   <- as.integer(sub(".*-", "", mt_labels))
+mt_latest_layers <- sapply(c("Summer", "Autumn", "Winter", "Spring"), function(s) {
+  idx <- which(mt_seasons_all == s)
+  mt_labels[idx[which.max(mt_years_all[idx])]]
+})
+
+mt_map_df <- raster_map_df(min_temp_seasonal_raster[[mt_latest_layers]])
+
+ggplot(mt_map_df, aes(x, y, fill = value)) +
+  geom_raster() +
+  facet_wrap(~label) +
+  coord_equal() +
+  scale_fill_viridis_c(option = "B", name = "Min. temp (°C)") +
+  labs(x = NULL, y = NULL) +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+## Attaching to the seasonal model {#sec-attach}
+
+Every covariate above is ultimately read onto `paddock_season_grid` (one row per paddock x season) via one of three matching strategies, depending on how often each covariate actually produces a new value:
+
+- **GPP's and rainfall's rolling-6/rolling-12 rasters, soil moisture, and every whiplash raster (GPP/rainfall/soil moisture)** are still built at monthly- or season-end grain internally, but only *read* once per season, at that season's own last calendar month (`period_col = "season_end_month_year"`, e.g. Winter reads August's value) -- not averaged further across the season, since all of these are already a point-in-time value. Each whiplash raster attaches with the same `period_col` as the anomaly raster it was built from, not necessarily the raw variable's own -- currently that's `"season_end_month_year"` for all three, since all three are (for now) sourced from a rolling-12/raw-value anomaly at that grain.
+- **The fixed-window rainfall total** only produces one value a year; that value is broadcast across all four seasons of the same year_adj cycle (`period_col = "year_adj"`).
+- **GPP seasonal, rainfall's per-season total, and min temperature** already produce a real, distinct value for every season directly (`period_col = "season_year_adj"`), so no broadcasting is needed.
+
+```{r}
+#| label: fig-completeness
+#| fig-cap: "Data completeness (% non-missing) by covariate and season type, all 22 covariate columns -- gaps reflect each covariate's own warm-up period (e.g. GPP's 12-month rolling window needs 12 months of history before its first value; whiplash needs a full 2-year trailing window on top of its own source anomaly's own warm-up; leave-one-out anomalies need at least 3 years of record)."
+#| fig-asp: 1.2
+
+completeness <- paddock_season_covs |>
+  dplyr::select(
+    season,
+    gpp_rolling6, gpp_rolling6_anomaly, gpp, gpp_anomaly, gpp_seasonal, gpp_seasonal_anomaly,
+    gpp_whiplash_trough_to_peak, gpp_whiplash_peak_to_trough,
+    rain, rain_anomaly, rain_rolling6, rain_rolling6_anomaly, rain_rolling12, rain_rolling12_anomaly,
+    rain_seasonal, rain_seasonal_anomaly, rain_whiplash_trough_to_peak, rain_whiplash_peak_to_trough,
+    soil_moisture, soil_moisture_anomaly, soil_moisture_whiplash_trough_to_peak, soil_moisture_whiplash_peak_to_trough,
+    min_temp
+  ) |>
+  dplyr::group_by(season) |>
+  dplyr::summarise(dplyr::across(everything(), ~ mean(!is.na(.x)) * 100), .groups = "drop") |>
+  tidyr::pivot_longer(-season, names_to = "covariate", values_to = "pct_complete")
+
+ggplot(completeness, aes(x = covariate, y = pct_complete, fill = season)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(x = NULL, y = "% complete", fill = "Season") +
+  scale_fill_manual(values = c(Summer = "#e41a1c", Autumn = "#ff7f00", Winter = "#377eb8", Spring = "#4daf4a"))
+```
+
+## Reproducing this from scratch {#sec-reproduce}
+
+Every figure and table above is built directly from `_targets.R` (section B) targets, `tar_load()`'d at the top of this document (see the `setup` chunk) -- rerun `targets::tar_make()` after any raw-data or code change, then re-render this document, to regenerate everything with the refreshed values. No numbers here are hand-entered; the summary table, bias-correction table and "as of" dates above all read straight off the live pipeline output.
+
+```{r}
+#| label: pipeline-reference
+
+pipeline_ref <- tibble::tribble(
+  ~Covariate,        ~`Key _targets.R targets (in build order)`,                                                                                              ~`Key r/ functions`,
+  "GPP",             "gpp_files_modis, gpp_viirs_frozen_blocks -> gpp_files_viirs_frozen_block -> monthly_gpp_rast_viirs_frozen_block; gpp_viirs_recent_blocks -> gpp_files_viirs_recent_block, gpp_files_viirs_nongf -> gpp_gf_bias_check -> gpp_gf_bias_correction -> monthly_gpp_rast_viirs_recent_block; combined into monthly_gpp_rast / monthly_gpp_rast_frozen -> gpp_pml_bias_check -> monthly_gpp_rast_frozen_coarse -> gpp_pml_pixel_ratio_rast -> pml_gpp_rast_corrected -> gpp_raster_coarse -> {tar_map() over gpp_rolling_windows: gpp_rolling_raster_6/_12 -> gpp_rolling_anomaly_raster_6/_12} + gpp_seasonal_raster -> gpp_seasonal_anomaly_raster -> gpp_whiplash_trough_to_peak / gpp_whiplash_peak_to_trough (from gpp_rolling_anomaly_raster_12)", "download_gpp_block(), build_seasonal_gpp_raster(), compare_viirs_gpp_products(), check_gpp_pml_bias(), summarise_gpp_bias_by_month(), summarise_gpp_ratio_by_month(), resample_to_grid(), build_gpp_pixel_ratio_raster(), build_gpp_historic_corrected_raster(), combine_spatraster_list(), compute_rolling_mean_raster(), build_seasonal_raster(), compute_loo_anomaly_raster(), compute_whiplash_raster(), trim_to_season_end_months()",
+  "Rainfall",        "silo_files -> rainfall_raster -> rain_raster_coarse -> rain_winter_window_raster -> rain_anomaly_raster; {tar_map() over rain_rolling_windows: rain_rolling_raster_6/_12 -> rain_rolling_anomaly_raster_6/_12} + rain_seasonal_raster -> rain_seasonal_anomaly_raster -> rain_whiplash_trough_to_peak / rain_whiplash_peak_to_trough (from rain_rolling_anomaly_raster_12)", "download_silo_monthly_data(), build_monthly_rainfall_raster(), resample_to_grid(), build_seasonal_window_raster(), compute_rolling_mean_raster(), build_seasonal_raster(), compute_loo_anomaly_raster(), compute_whiplash_raster(), trim_to_season_end_months()",
+  "Soil moisture",   "awra_files -> soil_moisture_raster -> soil_moisture_raster_coarse -> soil_moisture_anomaly_raster -> soil_moisture_whiplash_trough_to_peak / soil_moisture_whiplash_peak_to_trough",                                        "download_awra_data(), build_awra_soil_moisture_raster(), resample_to_grid(), compute_loo_anomaly_raster(), compute_whiplash_raster(), trim_to_season_end_months()",
+  "Min temperature", "min_temp_year_blocks -> silo_daily_files_min_temp -> min_temp_raster_block -> min_temp_raster -> min_temp_seasonal_raster",                "download_silo_daily_data(), build_year_blocks(), summarise_silo_to_month(), combine_spatraster_list(), build_seasonal_raster()",
+  "Attach (all)",    "paddock_season_grid -> paddock_season_covs",                                                                                              "build_paddock_season_grid(), attach_raster_covs()"
+)
+
+pipeline_ref |>
+  gt::gt() |>
+  gt::tab_options(table.font.size = "0.72em") |>
+  gt::cols_width(Covariate ~ px(110))
+```

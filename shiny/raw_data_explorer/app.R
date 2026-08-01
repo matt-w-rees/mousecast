@@ -50,6 +50,20 @@ surveys_raw <- surveys_bound |>
 # both consumers always see identical data.
 surveys_all <- readRDS("data/surveys_all.rds")
 
+# ── Individual capture log ───────────────────────────────────────────────────
+# One row per captured animal (pit_tag_id, sex, weight_g, etc.), from
+# build_individual_log() in r/a_build_individual_log.R -- a different row
+# grain to surveys_all (one row per capture, not per survey), used only for
+# the individual-capture download button below.
+individual_captures <- readRDS("data/data_traps_individual_log.rds") |>
+  dplyr::mutate(survey_date = as.Date(survey_date))
+
+# ── Variable data dictionary ──────────────────────────────────────────────────
+# One row per variable (name/description/type/values/which dataset(s) it's
+# in), built by build_variable_dictionary() in r/a_build_variable_dictionary.R
+# — shown as a searchable table on the "Data Sources & Downloads" tab.
+variable_dictionary <- readRDS("data/variable_dictionary.rds")
+
 # ── Paddock label lookup (paddock_id → site / subsite names) ─────────────────
 # site_name / subsite_name exist in raw data but are not retained in surveys_all.
 paddock_labels <- purrr::map(data_list_raw[c("traps", "rapid")], function(d) {
@@ -233,6 +247,7 @@ compute_znp50_by_aez <- function(surveys) {
       max_chew_pct     = numeric(0),   max_burrows      = numeric(0),
       max_chew_per10   = numeric(0),   chew_class       = character(0),
       burrow_class     = character(0), chew_per10_class = character(0),
+      chewed_cards_class = character(0),
       overall_class    = character(0)
     ))
   }
@@ -285,7 +300,15 @@ compute_znp50_by_aez <- function(surveys) {
         max_chew_per10 > 1    ~ "Moderate",
         TRUE                  ~ "Low"
       ),
-      # Overall: worst of chew % and burrows only; chew_per10 is excluded
+      # Same underlying value as max_chew_per10, but a different (ZNP50-style)
+      # threshold/colour scheme -- informational only, does not affect overall_class.
+      chewed_cards_class = dplyr::case_when(
+        is.na(max_chew_per10) ~ NA_character_,
+        max_chew_per10 > 5     ~ "High",
+        max_chew_per10 >= 2    ~ "Moderate",
+        TRUE                   ~ "Low"
+      ),
+      # Overall: worst of chew % and burrows only; chew_per10/chewed_cards are excluded
       overall_class = dplyr::case_when(
         (!is.na(chew_class)   & chew_class   == "High") |
         (!is.na(burrow_class) & burrow_class == "High")     ~ "High",
@@ -460,9 +483,11 @@ compute_trend_activity_index <- function(d, join_keys, weights) {
 }
 
 # ── ZNP50 fortnightly schedule ───────────────────────────────────────────────
-# Anchored on the first scheduled date; the 14-day cycle extends both forwards
-# and backwards to cover the full history.
-znp_anchor <- as.Date("2026-05-20")
+# Anchored on the first scheduled date (a Friday, so every fortnight-ending date
+# in the cycle -- and so the "Fortnight ending" label -- lands on a Friday, e.g.
+# "Fortnight ending 17 Jul 2026"); the 14-day cycle extends both forwards and
+# backwards to cover the full history.
+znp_anchor <- as.Date("2026-05-22")
 znp_fortnight_ends <- sort(unique(c(
   seq(znp_anchor, by = "14 days",  length.out = 5),   # scheduled future dates
   seq(znp_anchor, by = "-14 days", length.out = 14)   # backwards ~6 months
@@ -679,18 +704,13 @@ ui <- fluidPage(
         tags$p(textOutput("summary_stats"),
                style = "color: #555; font-size: 0.9em; margin-bottom: 4px;"),
 
-        tags$p(tags$strong("Download raw datasets for this date window"),
-               style = "margin-bottom: 4px; font-size: 0.95em;"),
         fluidRow(
           column(9,
-            downloadButton("download_traps", "Download traps (CSV)",
-                           class = "btn btn-outline-secondary btn-sm"),
-            tags$span(style = "display:inline-block; width:8px;"),
-            downloadButton("download_rapid", "Download rapid assessment (CSV)",
-                           class = "btn btn-outline-secondary btn-sm"),
-            tags$span(style = "display:inline-block; width:8px;"),
-            downloadButton("download_observations", "Download observations (CSV)",
-                           class = "btn btn-outline-secondary btn-sm")
+            tags$p(
+              "Looking to download the raw data, see what each source is, or look up what a column means? ",
+              "See the ", tags$strong("\"Data Sources & Downloads\""), " tab.",
+              style = "color: #555; font-size: 0.9em; margin-bottom: 0;"
+            )
           ),
           column(3,
             actionButton("map_reset", "Reset filters",
@@ -777,6 +797,171 @@ ui <- fluidPage(
         tags$div(
           style = "padding: 0 4%;",
           leafletOutput("map", width = "100%", height = "560px")
+        )
+      )
+    ),
+
+    # ── Tab: Data Sources & Downloads ───────────────────────────────────────
+    tabPanel("Data Sources & Downloads",
+
+      tags$div(style = "margin-top: 15px; max-width: 1100px;",
+
+        tags$h4("Survey data quality tiers"),
+        tags$p(
+          style = "color: #555;",
+          "Every mouse-survey source below feeds into the ", tags$code("traps"), ", ",
+          tags$code("rapid"), " and ", tags$code("observations"), " datasets used throughout this app, ",
+          "ordered from ", tags$strong("highest to lowest information content"), ". ",
+          "This ordering is methodological: each tier supports a different (and progressively weaker) ",
+          "type of inference, so it's the first thing to check before using a dataset for anything beyond ",
+          "a simple relative-activity index. See ",
+          tags$a(href = "https://github.com/csiro-farming-systems/mousecast/blob/main/raw_data/survey_data/README.md",
+                  target = "_blank", "raw_data/survey_data/README.md"),
+          " in the project repository for the full write-up this tab summarises."
+        ),
+
+        tags$table(
+          class = "table table-sm table-bordered",
+          style = "max-width: 900px; font-size: 0.9em;",
+          tags$thead(tags$tr(
+            tags$th("Tier"), tags$th("What it supports"), tags$th("Signal")
+          )),
+          tags$tbody(
+            tags$tr(tags$td("1. Individual-ID CMR"),          tags$td("Density/abundance estimation (CMR, SECR)"), tags$td("Physically-unique tag per animal, re-identifiable across nights/trips")),
+            tags$tr(tags$td("2. Marked, not individually resolved"), tags$td("New-vs-recapture ratios only"),      tags$td("Marking exists, but the code can't distinguish individuals")),
+            tags$tr(tags$td("3. Unmarked catch index"),        tags$td("Relative abundance trend only (CPUE)"),    tags$td("Raw capture counts, no marking at all")),
+            tags$tr(tags$td("4. Rapid assessment sign-index"), tags$td("Indirect, presence/intensity of sign"),    tags$td("Active burrow counts, chew-card damage")),
+            tags$tr(tags$td("5. Citizen observation"),         tags$td("Coarse presence/severity trend"),          tags$td("Ordinal none/low/medium/high report"))
+          )
+        ),
+
+        tags$p(
+          style = "color: #888; font-size: 0.85em;",
+          "The pipeline records this per-session, not just per-source: the ", tags$code("id_method"),
+          " column (see data dictionary below) is the authoritative per-session answer -- a handful of ",
+          "animals too small to tag safely will always fall back to ear-mark within an otherwise ",
+          "pit-tagged project."
+        ),
+
+        tags$div(style = "display: flex; gap: 24px; flex-wrap: wrap;",
+          tags$div(style = "flex: 1 1 320px;",
+            tags$h5("Tier 1 — Individual-ID CMR"),
+            tags$p(style = "color: #555; font-size: 0.9em;",
+              "Each captured mouse gets a real, physically-unique tag (PIT tag, or a numbered ear tag ",
+              "treated as equally reliable), re-identifiable across nights and trips."),
+            tags$ul(style = "color: #555; font-size: 0.88em; padding-left: 18px;",
+              tags$li("CSIRO Monitoring project — live-trap",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: Matthew Rees (CSIRO)")),
+              tags$li("CSIRO Ecology project — live-trap (purpose-built CMR density grids)",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: Wendy Ruscoe (CSIRO)")),
+              tags$li("NSW DPIRD — live-trap",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: Dave Forsyth (NSW DPIRD)")),
+              tags$li("Historic: Walpeup (VIC Mallee, 1983–2004, numbered ear tags)",
+                      tags$br(), tags$span(style = "color:#888;",
+                        "Derived from: Singleton (1989) J. Zoology 219, 495–515. Also used in: Singleton et al. (2001) ",
+                        tags$a(href = "https://doi.org/10.1098/rspb.2001.1638", target = "_blank", "Proc. R. Soc. B 268, 1741–1748"),
+                        "; Singleton et al. (2005) Biol. J. Linn. Soc. 84(3), 617–627; Ruscoe et al. (2022) ",
+                        tags$a(href = "https://doi.org/10.1007/s10340-021-01370-7", target = "_blank", "J. Pest Sci. 95, 493–503")
+                      ))
+            )
+          ),
+          tags$div(style = "flex: 1 1 320px;",
+            tags$h5("Tier 2 — Marked, not individually resolvable"),
+            tags$p(style = "color: #555; font-size: 0.9em;",
+              "Marking exists but can't distinguish individuals (the same code is legitimately reused). ",
+              "Only the row's own capture-class (first-capture vs. recapture) is trustworthy."),
+            tags$ul(style = "color: #555; font-size: 0.88em; padding-left: 18px;",
+              tags$li("Ear-marked sessions within any Tier-1 source",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: as per the underlying Tier-1 source")),
+              tags$li("Historic: Coleambally (NSW Murrumbidgee, 1998–2002)",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: Peter Brown (CSIRO) — unconfirmed, needs checking"))
+            )
+          ),
+          tags$div(style = "flex: 1 1 320px;",
+            tags$h5("Tier 3 — Unmarked catch index"),
+            tags$p(style = "color: #555; font-size: 0.9em;",
+              "Only raw capture counts exist — no marking, no recapture status. Supports a relative ",
+              "abundance trend (captures per unit trap-effort) but nothing about turnover or density."),
+            tags$ul(style = "color: #555; font-size: 0.88em; padding-left: 18px;",
+              tags$li("Historic: Roseworthy (SA, 1980–2000)",
+                      tags$br(), tags$span(style = "color:#888;",
+                        "Derived from: Mutze (1991) Wildlife Research 18, 593–604. ",
+                        "Also used in: Krebs et al. (2004) Wildlife Research 31, 465–474")),
+              tags$li("Historic: Queensland (Darling Downs, 2001–2008)",
+                      tags$br(), tags$span(style = "color:#888;",
+                        "Derived from: Cantrill (1992) PhD thesis (full title/institution TBD)"))
+            )
+          ),
+          tags$div(style = "flex: 1 1 320px;",
+            tags$h5("Tier 4 — Rapid assessment"),
+            tags$p(style = "color: #555; font-size: 0.9em;",
+              "Active burrow counts (100 m transects) and chew cards (% eaten) — an indirect sign of mouse ",
+              "activity, not a direct animal count. Detection varies seasonally (e.g. soil cracking / dense ",
+              "crop cover can obscure burrows)."),
+            tags$ul(style = "color: #555; font-size: 0.88em; padding-left: 18px;",
+              tags$li("CSIRO Monitoring project — rapid assessment",
+                      tags$br(), tags$span(style = "color:#888;", "Contact: Matthew Rees (CSIRO)"))
+            )
+          ),
+          tags$div(style = "flex: 1 1 320px;",
+            tags$h5("Tier 5 — Citizen observation"),
+            tags$p(style = "color: #555; font-size: 0.9em;",
+              "Point-in-time sightings from the public FeralScan/MouseAlert platform: a single ordinal ",
+              "abundance estimate with no standardised survey method or effort measure behind it. ",
+              "Weighted least in downstream summaries."),
+            tags$ul(style = "color: #555; font-size: 0.88em; padding-left: 18px;",
+              tags$li("MouseAlert / FeralScan",
+                      tags$br(), tags$span(style = "color:#888;",
+                        "No derivation paper — see ",
+                        tags$a(href = "https://www.feralscan.org.au/mousealert/", target = "_blank", "mousealert.org.au"),
+                        ". Contact: Peter West (NSW DPIRD)"))
+            )
+          )
+        ),
+
+        tags$hr(),
+        tags$h4("Data dictionary"),
+        tags$p(
+          style = "color: #555;",
+          "Every column present in the downloadable datasets below, what it means, and which dataset(s) ",
+          "contain it. Search the table to find a specific variable (e.g. try \"pit_tag\" or \"chew\")."
+        ),
+        reactableOutput("variable_dictionary_table"),
+
+        tags$hr(),
+        tags$h4("Download data"),
+        tags$p(style = "color: #555; font-size: 0.9em;",
+               "Downloads reflect the date window and filters set below (independent of the ",
+               "\"Map & Table\" tab's filters)."),
+
+        make_filter_ui("dl_"),
+
+        fluidRow(
+          column(9,
+            downloadButton("download_traps", "Download traps (CSV)",
+                           class = "btn btn-outline-secondary btn-sm"),
+            tags$span(style = "display:inline-block; width:8px;"),
+            downloadButton("download_rapid", "Download rapid assessment (CSV)",
+                           class = "btn btn-outline-secondary btn-sm"),
+            tags$span(style = "display:inline-block; width:8px;"),
+            downloadButton("download_observations", "Download observations (CSV)",
+                           class = "btn btn-outline-secondary btn-sm"),
+            tags$span(style = "display:inline-block; width:8px;"),
+            downloadButton("download_individual_captures", "Download individual captures (CSV)",
+                           class = "btn btn-outline-secondary btn-sm")
+          ),
+          column(3,
+            actionButton("dl_reset", "Reset filters",
+                         class = "btn btn-outline-primary btn-sm",
+                         style = "float:right;")
+          ),
+          style = "padding-bottom: 10px; padding-top: 10px;"
+        ),
+        tags$p(
+          style = "color: #888; font-size: 0.85em;",
+          tags$b("Individual captures: "),
+          "one row per captured animal (see Tier 1/2 above); only the date window applies to this download, ",
+          "not the narrower filters (data type/project/bait history don't apply at the capture level)."
         )
       )
     ),
@@ -1014,11 +1199,14 @@ ui <- fluidPage(
                     "Low: <10%;  Moderate: ≥10%;  High: ≥20%"),
             tags$li(tags$b("Active burrows per transect — "),
                     "Low: ≤1;  Moderate: >1;  High: >2"),
-            tags$li(tags$b("Chew cards per 10 — "),
-                    "same thresholds as burrows (informational only)"),
+            tags$li(tags$b("Chew cards / 10 (Low: ≤1; Moderate: >1; High: >2; same as burrows) — "),
+                    "informational only"),
+            tags$li(tags$b("Chew cards / 10 (Low: <2; Moderate: 2 to 5; High: >5) — "),
+                    "same underlying value as the column above, coloured with different thresholds ",
+                    "(informational only)"),
             tags$li(tags$b("ZNP50 classification — "),
                     "takes the higher of chew % and burrows per transect; ",
-                    "chew cards per 10 does not contribute")
+                    "neither chew cards / 10 column contributes")
           )
         ),
         reactableOutput("znp_table"),
@@ -1146,16 +1334,47 @@ server <- function(input, output, session) {
     updateSliderInput(session, "weight_avg_daily_high", value = 1)
   })
 
-  # Raw pipeline data filtered by map tab inputs — used for downloads.
+  # ── Data Sources & Downloads tab ──────────────────────────────────────────
+  output$variable_dictionary_table <- renderReactable({
+    reactable::reactable(
+      variable_dictionary,
+      searchable = TRUE,
+      defaultPageSize = 15,
+      showPageSizeOptions = TRUE,
+      pageSizeOptions = c(15, 30, 60, 200),
+      columns = list(
+        variable    = reactable::colDef(name = "Variable",  minWidth = 140),
+        description = reactable::colDef(name = "Description", minWidth = 260),
+        type        = reactable::colDef(name = "Type",      minWidth = 90),
+        values      = reactable::colDef(name = "Values",    minWidth = 180),
+        datasets    = reactable::colDef(name = "Dataset(s)", minWidth = 160)
+      ),
+      defaultSorted = list(variable = "asc"),
+      bordered = TRUE, striped = TRUE, highlight = TRUE, wrap = TRUE
+    )
+  })
+
+  observeEvent(input$dl_reset, {
+    updateDateInput(session,   "dl_date_start",    value    = date_min)
+    updateDateInput(session,   "dl_date_end",      value    = date_max)
+    updateSelectInput(session, "dl_year_filter",   selected = character(0))
+    updateSelectInput(session, "dl_season_filter", selected = character(0))
+    updateSelectInput(session, "dl_type_filter",   selected = character(0))
+    updateSelectInput(session, "dl_project_filter",selected = character(0))
+    updateSelectInput(session, "dl_bait_filter",   selected = c("no", "unsure"))
+  })
+
+  # Raw pipeline data filtered by the Data Sources & Downloads tab's own
+  # filters (independent of the Map & Table tab) — used for downloads.
   surveys_raw_filtered <- reactive({
     d <- surveys_raw
-    d <- dplyr::filter(d, survey_date >= safe_date(input$map_date_start, date_min),
-                          survey_date <= safe_date(input$map_date_end, date_max))
-    if (length(input$map_year_filter)    > 0) d <- dplyr::filter(d, year_adj     %in% input$map_year_filter)
-    if (length(input$map_season_filter)  > 0) d <- dplyr::filter(d, season       %in% input$map_season_filter)
-    if (length(input$map_type_filter)    > 0) d <- dplyr::filter(d, data_type    %in% input$map_type_filter)
-    if (length(input$map_project_filter) > 0) d <- dplyr::filter(d, project      %in% input$map_project_filter)
-    if (length(input$map_bait_filter)    > 0) d <- dplyr::filter(d, bait_history %in% input$map_bait_filter)
+    d <- dplyr::filter(d, survey_date >= safe_date(input$dl_date_start, date_min),
+                          survey_date <= safe_date(input$dl_date_end, date_max))
+    if (length(input$dl_year_filter)    > 0) d <- dplyr::filter(d, year_adj     %in% input$dl_year_filter)
+    if (length(input$dl_season_filter)  > 0) d <- dplyr::filter(d, season       %in% input$dl_season_filter)
+    if (length(input$dl_type_filter)    > 0) d <- dplyr::filter(d, data_type    %in% input$dl_type_filter)
+    if (length(input$dl_project_filter) > 0) d <- dplyr::filter(d, project      %in% input$dl_project_filter)
+    if (length(input$dl_bait_filter)    > 0) d <- dplyr::filter(d, bait_history %in% input$dl_bait_filter)
     d
   })
 
@@ -1717,6 +1936,19 @@ server <- function(input, output, session) {
     content  = function(file)
       write.csv(dplyr::filter(surveys_raw_filtered(), data_type == "observations"), file, row.names = FALSE)
   )
+  # individual_captures has no data_type/project/bait_history columns to
+  # match the other three downloads' full filter set against (it's a
+  # different row grain -- one row per captured animal, see
+  # r/a_build_individual_log.R), so only the date window filter applies here.
+  output$download_individual_captures <- downloadHandler(
+    filename = function() paste0("individual_captures_", Sys.Date(), ".csv"),
+    content  = function(file)
+      write.csv(
+        dplyr::filter(individual_captures,
+                       survey_date >= safe_date(input$dl_date_start, date_min),
+                       survey_date <= safe_date(input$dl_date_end, date_max)),
+        file, row.names = FALSE)
+  )
 
   # Contextual note below the min-paddocks input explaining what is filtered
   output$trend_min_pads_note <- renderUI({
@@ -2225,12 +2457,16 @@ server <- function(input, output, session) {
     }
 
     df <- dplyr::mutate(df,
-      bg_chew      = class_bg(chew_class),
-      bg_burrow    = class_bg(burrow_class),
-      bg_chew10    = class_bg(chew_per10_class),
-      bg_overall   = class_bg(overall_class)
+      # Duplicate display column: same underlying value as max_chew_per10,
+      # shown a second time with chewed_cards_class's different threshold/colour scheme.
+      max_chew_per10_alt = max_chew_per10,
+      bg_chew        = class_bg(chew_class),
+      bg_burrow      = class_bg(burrow_class),
+      bg_chew10      = class_bg(chew_per10_class),
+      bg_chewedcards = class_bg(chewed_cards_class),
+      bg_overall     = class_bg(overall_class)
     ) |>
-    dplyr::relocate(max_chew_per10, bg_chew10, .after = n_sites)
+    dplyr::relocate(max_chew_per10, bg_chew10, max_chew_per10_alt, bg_chewedcards, .after = n_sites)
 
     cell_style <- function(bg_col) {
       JS(sprintf(
@@ -2252,15 +2488,20 @@ server <- function(input, output, session) {
                              format = reactable::colFormat(digits = 2),
                              style  = cell_style("bg_burrow")),
         burrow_class     = reactable::colDef(show = FALSE),
-        max_chew_per10   = reactable::colDef(name = "Max chew cards / 10 (site mean)",
+        max_chew_per10   = reactable::colDef(name = "Max chew cards / 10 (site mean) (Low: ≤1; Moderate: >1; High: >2; same as burrows)",
                              format = reactable::colFormat(digits = 2),
                              style  = cell_style("bg_chew10")),
         chew_per10_class = reactable::colDef(show = FALSE),
+        max_chew_per10_alt = reactable::colDef(name = "Max chew cards / 10 (site mean) (Low: <2; Moderate: 2 to 5; High: >5)",
+                             format = reactable::colFormat(digits = 2),
+                             style  = cell_style("bg_chewedcards")),
+        chewed_cards_class = reactable::colDef(show = FALSE),
         overall_class    = reactable::colDef(name = "ZNP50 classification", minWidth = 150,
                              style  = cell_style("bg_overall")),
         bg_chew          = reactable::colDef(show = FALSE),
         bg_burrow        = reactable::colDef(show = FALSE),
         bg_chew10        = reactable::colDef(show = FALSE),
+        bg_chewedcards   = reactable::colDef(show = FALSE),
         bg_overall       = reactable::colDef(show = FALSE)
       ),
       defaultSorted = list(ae_zone = "asc"),

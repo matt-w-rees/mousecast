@@ -55,6 +55,8 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
     "mungbean"                             = "mungbean",
     "vetch"                                = "vetch",
     "lucerne"                              = "lucerne",
+    "peanut"                               = "peanut",
+    "peanuts"                              = "peanut",
     "bean unknown"                         = "legume_other",
     "cowpea"                               = "legume_other",
     # oilseeds

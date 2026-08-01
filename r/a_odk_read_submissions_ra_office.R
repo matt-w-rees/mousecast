@@ -15,28 +15,7 @@
 #   active_burrows_tN and chewcard_percent_N already normalised, survey_date present,
 #   and entered_by relocated next to surveyor.
 
-# Internal helper: read a repeat-group CSV, number rows within each parent,
-# and pivot one value column wide.
-# Returns a tibble keyed on PARENT_KEY.
-.odk_pivot_csv_wide <- function(path, value_col, name_prefix) {
-
-  if (length(path) == 0 || !file.exists(path)) {
-    message("Sub-table not found, skipping: ", path)
-    return(tibble::tibble(PARENT_KEY = character()))
-  }
-
-  readr::read_csv(path, show_col_types = FALSE) |>
-    dplyr::group_by(PARENT_KEY) |>
-    dplyr::mutate(.row = dplyr::row_number()) |>
-    dplyr::ungroup() |>
-    tidyr::pivot_wider(
-      id_cols     = PARENT_KEY,
-      names_from  = .row,
-      values_from = dplyr::all_of(value_col),
-      names_prefix = name_prefix
-    )
-
-}
+# Uses the shared .odk_pivot_csv_wide() helper -- see r/a_odk_pivot_csv_wide.R.
 
 odk_read_submissions_ra_office <- function(
     files = list.files("raw_data/survey_data/odk/rapid_assessment_retrospective.csv", full.names = TRUE, recursive = TRUE)

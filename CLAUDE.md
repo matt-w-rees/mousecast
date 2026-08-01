@@ -24,7 +24,7 @@ We use the "ePaddock" remotely sensed dataset to determine paddock boundaries, a
 
 Survey data is currently entered using "ODK" software. Previously "Microsoft Access" was used as the database. Data has also been entered into CSV files, as is MouseAlert data.
 ODK Central form definitions (.xlsx, used to build the forms in ODK Central) live in "odk_forms/". Submissions are currently ingested by manually exporting each form from ODK Central ("Export to CSV (with media)") into "raw_data/survey_data/odk/<form_name>.csv/" and reading those files; the live ODK Central API (the "ruODK" package) was used previously but is not currently used.
-The "Monitoring" project is the main data source we consider, but we also collate data from an "Ecology" project (live-trap data only in a microsoft access database, mostly experimental studies so we usually only use experimental controls from this data). 
+The "Monitoring" project is the main data source we consider, but we also collate data from an "Ecology" project (live-trap data only in a microsoft access database, mostly experimental studies). Baiting is accounted for explicitly (bait_history/bait_dosage) rather than by excluding treated plots, so both control and treated Ecology data are used. 
 There is also additional data sources, such as "GRDC" funded monitoring (via subcontractors). 
 
 This project uses the r-package "targets"; the targets pipeline is "_targets.R" with functions contained within the "r/" folder. It is important to "track" raw files so the pipeline is only re-run (relevant sections of which) when the raw data changes.
@@ -43,9 +43,14 @@ Each script should be named the same as the function name, except with a prefix 
 
 
 AI assistants should read every .R file.
+AI assistants should never commit or push the "docs/" folder to GitHub -- it deploys straight to the public GitHub Pages website, so updates to it are pushed manually/deliberately, not swept up into an ordinary commit.
 AI assistants should always explain created code using comments.
 AI assistants should put new functions at the top of the r script, although AI assistants should generally not define functions inside of functions unless they are very brief, anonymous functions. 
 AI assistants should ensure all created quarto documents are self-contained. 
+In "_targets.R", keep comments terse: one short sentence per line, not a wrapped paragraph spanning several "#" lines. Detailed rationale (why a function works the way it does, edge cases, etc.) belongs in that function's own header comment in "r/", not duplicated in "_targets.R" -- "_targets.R" comments should just say what a target does and point to the relevant function for detail.
+Within each major section ("A)"/"B)"), subdivide with numbered "1)", "2)", "3)"... subheadings, and within those, lettered "i.", "ii.", "iii."... sub-subheadings where a further split is useful -- matching section A's existing style.
+Blank lines around these headings (any level -- "A)", "1)", "i."): one blank line between a heading and its own first sub-heading/target (introducing its children); two blank lines between the end of one heading's content and the next heading of any level (a sibling, or a step back up).
+In "_targets.R", a target's call collapses onto one line if it has 3 or fewer arguments (counting whichever call -- the tar_file()/tar_terra_rast() wrapper or the function it wraps -- actually carries the meaningful configuration); with 4+ arguments, give each its own line with the "=" signs vertically aligned. A pipe chain ("|>") always gets one step per line regardless of argument counts. An inline "{ }" block keeps the opening brace on the assignment's own line, indents the body one level, one statement per line, and closes with "}" back at the target's own indentation.
 
 Future AI assistants working on this project should read these help pages via btw tools:
 mvgam::mvgam()

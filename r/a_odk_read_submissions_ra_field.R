@@ -16,28 +16,7 @@
 #   renamed to survey_date, and bait_history "unknown" (newer form versions)
 #   recoded to "unsure" to match the rest of the pipeline.
 
-# Internal helper: read a repeat-group CSV, number rows within each parent,
-# and pivot one value column wide.
-# Returns a tibble keyed on PARENT_KEY.
-.odk_pivot_csv_wide <- function(path, value_col, name_prefix) {
-
-  if (length(path) == 0 || !file.exists(path)) {
-    message("Sub-table not found, skipping: ", path)
-    return(tibble::tibble(PARENT_KEY = character()))
-  }
-
-  readr::read_csv(path, show_col_types = FALSE) |>
-    dplyr::group_by(PARENT_KEY) |>
-    dplyr::mutate(.row = dplyr::row_number()) |>
-    dplyr::ungroup() |>
-    tidyr::pivot_wider(
-      id_cols     = PARENT_KEY,
-      names_from  = .row,
-      values_from = dplyr::all_of(value_col),
-      names_prefix = name_prefix
-    )
-
-}
+# Uses the shared .odk_pivot_csv_wide()/.odk_pivot_wide() helpers -- see r/a_odk_pivot_csv_wide.R.
 
 odk_read_submissions_ra_field <- function(
     files = list.files("raw_data/survey_data/odk/rapid_assessment.csv", full.names = TRUE, recursive = TRUE)
@@ -103,16 +82,10 @@ odk_read_submissions_ra_field <- function(
       chew_raw <- dplyr::select(chew_raw, -chew_card_photo)
     }
 
-    chew_wide <- chew_raw |>
-      dplyr::group_by(PARENT_KEY) |>
-      dplyr::mutate(.row = dplyr::row_number()) |>
-      dplyr::ungroup() |>
-      tidyr::pivot_wider(
-        id_cols     = PARENT_KEY,
-        names_from  = .row,
-        values_from = chew_percent,
-        names_prefix = "chewcard_percent_"
-      )
+    # Pivots the already-loaded, photo-stripped data directly -- can't use the
+    # path-reading .odk_pivot_csv_wide() wrapper here since chew_raw needed
+    # the photo check/strip above first.
+    chew_wide <- .odk_pivot_wide(chew_raw, value_col = "chew_percent", name_prefix = "chewcard_percent_")
     submissions <- dplyr::left_join(submissions, chew_wide,
                                     by = c("KEY" = "PARENT_KEY"))
   }
