@@ -3,10 +3,6 @@
 # Date:   2026-05-21
 
 # TO-DO ------------------------------------------------------------------
-# attach_soil_type() is called with skip = TRUE below (paddocks_sf) -- its
-# raster extraction is far slower than it should be (see that function's
-# header). Fix the extraction, then remove skip = TRUE.
-#
 # data_traps_session_summary() resolves a pit-tagged individual with
 # conflicting sex records in one session to whichever sex was recorded
 # first (see that function's own header), and prints every such conflict --
@@ -324,7 +320,7 @@ tar_plan(
   # track hand-drawn paddock file (paddocks missing from epaddocks) so downstream targets re-run when it changes
   tar_file(paddocks_by_hand, "raw_data/predictor_variables/paddocks_by_hand/paddocks_by_hand.gpkg"),
 
-  # (i) Load ePaddock polygons proximal to survey sites (to save on computation); attach static spatial covariates extracted over each full polygon; 
+  # (i) Load ePaddock polygons proximal to survey sites (to save on computation); attach static spatial covariates extracted over each full polygon;
   paddocks_sf = load_paddocks(data_list_clean, custom_paddocks_path = paddocks_by_hand) |>
     # ae_zone — intersection join then snap unmatched systematic paddocks to nearest AEZ; MouseAlert-only paddocks outside the AEZ boundary are left as NA (not snapped).
     attach_aez(aez_adj, data_list = data_list_clean, snap_dist = 15000) |>
@@ -332,19 +328,24 @@ tar_plan(
     attach_cropping_system() |>
     # grdc_subregion — finer-grained zone; same intersection + snap logic as attach_aez()
     attach_grdc_subregion(grdc_subregion_adj, data_list = data_list_clean, snap_dist = 15000) |>
-    # soil_type — raster extraction (modal): 38% of paddocks span multiple soil types
-    # skip = TRUE: extraction is currently far slower than it should be (see attach_soil_type()'s header) -- TEMPORARY, see TO-DO above.
-    attach_soil_type(skip = TRUE) |>
     # state — polygon-over-polygon join (largest = TRUE): all paddocks fall within one state
     attach_state(aus_shp) |>
     # add centroid coordinates for each paddock polygon (for things downstream like attaching temporal covariates)
     paddock_centroids(),
 
+  # soil_type — raster extraction (modal): 38% of paddocks span multiple soil types. Deliberately kept OUT
+  # of the paddocks_sf pipe above and attached here instead, on its own separate target: soil_type is only
+  # ever read by data_metadata/export_with_metadata() below, never by study_area/paddock_month_grid/
+  # structured_survey_points or anything else in section B -- keeping it downstream of paddocks_sf means a
+  # soil_type-only change (e.g. a raster update) invalidates just this target and data_list_clean_paddocks
+  # below, not study_area and everything section B builds from it.
+  paddocks_sf_with_soil_type = attach_soil_type(paddocks_sf),
+
   # (ii) Match survey coordinates to paddock polygons and attach paddock covariates.
   # Returns a named list mirroring data_list_clean; rows that don't intersect or snap to a paddock (paddock_id is NA) are dropped, since downstream modelling requires paddock-linked covariates (ae_zone, soil_type, state, etc.).
   data_list_clean_paddocks = {
     # Spatial match runs once on unique coordinates; all paddock columns returned directly.
-    paddock_lookup <- match_surveys_to_paddocks(data_list_clean, paddocks_sf, snap_dist = 150)
+    paddock_lookup <- match_surveys_to_paddocks(data_list_clean, paddocks_sf_with_soil_type, snap_dist = 150)
     joined <- purrr::map(data_list_clean, ~ dplyr::left_join(.x, paddock_lookup, by = c("longitude", "latitude")) |>
                  dplyr::filter(!is.na(paddock_id)))
     # Collapse genuine duplicate (paddock_id, survey_date) rows so downstream

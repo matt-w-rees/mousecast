@@ -13,8 +13,11 @@
 # ae_zone are left NA.
 #
 # Call on paddocks_sf after attach_aez(), alongside attach_grdc_subregion()/
-# attach_soil_type()/attach_state() -- a plain lookup on the already-attached
-# ae_zone column, not a spatial join, so it just needs a mutate.
+# attach_state() -- a plain lookup on the already-attached ae_zone column,
+# not a spatial join, so it just needs a mutate. attach_soil_type() runs
+# separately, downstream of paddocks_sf (see _targets.R), not in this same
+# pipe -- kept apart so a soil_type-only change doesn't invalidate paddocks_sf
+# itself (and everything section B builds from it).
 attach_cropping_system <- function(data) {
 
   dual_zones <- aez_zone_info() |>

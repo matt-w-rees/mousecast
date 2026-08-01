@@ -30,7 +30,20 @@ group_raster_layers <- function(layer_names) {
     as.integer(sub("_.*", "", layer_names))
   } else if (all(grepl("^[A-Za-z]+-[0-9]+$", layer_names))) {
     sub("-.*", "", layer_names)
-  } else {
+  } else if (all(grepl("^[0-9]+$", layer_names))) {
     rep(1L, length(layer_names))
+  } else {
+    # A genuinely new/broken naming convention needs its own branch above,
+    # not a silent fallback -- an earlier version of this function pooled
+    # anything unrecognised into one shared group here, which would have
+    # silently mixed, e.g., Winter and Summer values into one baseline
+    # instead of failing loudly.
+    stop(
+      "group_raster_layers(): layer names don't match any known naming convention ",
+      "(\"<month>_<year>\", \"<Season>-<year_adj>\", or plain \"<year>\") -- got: ",
+      paste(utils::head(layer_names, 5), collapse = ", "),
+      if (length(layer_names) > 5) ", ..." else "",
+      ". Add a branch for this new convention rather than falling through."
+    )
   }
 }

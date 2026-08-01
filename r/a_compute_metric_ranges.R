@@ -1,3 +1,9 @@
+# Guards a max()/quantile() result against -Inf (max()/quantile() on an
+# empty or all-NA input) and 0 -- both would otherwise break a downstream
+# ratio/gradient/normalisation scale (e.g. divide-by-zero or NaN chart
+# values with no warning); falls back to 1 so that never happens.
+.safe_max <- function(v) if (!is.finite(v) || v == 0) 1 else v
+
 # Dataset-wide reference level for a metric: by default, the 95th percentile
 # of every individual record's value across the whole survey history (every
 # AE zone, all time). Used as the "1.0" anchor for activity_index and the
@@ -8,8 +14,7 @@
 # not extreme cases, the same for every zone (rather than each zone's own
 # typical level).
 pooled_percentile <- function(x, p = 0.95) {
-  v <- stats::quantile(x, probs = p, na.rm = TRUE, names = FALSE)
-  if (!is.finite(v) || v == 0) 1 else v
+  .safe_max(stats::quantile(x, probs = p, na.rm = TRUE, names = FALSE))
 }
 
 # Two ways of specifying one of compute_metric_ranges()'s index_max_*
@@ -35,14 +40,13 @@ index_max_percentile <- function(percentile) list(value = NULL, percentile = per
 # of aggregation to produce visible colour contrast. Guarded against -Inf
 # (all-NA dataset) so downstream palette calls don't crash.
 .aez_mean_max <- function(data, type, col) {
-  v <- max(
+  .safe_max(max(
     data |> dplyr::filter(data_type == type) |>
       dplyr::group_by(ae_zone) |>
       dplyr::summarise(v = mean(.data[[col]], na.rm = TRUE), .groups = "drop") |>
       dplyr::pull(v),
     na.rm = TRUE
-  )
-  if (!is.finite(v) || v == 0) 1 else v
+  ))
 }
 
 # Approximate calendar length (days) of each season — used to convert a
@@ -115,19 +119,21 @@ compute_metric_ranges <- function(surveys_all,
     gradient_max_result_traps  = .aez_mean_max(surveys_all, "traps", "result_traps"),
     gradient_max_result_burrow = .aez_mean_max(surveys_all, "rapid", "result_burrow"),
     gradient_max_chew_per10    = .aez_mean_max(surveys_all, "rapid", "chew_per10"),
-    gradient_max_avg_daily_high = local({
-      v <- max(
-        alert_season_rates |>
-          dplyr::group_by(ae_zone) |>
-          dplyr::summarise(v = mean(avg_daily_high), .groups = "drop") |>
-          dplyr::pull(v),
-        na.rm = TRUE
-      )
-      if (!is.finite(v) || v == 0) 1 else v
-    }),
+    gradient_max_avg_daily_high = .safe_max(max(
+      alert_season_rates |>
+        dplyr::group_by(ae_zone) |>
+        dplyr::summarise(v = mean(avg_daily_high), .groups = "drop") |>
+        dplyr::pull(v),
+      na.rm = TRUE
+    )),
 
-    trend_max_result_traps  = max(surveys_all$result_traps,  na.rm = TRUE),
-    trend_max_result_burrow = max(surveys_all$result_burrow, na.rm = TRUE),
-    trend_max_chew_per10    = max(surveys_all$chew_per10,    na.rm = TRUE)
+    # Filtered by data_type first, same as max_result_traps/max_result_burrow/
+    # max_chew_per10 above, rather than relying on result_traps/result_burrow/
+    # chew_per10 being NA outside their own data_type's rows -- and guarded
+    # against -Inf (all-NA within that data_type) the same way every other
+    # reference level in this function already is.
+    trend_max_result_traps  = .safe_max(max(dplyr::filter(surveys_all, data_type == "traps")$result_traps,   na.rm = TRUE)),
+    trend_max_result_burrow = .safe_max(max(dplyr::filter(surveys_all, data_type == "rapid")$result_burrow,  na.rm = TRUE)),
+    trend_max_chew_per10    = .safe_max(max(dplyr::filter(surveys_all, data_type == "rapid")$chew_per10,     na.rm = TRUE))
   )
 }

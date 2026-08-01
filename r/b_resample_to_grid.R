@@ -33,6 +33,20 @@
 
 resample_to_grid <- function(source, template, margin_deg = 0.5) {
 
+  # terra::resample() reprojects nothing -- it just maps source cells onto
+  # template's own grid coordinates -- so a genuine CRS mismatch here would
+  # silently misalign every cell rather than error. Both are expected to
+  # already be lon/lat WGS84 (this pipeline's convention throughout), so this
+  # should never actually fire; it's here so a future mismatch fails loudly
+  # instead of producing quietly-wrong covariate values.
+  if (!terra::same.crs(source, template)) {
+    stop(
+      "resample_to_grid(): source and template have different CRS (",
+      terra::crs(source, describe = TRUE)$name, " vs ", terra::crs(template, describe = TRUE)$name,
+      ") -- terra::resample() does not reproject, so this would silently misalign every cell."
+    )
+  }
+
   source_ext <- terra::ext(source)
   template_cropped <- terra::crop(template[[1]], terra::ext(
     source_ext$xmin - margin_deg, source_ext$xmax + margin_deg,

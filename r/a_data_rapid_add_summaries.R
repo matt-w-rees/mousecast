@@ -5,7 +5,9 @@
 #   burrow_transects_surveyed  number of transects searched (non-NA active_burrows_t*)
 #   burrow_total_count         total active burrows counted across all transects
 #   chewcards_deployed         number of chewcards deployed (non-NA chewcard_percent_*)
-#   chewcards_detected         number of chewcards with chew percentage > 1 (mouse presence)
+#   chewcards_detected         number of chewcards with chew percentage >= 1 (mouse presence) --
+#                              matches chew_per10's own >= 1 threshold (r/a_combine_survey_data.R),
+#                              so a card counted as "chewed" there is also counted as a detection here
 #
 # All four columns are 0 when no survey was conducted (never NA).
 
@@ -32,7 +34,7 @@ data_rapid_add_summaries <- function(data) {
       chewcards_detected = dplyr::if_else(
         chewcards_deployed == 0L,
         NA_integer_,
-        as.integer(rowSums(as.matrix(dplyr::pick(dplyr::all_of(chewcard_vars))) > 1, na.rm = TRUE))
+        as.integer(rowSums(as.matrix(dplyr::pick(dplyr::all_of(chewcard_vars))) >= 1, na.rm = TRUE))
       ),
 
       .after = "comments"

@@ -87,7 +87,11 @@ ingest_monitoring_access_database <- function(access_monitoring, exclude_subsite
   tblCropStageID       <- rename(tblCropStageID, CropStageOld = CropStage, CropStage = CropStageID)
   tblSessionIDSouth    <- rename(tblSessionIDSouth, Session = SessionID)
   
-  base_south <- left_join(tbl1SiteDataSouth[,1:6], # need to subset this to remove the higher / broader level (farm) coordinates in south data only
+  base_south <- left_join(
+                          # Drop Contact.Name/Comments (not used downstream) -- named select, not a
+                          # positional [,1:6] slice, so this doesn't silently change if the Access
+                          # table's own column order or count ever changes.
+                          select(tbl1SiteDataSouth, SiteDataID, State, AreaName, NearestTown, SiteName, FarmerName),
                           tbl2SessionSouth, by = "SiteDataID") %>%
     left_join(tblSessionIDSouth, by = "Session") %>%
     left_join(tblDataSiteNameID, by = "DataSiteName") %>%
