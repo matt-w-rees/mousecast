@@ -41,7 +41,15 @@ clean_data_odk_rapid <- function(data_field, data_office){
   cleaned <- combined |>
     transmute(
       data_source = "odk",
-      project = if_else(submitter_name == "GRDC" | organisation == "GRDC" | organisation == "grdc", "GRDC_permit", "CSIRO_monitoring"),
+      # Case-insensitive across both fields (was exact-case for submitter_name),
+      # with an added "nsw dpird" branch and a TRUE catch-all so this can never
+      # leak NA when both fields are missing -- matching clean_data_odk_traps()'s
+      # own project classification, which already had all three.
+      project = dplyr::case_when(
+        tolower(submitter_name) == "grdc" | tolower(organisation) == "grdc" ~ "GRDC_permit",
+        tolower(organisation) == "nsw dpird" ~ "dpird",
+        TRUE ~ "CSIRO_monitoring"
+      ),
       longitude,
       latitude,
       farmer,

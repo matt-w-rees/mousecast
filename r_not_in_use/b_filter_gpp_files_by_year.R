@@ -1,3 +1,9 @@
+# SUPERSEDED (2026-08) -- kept here for reference, no longer called from
+# _targets.R. Its one use (restricting GF/NGF files down to "correction
+# years" before building a monthly raster from them) is no longer needed --
+# see r/b_find_gf_nongf_correction_years.R's own header for the replacement
+# design (a full-range raster + intersect(), not a pre-filtered file list).
+#
 # Restrict a vector of downloaded GPP composite file paths (download_gpp()/download_gpp_block()'s
 # own output) to whichever ones fall in a given set of calendar years, parsed from each file's own
 # "doy<YYYY><DDD>" AppEEARS filename token.

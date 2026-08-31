@@ -56,7 +56,7 @@ combine_survey_data <- function(data_list_clean_paddocks) {
       },
       chew_per10 = {
         # Count cards with >= 1% chew and express as a rate per 10 cards --
-        # matches chewcards_detected's own >= 1 threshold (r/a_data_rapid_add_summaries.R),
+        # matches chewcards_detected's own >= 1 threshold (r/a_data_rapid_session_summary.R),
         # so a card counted here is also counted as a detection there; keep both in sync.
         cards   <- dplyr::pick(dplyr::starts_with("chewcard_percent_"))
         n_chew  <- rowSums(cards >= 1, na.rm = TRUE)

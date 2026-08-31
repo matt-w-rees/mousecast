@@ -6,9 +6,13 @@
 # combined row.
 #
 # If the crop variables differ, the rows are treated as conflicting/duplicate
-# entries for the same paddock-day - only the row with the highest value_col
-# (ties broken by chewcards_detected for rapid data) is kept and the rest are
-# dropped.
+# entries for the same paddock-day - only one row is kept and the rest are
+# dropped:
+#   - traps: the row with the highest value_col (ties -> NA treated as -Inf,
+#     so a real 0 always outranks a missing count)
+#   - rapid: NOT simply the highest value_col -- ranked by strongest evidence
+#     of mouse activity instead (detected > 0 first, then burrow count, then
+#     chewcard count -- see the inline comment below for why)
 resolve_duplicate_group <- function(group, crop_cols, sum_cols, value_col, survey_type) {
 
   same_crop <- all(vapply(crop_cols, function(col) dplyr::n_distinct(group[[col]]) == 1, logical(1)))
@@ -29,7 +33,7 @@ resolve_duplicate_group <- function(group, crop_cols, sum_cols, value_col, surve
 
     if (survey_type == "rapid") {
       # Restore the "zero transects/cards surveyed -> NA count" convention
-      # (see data_rapid_add_summaries.R), which sum()-ing two NA totals would
+      # (see data_rapid_session_summary.R), which sum()-ing two NA totals would
       # otherwise turn into 0.
       combined <- combined |>
         dplyr::mutate(

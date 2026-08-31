@@ -13,17 +13,27 @@
 # so earliest_year lets this be scoped down deliberately instead (this
 # pipeline currently requests from 1980, ~20 GB).
 #
-# National coverage, no ROI/study_area needed: each year's file already
+# National coverage, no ROI/covariate_download_region needed: each year's file already
 # covers the whole continent regardless of which paddocks are surveyed, so
 # there's no equivalent to download_gpp()'s tile-touching cost tradeoff.
 #
 # Incremental, but only ever by whole calendar year, not by day: a past
 # (fully elapsed) year's file never changes once published, so it's only
 # downloaded if missing. The current calendar year's file DOES change daily
-# as SILO appends new days, so it's always re-downloaded -- skipping it just
-# because a partial-year file already exists would silently freeze that
-# year's data at whatever day it was first downloaded, on every subsequent
-# tar_make() for the rest of the year.
+# as SILO appends new days, so it needs periodic re-fetching -- skipping it
+# forever once a partial-year file exists would silently freeze that year's
+# data at whatever day it was first downloaded.
+#
+# refresh_after controls how often, though (2026-08, see its own argument
+# note below): re-downloading this ~420 MB file on every single tar_make()
+# call -- even several times the same day -- was pure waste, since nothing
+# downstream (min_temp_year_blocks/min_temp_raster_block, both gated on
+# _targets.R's own latest_complete_season_end) reprocesses more often than
+# once a season completes anyway. Refreshing the current year's file at that
+# same seasonal cadence still satisfies the original "don't silently freeze"
+# goal -- the file gets refreshed at least once per season -- while cutting
+# out the many same-season reruns that were paying the download cost for no
+# reason.
 #
 # Arguments:
 #   data           data frame with a year_adj column (e.g. paddock_month_grid)
@@ -46,20 +56,34 @@
 #                  changes paddock_month_grid's own year range
 #   variables      SILO variable names to download (validated against
 #                  valid_vars below)
+#   refresh_after  the current year's file is re-downloaded only if it's
+#                  missing, or its own mtime is older than this date -- pass
+#                  _targets.R's own latest_complete_season_end to refresh at
+#                  most once per completed season (see header). NULL
+#                  (default) always re-downloads the current year, the
+#                  original every-call behaviour -- kept as the default
+#                  since this function has only ever had one caller
+#                  (min_temp) so far, but a future caller needing genuinely
+#                  daily freshness shouldn't have to fight this argument
 #   out_dir        folder the downloaded files are written into
 #
-# Returns every downloaded file path for the requested variables (for
-# tar_file() tracking) -- scoped to variables' own subfolders, not out_dir's
-# whole tree, so this never returns (and so never has tar_file() validate)
-# a file belonging to a different variable or a different download function
-# entirely (e.g. download_silo_monthly_data()'s monthly_rain/, which shares this same
-# parent out_dir) -- confirmed live: a concurrent sibling download refreshing
-# its own current-month file mid-write, while unrelated to this call, was
-# enough to fail this target's file-existence check under the old
+# Returns exactly the file paths for this call's own requested years x
+# variables (for tar_file() tracking), not variables' whole subfolders --
+# scoped this tightly so a caller can branch this function per year-block
+# (e.g. _targets.R's silo_daily_files_min_temp) and have each branch's
+# return value depend only on its own block's files, not every file ever
+# downloaded for that variable (which would defeat branching entirely, see
+# the function body's own note on this). This also means it never returns
+# (and so never has tar_file() validate) a file belonging to a different
+# variable or a different download function entirely (e.g.
+# download_silo_monthly_data()'s monthly_rain/, which shares this same
+# parent out_dir) -- confirmed live: a concurrent sibling download
+# refreshing its own current-month file mid-write, while unrelated to this
+# call, was enough to fail this target's file-existence check under the old
 # whole-tree list.files().
 
 download_silo_daily_data <- function(data, lag_years = 1, earliest_year = NULL, latest_year = NULL, variables,
-                                      out_dir = "raw_data/predictor_variables/silo_data") {
+                                      refresh_after = NULL, out_dir = "raw_data/predictor_variables/silo_data") {
 
   # All valid annual SILO NetCDF variables (explicitly listed, rather than
   # trusting whatever string is passed, since a typo'd variable name would
@@ -116,10 +140,18 @@ download_silo_daily_data <- function(data, lag_years = 1, earliest_year = NULL, 
       dest_path <- file.path(var_dir, file_name)
       url <- paste0(base_url, "/", var, "/", file_name)
 
-      # Only the current (still-accumulating) year is re-fetched every call --
-      # see header note on why a past year's file, once present, never needs
-      # touching again.
-      if (year_x == current_year || !file.exists(dest_path)) {
+      # A past year's file, once present, never needs touching again. The
+      # current (still-accumulating) year is missing -> always fetched; if
+      # present, only re-fetched once its own mtime predates refresh_after
+      # (NULL -- the default -- means every call, the original behaviour).
+      needs_refresh <- if (year_x == current_year) {
+        !file.exists(dest_path) || is.null(refresh_after) ||
+          file.mtime(dest_path) < as.Date(refresh_after)
+      } else {
+        !file.exists(dest_path)
+      }
+
+      if (needs_refresh) {
         result <- tryCatch(
           download.file(url = url, destfile = dest_path, method = "auto",
                         quiet = TRUE, mode = "wb", cacheOK = TRUE),
@@ -145,5 +177,18 @@ download_silo_daily_data <- function(data, lag_years = 1, earliest_year = NULL, 
     }
   }
 
-  list.files(file.path(out_dir, variables), full.names = TRUE, recursive = TRUE)
+  # Scoped to exactly the requested years/variables, not the whole out_dir
+  # (2026-08 fix -- see header): the old list.files(out_dir, recursive=TRUE)
+  # returned every file ever downloaded for these variables regardless of
+  # what this particular call actually requested, which silently defeated
+  # any attempt to branch this function per year-block (every branch would
+  # have returned the same whole-directory listing, so targets would treat
+  # every branch as changed whenever any one file changed -- exactly the
+  # "every block invalidates" problem r/b_build_year_blocks.R's header
+  # describes). filter to file.exists() so a silently-skipped current-year
+  # failure (see above) doesn't return a path with nothing behind it.
+  expected_paths <- unlist(lapply(variables, function(var) {
+    file.path(out_dir, var, paste0(years, ".", var, ".nc"))
+  }))
+  expected_paths[file.exists(expected_paths)]
 }

@@ -2,7 +2,7 @@
 # Reformats columns to match the new CSV format (used from 2026 onwards) so that
 # old and new data can be combined with bind_rows().
 # Does NOT compute summary statistics — that is done downstream by
-# data_rapid_add_summaries(), once this is bound with the other rapid sources.
+# data_rapid_session_summary(), once this is bound with the other rapid sources.
 
 clean_data_access_monitoring_rapid <- function(data) {
 
@@ -89,22 +89,8 @@ clean_data_access_monitoring_rapid <- function(data) {
     # identity was recorded use "noname1", "noname2", etc. as stand-ins.
     dplyr::filter(!grepl("noname", farmer, ignore.case = TRUE))
 
-  # Flag distinct subsites sharing identical coordinates — likely a data-entry
-  # error in the Access database's site reference table (e.g. multiple
-  # transects at one site recorded with a single site-level coordinate
-  # instead of per-subsite coordinates), which causes downstream joins on
-  # (longitude, latitude) to merge those subsites into one paddock.
-  dup_coords <- cleaned |>
-    dplyr::distinct(longitude, latitude, site_name, subsite_name) |>
-    dplyr::group_by(longitude, latitude) |>
-    dplyr::filter(dplyr::n_distinct(subsite_name) > 1) |>
-    dplyr::ungroup() |>
-    dplyr::arrange(longitude, latitude, subsite_name)
-
-  if (nrow(dup_coords) > 0) {
-    message("clean_data_access_monitoring_rapid(): subsites sharing identical coordinates:")
-    print(dup_coords, n = Inf)
-  }
+  # See r/a_flag_duplicate_subsite_coordinates.R for why this matters.
+  .flag_duplicate_subsite_coordinates(cleaned, "clean_data_access_monitoring_rapid")
 
   cleaned
 }

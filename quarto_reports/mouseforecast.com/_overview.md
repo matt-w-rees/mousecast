@@ -1,4 +1,4 @@
-+ [Western Australia]{.underline}: [**A mouse plague is under way in the Northern (Geraldton) zone**.]{style="color: red;"}
++ [Western Australia]{.underline}: [**A mouse plague is under way in the Northern (Geraldton) zone. Mouse damage is currently being reported for early maturing crops**.]{style="color: red;"}
 Mouse activity east from Fitzgerald in the Sandplain (Esperance) zone is also at concerning levels.
 Eastern (Kwinana East) and Central (Kwinana West) zones have overall low mouse activity, but growers here should remain vigilant as there are some patches with higher activity.
 

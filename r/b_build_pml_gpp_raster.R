@@ -7,7 +7,7 @@
 #
 # Unit conversion: PML's monthly files report the MONTH'S TOTAL GPP
 # (gC/m^2/month, confirmed live via terra::units()) -- this pipeline's own
-# GPP (build_seasonal_gpp_raster()'s period mean of 8-day composites) is a
+# GPP (build_gpp_period_raster()'s period mean of 8-day composites) is a
 # MEAN DAILY RATE (gC/m^2/day). Dividing each layer by its own days-in-month
 # converts PML to the same mean-daily-rate convention, making the two
 # directly comparable/subtractable rather than off by each month's length.

@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-08-01 18:29:46
+Generated: 2026-08-11 16:24:40
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -147,12 +147,6 @@ grdc_subregion
   Values:      e.g., Central West NSW, Yorke Peninsula
   Source:      Polygon-over-polygon join (or nearest-subregion snap) with GRDC subregion layer in attach_grdc_subregion()
 
-soil_type
-  Description: Dominant Australian Soil Classification within the paddock polygon
-  Type:        Character
-  Values:      ASC order codes (e.g., Chromosol, Vertosol)
-  Source:      Modal raster extraction (terra::extract) in attach_soil_type(); 38% of paddocks span multiple types
-
 state
   Description: Australian state the paddock falls within
   Type:        Character
@@ -170,6 +164,12 @@ latitude_paddock
   Type:        Numeric
   Values:      Decimal degrees (EPSG:4326)
   Source:      Computed from polygon centroid in EPSG:3577 then reprojected; see paddock_centroids()
+
+soil_type
+  Description: Dominant Australian Soil Classification within the paddock polygon
+  Type:        Character
+  Values:      ASC order codes (e.g., Chromosol, Vertosol)
+  Source:      Modal raster extraction (terra::extract) in attach_soil_type(); 38% of paddocks span multiple types
 
 snap_type
   Description: How the survey point was matched to its paddock polygon
@@ -189,7 +189,7 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 3072
+  Number of rows: 3096
   Number of columns: 44
 
 UNIQUE VARIABLES (specific to traps dataset):
@@ -323,8 +323,8 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3840
-  Number of columns: 84
+  Number of rows: 3845
+  Number of columns: 92
 
 UNIQUE VARIABLES (specific to rapid dataset):
 ----------------------------------------------------------------------------
@@ -394,6 +394,30 @@ chewcards_detected
   Type:        Integer
   Values:      0 to chewcards_deployed
   Source:      Count of chewcard_percent_N columns where value > 0
+
+chewcards_detected_first10
+  Description: [not yet documented]
+
+chewcards_deployed_block2
+  Description: [not yet documented]
+
+chewcards_deployed_block3
+  Description: [not yet documented]
+
+chewcards_deployed_block4
+  Description: [not yet documented]
+
+chewcards_detected_block2
+  Description: [not yet documented]
+
+chewcards_detected_block3
+  Description: [not yet documented]
+
+chewcards_detected_block4
+  Description: [not yet documented]
+
+chewcards_any_detected
+  Description: [not yet documented]
 
 ground_cover_percent
   Description: Standardized percent ground cover by vegetation
@@ -481,7 +505,7 @@ recoverable depending on which marking method (pit tag vs ear mark vs none)
 was used for a given capture.
 
 DATA STRUCTURE:
-  Number of rows: 28908
+  Number of rows: 28982
   Number of columns: 28
 
 VARIABLES (specific to individual_captures; join keys shared with traps

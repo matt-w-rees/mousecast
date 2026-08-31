@@ -1,3 +1,9 @@
+# No longer used in the pipeline -- rainfall's fixed Apr-Oct growing-season window
+# (rain_winter_window_raster, _targets.R) was removed since the model steps at a genuinely seasonal
+# grain and rain_seasonal/rain_rolling6/rain_rolling12 already cover the same "how was the growing
+# season" signal at that grain, unlike this fixed once-a-year value broadcast across all 4 seasons.
+# Kept here (not deleted) in case a fixed-calendar-window covariate is wanted again later.
+#
 # Collapse a monthly covariate stack (e.g. the coarsened rain raster this
 # pipeline builds -- see _targets.R's rainfall section) to one sum per year
 # over a fixed calendar window -- a general version of the

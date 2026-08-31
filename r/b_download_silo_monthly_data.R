@@ -54,8 +54,8 @@ download_silo_monthly_data <- function(data, lag_years = 1, earliest_year = 1889
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
   today               <- Sys.Date()
-  current_year_month  <- format(today, "%Y%m")
-  start_year          <- min(earliest_year, min(data$year_adj) - lag_years)
+  current_year_month  <- format(today, "%Y%m")                              # this month, re-fetched every call (see header)
+  start_year          <- min(earliest_year, min(data$year_adj) - lag_years) # earliest_year, unless data somehow starts earlier
   year_months <- format(
     seq(as.Date(paste0(start_year, "-01-01")), today, by = "1 month"),
     "%Y%m"

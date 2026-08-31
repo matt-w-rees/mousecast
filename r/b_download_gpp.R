@@ -89,9 +89,24 @@ gpp_file_readable <- function(path) {
 # test and appeears:::appeears_service$download()'s own final_path
 # construction (path/<task_name>/, where task_name is this pipeline's
 # job_name) -- so a recovered file lands exactly where
-# build_seasonal_gpp_raster() etc. already expect to find it, not in a
+# build_gpp_period_raster() etc. already expect to find it, not in a
 # second, separate location the way rs_transfer() does (it writes flat into
 # whatever `path` it's given, ignoring the task-name subfolder entirely).
+#
+# already_have below only scans dest_dir itself, NOT the wider out_dir a
+# bundle's files might duplicate -- deliberately (download_gpp()'s own retry
+# loop calls this repeatedly against the SAME dest_dir, where that scope is
+# exactly right). A fresh, standalone dest_dir (e.g. hand-recovering an
+# orphaned task per the stop()-message instructions below) loses that
+# protection: AppEEARS' own bundle can legitimately span far more dates than
+# were actually missing (see gpp_group_contiguous_dates()'s own header, "one
+# task, multiple date sub-ranges" doesn't reliably stop it delivering the
+# full bounding range), so a manual call here can genuinely re-fetch files
+# that already exist elsewhere in out_dir (confirmed live, 2026-08: a
+# standalone recovery call re-downloaded 15+ already-present MODIS
+# composites this way). ALWAYS follow a manual call to this function with
+# gpp_remove_redundant_files(out_dir, dest_dir) -- download_gpp() itself
+# always pairs the two (see its own step 5 comment) for exactly this reason.
 #
 # Arguments:
 #   task_id         AppEEARS task ID (must already be status "done")
@@ -149,6 +164,22 @@ gpp_fetch_missing_bundle_files <- function(task_id, earthdata_user, dest_dir) {
 # live this session: a handful of scattered gaps in an otherwise-complete
 # historic MODIS record turned into a single, ~10.8GB bounding-range
 # request that re-fetched most of an already-downloaded year alongside them.
+#
+# This narrows the REQUEST (task_df below gets one tight {start, end} row
+# per run); it does NOT reliably narrow what AppEEARS actually DELIVERS.
+# Confirmed live again, 2026-08: two tight, well-separated runs (a 6-date
+# Jan-Feb 2000 gap and a 2-date June 2001 gap, over a year apart) submitted
+# as two separate date rows under one task still came back as a single
+# 69-file bundle spanning the ENTIRE 17 months between them, not just the 8
+# genuinely missing dates -- so AppEEARS' own area-request processing
+# appears to collapse a task's multiple date sub-ranges down to their outer
+# bounding range server-side, regardless of what the submitted request.json
+# itself contains. This is accepted as a platform limitation, not fixed by
+# submitting one task per run (which would just multiply server-side
+# processing time for a rare case) -- download_gpp()'s own post-fetch
+# gpp_remove_redundant_files() call is what actually keeps this from
+# polluting out_dir with duplicates; see that function's header.
+#
 # Returns a list of Date vectors, one per run (a single run, unchanged from
 # before, when the whole gap is genuinely one contiguous stretch).
 gpp_group_contiguous_dates <- function(dates, step_days = 8) {
@@ -171,7 +202,7 @@ gpp_group_contiguous_dates <- function(dates, step_days = 8) {
 # recheck_after_days), even though an identical copy from an earlier run is
 # already sitting right there -- confirmed directly: the same file
 # duplicated across two dated subfolders two days apart, purely from this.
-# Keeps the OLDER copy (already correctly read by build_seasonal_gpp_raster(),
+# Keeps the OLDER copy (already correctly read by build_gpp_period_raster(),
 # which merges same-date files across folders anyway -- see its own header),
 # deletes the redundant new one, so disk usage doesn't keep growing on every
 # recheck for however many months the real gap stays open.
@@ -210,6 +241,23 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 # (r/b_download_gpp_block.R), which derives start_date/end_date/out_dir from
 # each block and calls this function underneath.
 #
+# Why _targets.R hands off from MODIS to VIIRS specifically at 2011/2012 (not
+# some other year, and not by continuing to pull both indefinitely): VIIRS is
+# NASA's own designated operational continuation of MODIS, not just a second
+# independent product that happens to measure the same thing (see
+# build_gpp_period_raster()'s own header on the two sharing an identical
+# spec) -- and MOD17A2HGF.061 is not indefinitely available: NASA's own
+# guidance (an Earthdata/NSIDC alert, May 2025) has the Terra and Aqua
+# platforms carrying MODIS beginning to shut down in late 2026/early 2027,
+# after which MODIS data collection ends and a final reprocessing takes
+# place, with users actively encouraged to transition to the equivalent
+# VIIRS products. This pipeline's 2012 handoff already anticipates that
+# transition rather than reacting to it -- MOD17A2HGF.061 was still
+# confirmed live as "2000-01-01+" (open-ended, not yet retired) at the time
+# this was written, so treat "still collecting data today" as likely-but-
+# unconfirmed for any specific date; check NASA's own MODIS status page
+# directly if a render needs certainty on exactly when it stopped.
+#
 # One-off setup (run interactively in the console -- NEVER hard-code a
 # password in a script): store an Earthdata Login username/password in the
 # OS keychain via the "keyring" package (used internally by appeears):
@@ -217,12 +265,12 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 # download_gpp() then only needs the username; rs_login() reads the
 # password back out of the keychain itself.
 #
-# `roi` is the pipeline's shared study_area target (r/b_build_study_area.R) --
+# `roi` is the pipeline's shared covariate_download_region target (r/b_build_study_area.R) --
 # already buffered and dissolved to one polygon, so a region always means the
 # same physical area whichever product's request it comes from. VIIRS/MODIS
 # are delivered on the same ~10x10 degree sinusoidal tile grid, and an area
 # request has to server-side mosaic every tile its polygon touches --
-# restricting the outline to wherever study_area actually points (rather than
+# restricting the outline to wherever covariate_download_region actually points (rather than
 # the full national GRDC layer, which spans the whole grainbelt coast-to-
 # coast) keeps the number of tiles touched, and so the download size, well
 # down.
@@ -235,16 +283,16 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 #    previous run was interrupted, or this is just today's new composite),
 #    only the [min, max] span of the missing dates is requested -- not the
 #    full start_date/end_date range.
-#  - Spatial: study_area can grow between runs (e.g. widening from a small
+#  - Spatial: covariate_download_region can grow between runs (e.g. widening from a small
 #    test area to the full national selection, see build_study_area()'s
 #    header). A sidecar file (out_dir/study_area.gpkg, not a .tif so
-#    build_seasonal_gpp_raster()'s Gpp_500m.*\.tif$ filter ignores it)
+#    build_gpp_period_raster()'s Gpp_500m.*\.tif$ filter ignores it)
 #    remembers the ROI actually used for out_dir's last download. If `roi`
 #    has grown beyond it, only the newly-uncovered area is requested (into a
 #    dated out_dir/expansion_* subfolder, so its same-named
 #    "..._aid0001.tif" outputs don't collide with the original download's) --
-#    composites already covering the rest of study_area are reused, not
-#    re-fetched. build_seasonal_gpp_raster() already mosaics same-date files
+#    composites already covering the rest of covariate_download_region are reused, not
+#    re-fetched. build_gpp_period_raster() already mosaics same-date files
 #    from different subfolders together (originally written to handle a
 #    west/east regional split, since retired -- see that function's header),
 #    so no changes were needed there to consume an expansion_* subfolder.
@@ -253,7 +301,7 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 # tar_make() on every run.
 #
 # Arguments:
-#   roi                    sf polygon object -- the pipeline's study_area
+#   roi                    sf polygon object -- the pipeline's covariate_download_region
 #                          target (build_study_area(), r/b_build_study_area.R)
 #   out_dir                folder the downloaded rasters are written into
 #   earthdata_user         Earthdata Login username (password comes from the
@@ -338,7 +386,7 @@ download_gpp <- function(roi,
   # AppEEARS rejects roi's raw (unrounded) coordinate precision -- see gpp_round_roi_precision()'s header.
   roi <- sf::st_make_valid(gpp_round_roi_precision(roi))
 
-  # ── 1. Spatial check: has study_area grown since out_dir's last download? ─
+  # ── 1. Spatial check: has covariate_download_region grown since out_dir's last download? ─
   # See header note above. request_dir/request_roi default to the ordinary
   # whole-out_dir case and are narrowed only if a sidecar exists and roi has
   # genuinely grown beyond it.
@@ -372,16 +420,16 @@ download_gpp <- function(roi,
     # < 25 km^2 treated as floating-point/topology noise from repeated
     # buffer/union operations, not a genuine expansion -- empirically, a pure
     # subset (roi unchanged or shrunk) still leaves a few km^2 of sliver
-    # along the boundary (observed ~2.9 km^2 for a study_area the size of
+    # along the boundary (observed ~2.9 km^2 for a covariate_download_region the size of
     # this pipeline's full default selection), so the cutoff needs headroom
     # above that, not just above zero. Comfortably smaller than any real
     # single-subregion/AEZ addition (the smallest, Yorke Peninsula, is
     # ~19,000 km^2 including its buffer).
     if (uncovered_km2 >= 25) {
       message(
-        "study_area has grown by ~", round(uncovered_km2), " km^2 beyond ", out_dir,
+        "covariate_download_region has grown by ~", round(uncovered_km2), " km^2 beyond ", out_dir,
         "'s previously downloaded extent -- requesting just the new area ",
-        "(composites already covering the rest of study_area are reused, not re-downloaded)."
+        "(composites already covering the rest of covariate_download_region are reused, not re-downloaded)."
       )
       # st_difference() output needs the same precision rounding as roi itself -- see gpp_round_roi_precision()'s header.
       request_roi <- sf::st_make_valid(gpp_round_roi_precision(sf::st_make_valid(sf::st_sf(geometry = uncovered))))
@@ -392,7 +440,7 @@ download_gpp <- function(roi,
 
   # ── 2. Temporal check, scoped to request_dir (see header note) ───────────
   # request_dir is exactly the area request_roi covers -- out_dir itself when
-  # study_area hasn't grown, or a fresh (and so empty) expansion_* subfolder
+  # covariate_download_region hasn't grown, or a fresh (and so empty) expansion_* subfolder
   # when it has -- so this is never confused by a subfolder covering a
   # different area to the one about to be requested.
   missing_dates <- setdiff(
@@ -495,11 +543,13 @@ download_gpp <- function(roi,
   # One row per requested layer per missing_runs entry (rs_build_task()
   # supports multiple subtasks/date-ranges under the same task/subtask name
   # -- confirmed live via a real submitted task's own request.json, which
-  # stores "dates" as a list of {startDate, endDate} objects) -- so a request
-  # with several scattered gaps submits one tight range per gap instead of
-  # one wide range spanning all of them. latitude/longitude are left NA
-  # since request_roi (a polygon) takes precedence over point coordinates
-  # for area requests.
+  # stores "dates" as a list of {startDate, endDate} objects), so the
+  # REQUEST itself is always scoped tightly, one row per gap -- but AppEEARS
+  # doesn't reliably honour that server-side; see gpp_group_contiguous_dates()'s
+  # own header for the confirmed bounding-range delivery behaviour and why
+  # gpp_remove_redundant_files() (step 5 below) is what actually matters here.
+  # latitude/longitude are left NA since request_roi (a polygon) takes
+  # precedence over point coordinates for area requests.
   if (is.null(result)) {
 
   task_df <- do.call(rbind, lapply(missing_runs, function(run) {
@@ -644,7 +694,9 @@ download_gpp <- function(roi,
         if (!is.null(task_id)) paste0(
           "The task (", task_id, ") may still be recoverable manually:\n",
           "  gpp_fetch_missing_bundle_files(task_id = \"", task_id, "\", earthdata_user = \"", earthdata_user,
-          "\", dest_dir = \"", file.path(request_dir, job_name), "\")\n"
+          "\", dest_dir = \"", file.path(request_dir, job_name), "\")\n",
+          "  gpp_remove_redundant_files(\"", request_dir, "\", \"", file.path(request_dir, job_name), "\") ",
+          "# the bundle can span more than the genuine gap -- see gpp_group_contiguous_dates()'s header\n"
         ) else paste0(
           "Check appeears::rs_list_task(user = \"", earthdata_user,
           "\") for a task named \"", job_name, "\".\n"
@@ -662,6 +714,8 @@ download_gpp <- function(roi,
       earthdata_user, "\") shows it as done, fetch it directly (no need to resubmit):\n",
       "  gpp_fetch_missing_bundle_files(task_id = \"", result$get_task_id(), "\", earthdata_user = \"",
       earthdata_user, "\", dest_dir = \"", file.path(request_dir, job_name), "\")\n",
+      "  gpp_remove_redundant_files(\"", request_dir, "\", \"", file.path(request_dir, job_name), "\") ",
+      "# the bundle can span more than the genuine gap -- see gpp_group_contiguous_dates()'s header\n",
       "then targets::tar_invalidate() on the corresponding gpp_files_* target before ",
       "the next tar_make(), since it would otherwise be (wrongly) cached as already up to date."
     )

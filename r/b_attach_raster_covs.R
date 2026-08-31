@@ -5,21 +5,25 @@
 #
 # period_col names whichever column in `data` identifies each row's period,
 # matched as a string against names(raster) -- both must agree on the same
-# convention for a given call. Four shapes are actually in use across this
-# pipeline's covariates (see paddock_season_grid's own columns):
+# convention for a given call. Four shapes are supported (see paddock_season_grid's
+# own columns), though only the middle two are actually in use across this
+# pipeline's covariates right now:
 #   - "month_year" ("<month>_<year>", e.g. "7_2026") -- one raster layer per
 #     calendar month, matched 1:1.
 #   - "season_end_month_year" -- same "<month>_<year>" shape, but naming that
 #     season's own last calendar month (build_paddock_season_grid()'s
 #     lookup) -- used to read a monthly-grain raster (e.g. GPP's rolling
 #     average, soil moisture) once per season rather than once per month.
-#   - "year_adj" -- a once-a-year raster (one layer per plain "<year>",
-#     e.g. the fixed-window rainfall total), broadcast across every season
-#     of that year_adj cycle -- terra::extract()'s layer = argument already
-#     supports many rows mapping to the same layer, no special-casing needed.
 #   - "season_year_adj" -- a raster that already has a real value per season
 #     (one layer per "<Season>-<year_adj>", e.g. min_temp's seasonal mean,
 #     rainfall's own per-season total), matched 1:1, no broadcasting needed.
+#   - "year_adj" -- a once-a-year raster (one layer per plain "<year>"),
+#     broadcast across every season of that year_adj cycle -- terra::extract()'s
+#     layer = argument already supports many rows mapping to the same layer,
+#     no special-casing needed. Not currently used by any covariate (rainfall's
+#     former fixed-window total was the one user, since removed -- see
+#     r_not_in_use/b_build_seasonal_window_raster.R), but kept as a supported
+#     shape for any future once-a-year covariate.
 #
 # Point extraction only, no focal (moving-window) smoothing -- appropriate
 # for coarse (SILO/AWRA/PML-grid, ~5-10 km) rasters where a single pixel

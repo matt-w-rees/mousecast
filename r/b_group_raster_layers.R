@@ -8,7 +8,7 @@
 #   - "<month>_<year>" (e.g. "7_2026", attach_time_variables()'s convention,
 #     the coarsened rain/soil_moisture/GPP monthly stacks) -> grouped by
 #     calendar month (1-12), so each month is compared across its own years.
-#   - "<Season>-<year_adj>" (e.g. "Winter-2026", build_seasonal_gpp_raster()/
+#   - "<Season>-<year_adj>" (e.g. "Winter-2026", build_gpp_period_raster()/
 #     build_seasonal_raster()'s convention, e.g. rain_seasonal_raster) ->
 #     grouped by season name, so each season is compared across its own
 #     years (NOT lumped together -- a Winter rainfall total and a Summer one
@@ -27,11 +27,11 @@
 group_raster_layers <- function(layer_names) {
 
   if (all(grepl("^[0-9]+_[0-9]+$", layer_names))) {
-    as.integer(sub("_.*", "", layer_names))
+    as.integer(sub("_.*", "", layer_names))     # "<month>_<year>" -> group by calendar month (1-12)
   } else if (all(grepl("^[A-Za-z]+-[0-9]+$", layer_names))) {
-    sub("-.*", "", layer_names)
+    sub("-.*", "", layer_names)                 # "<Season>-<year_adj>" -> group by season name
   } else if (all(grepl("^[0-9]+$", layer_names))) {
-    rep(1L, length(layer_names))
+    rep(1L, length(layer_names))                # plain "<year>" -> already one value/cycle each, one shared group
   } else {
     # A genuinely new/broken naming convention needs its own branch above,
     # not a silent fallback -- an earlier version of this function pooled

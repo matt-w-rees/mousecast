@@ -119,29 +119,56 @@ pal_aez_pct <- leaflet::colorNumeric(
 marker_col <- "#555555"
 
 # ── Per-AEZ detection stats ──────────────────────────────────────────────────
-# Restricted to traps/rapid: these are the systematically-monitored paddock
-# networks. MouseAlert observations are mostly one-off citizen reports at sites
-# never otherwise surveyed (871 of 956 observation paddocks have no traps/rapid
-# history) — pooling them in would massively inflate the denominator and distort
-# the detection rate (e.g. SA Vic Bordertown-Wimmera goes from 93% on 15 sites
-# to 55% on 62 sites). MouseAlert gets its own metric: compute_mouse_alert_by_aez().
+# pct_detected itself is restricted to rapid assessment only -- both
+# live-trapping and MouseAlert are excluded from it:
+#   - Live-trapping is a far more sensitive detection method (checked over
+#     multiple nights, actively removing/marking animals) and is very likely
+#     to catch at least one mouse whenever any are present, so pooling it into
+#     a presence/absence rate distorts it toward 100% wherever trapping
+#     dominates the underlying data -- visible directly in the historic
+#     live-trap sources (Walpeup, Coleambally), both digitized from records
+#     that only ever logged an eventful trap-check, so every surviving
+#     session shows a detection by construction (see
+#     r/a_clean_historic_data_walpeup.R's and
+#     r/a_clean_historic_data_coleambally.R's own headers).
+#   - MouseAlert observations are mostly one-off citizen reports at sites
+#     never otherwise surveyed (871 of 956 observation paddocks have no traps/rapid
+#     history) — pooling them in would massively inflate the denominator and distort
+#     the detection rate (e.g. SA Vic Bordertown-Wimmera goes from 93% on 15 sites
+#     to 55% on 62 sites). MouseAlert gets its own metric: compute_mouse_alert_by_aez().
+#
+# n_sites, however, stays traps + rapid: it's reused downstream (aez_summary_r())
+# as the general "was this zone surveyed at all" gate for the whole
+# activity_index, not just pct_detected -- rapid assessment only started
+# October 2012 (confirmed live), so scoping this count to rapid alone would
+# wrongly zero out (-> "No data") every zone in every period with only
+# live-trapping, discarding real result_traps signal along with it.
+# compute_activity_index()'s own NA-handling already copes correctly with a
+# trap-only group (pct_detected = NA there, so the index just renormalises
+# over whichever other metrics are actually available).
 # Uses the mice_detected column already computed on surveys_all (one definition,
 # shared by the table, map, trend chart and pattern chart).
 compute_mice_by_aez <- function(surveys, zone_col = "ae_zone") {
   # zone_col selects which zone system to group by ("ae_zone" or "grdc_subregion").
   # The output zone column is always renamed to "zone" so downstream joins are
   # consistent regardless of which zone system is active.
-  surveys |>
+  n_sites <- surveys |>
     dplyr::filter(data_type %in% c("traps", "rapid")) |>
+    dplyr::distinct(.data[[zone_col]], paddock_id) |>
+    dplyr::count(.data[[zone_col]], name = "n_sites")
+
+  detected <- surveys |>
+    dplyr::filter(data_type == "rapid") |>
     dplyr::group_by(.data[[zone_col]], paddock_id) |>
     dplyr::summarise(ever_detected = any(mice_detected), .groups = "drop") |>
     dplyr::group_by(.data[[zone_col]]) |>
     dplyr::summarise(
-      n_sites      = dplyr::n(),
       n_detected   = sum(ever_detected),
-      pct_detected = round(n_detected / n_sites * 100, 1),
+      pct_detected = round(n_detected / dplyr::n() * 100, 1),
       .groups      = "drop"
-    ) |>
+    )
+
+  dplyr::full_join(n_sites, detected, by = zone_col) |>
     dplyr::rename(zone = dplyr::all_of(zone_col))
 }
 
@@ -178,10 +205,10 @@ compute_aez_display <- function(surveys, metric, zone_col = "ae_zone") {
   # isTRUE() handles zero-length or NULL metric without throwing "argument is of length zero".
   # zone_col selects the zone grouping variable; output column is always renamed to "zone".
   if (isTRUE(metric == "pct_detected")) {
-    # Restricted to traps/rapid — see compute_mice_by_aez() for why MouseAlert
-    # observations are excluded from this systematic-survey detection rate.
+    # Restricted to rapid assessment only — see compute_mice_by_aez() for why
+    # both live-trapping and MouseAlert are excluded from this detection rate.
     surveys |>
-      dplyr::filter(data_type %in% c("traps", "rapid")) |>
+      dplyr::filter(data_type == "rapid") |>
       dplyr::group_by(.data[[zone_col]], paddock_id) |>
       dplyr::summarise(detected = any(mice_detected), .groups = "drop") |>
       dplyr::group_by(.data[[zone_col]]) |>
@@ -425,16 +452,29 @@ compute_activity_index <- function(df, weights = activity_weights) {
 # or c("year_adj","season","ae_zone") for "Overlay"/"Facet by AEZ". d is
 # pre-filtered survey data (e.g. trend_filtered()).
 compute_trend_activity_index <- function(d, join_keys, weights) {
-  # Paddocks surveyed (traps/rapid) and the share with a detection, per group —
-  # mirrors compute_mice_by_aez()'s n_sites/pct_detected, but per season rather
-  # than collapsed across the whole filter window.
-  detect <- d |>
+  # Every paddock surveyed by ANY structured method (traps or rapid), per
+  # group — the general "was this group surveyed at all" gate, kept separate
+  # from pct_detected's own rapid-only figure below for the same reason as
+  # compute_mice_by_aez() (see its own header): rapid assessment only started
+  # October 2012, so gating the whole index on rapid coverage alone would
+  # wrongly drop every trap-only season (the entire pre-2013 record) to "no
+  # data" instead of just excluding pct_detected from it.
+  surveyed <- d |>
     dplyr::filter(data_type %in% c("traps", "rapid")) |>
+    dplyr::distinct(dplyr::across(dplyr::all_of(c(join_keys, "paddock_id")))) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) |>
+    dplyr::summarise(n_paddocks = dplyr::n(), .groups = "drop")
+
+  # Rapid-assessment paddocks surveyed and the share with a detection, per
+  # group — mirrors compute_mice_by_aez()'s pct_detected (rapid only,
+  # live-trapping excluded), but per season rather than collapsed across the
+  # whole filter window.
+  detect <- d |>
+    dplyr::filter(data_type == "rapid") |>
     dplyr::group_by(dplyr::across(dplyr::all_of(c(join_keys, "paddock_id")))) |>
     dplyr::summarise(detected = any(mice_detected), .groups = "drop") |>
     dplyr::group_by(dplyr::across(dplyr::all_of(join_keys))) |>
     dplyr::summarise(
-      n_paddocks   = dplyr::n(),
       pct_detected = round(mean(detected) * 100, 1),
       .groups = "drop"
     )
@@ -466,9 +506,10 @@ compute_trend_activity_index <- function(d, join_keys, weights) {
 
   d |>
     dplyr::distinct(dplyr::across(dplyr::all_of(join_keys))) |>
-    dplyr::left_join(detect, by = join_keys) |>
-    dplyr::left_join(means,  by = join_keys) |>
-    dplyr::left_join(alerts, by = join_keys) |>
+    dplyr::left_join(surveyed, by = join_keys) |>
+    dplyr::left_join(detect,   by = join_keys) |>
+    dplyr::left_join(means,    by = join_keys) |>
+    dplyr::left_join(alerts,   by = join_keys) |>
     dplyr::mutate(
       n_paddocks     = dplyr::if_else(is.na(n_paddocks), 0L, n_paddocks),
       n_high_reports = dplyr::if_else(is.na(n_high_reports), 0L, n_high_reports),
@@ -738,11 +779,11 @@ ui <- fluidPage(
         # which the green-yellow-red gradient reaches full red, with yellow at
         # half this value (see activity_gradient_color()). activity_index isn't
         # capped at 1, so a standout AEZ/season can exceed this — lower it to
-        # make red appear sooner. Default of 2 mirrors activity_index_gradient_max
-        # in raw_data_update.qmd's execute_params.
+        # make red appear sooner. raw_data_update.qmd's execute_params sets its
+        # own default of 2 separately.
         fluidRow(
           column(3, sliderInput("activity_index_gradient_max", "Activity index colour scale max",
-                                 min = 0.5, max = 5, value = 2, step = 0.25))
+                                 min = 0.5, max = 5, value = 1, step = 0.25))
         ),
 
         tags$hr(),
@@ -1506,9 +1547,9 @@ server <- function(input, output, session) {
       dplyr::filter(!is.na(.data[[zc]])) |>
       dplyr::group_by(.data[[zc]]) |>
       dplyr::summarise(
-        # n_paddocks mirrors the denominator behind pct_detected (traps/rapid
-        # only) — NA (-> 0 below) where the zone has no systematic survey
-        # paddocks at all.
+        # n_paddocks mirrors the denominator behind pct_detected (rapid
+        # assessment only) — NA (-> 0 below) where the zone has no rapid
+        # assessment paddocks at all.
         n_paddocks     = dplyr::first(n_sites),
         pct_detected   = dplyr::first(pct_detected),
         result_traps   = mean(result_traps, na.rm = TRUE),
@@ -1758,7 +1799,8 @@ server <- function(input, output, session) {
         result_traps  = "traps",
         result_burrow = "rapid",
         chew_per10    = "rapid",
-        c("traps", "rapid")   # pct_detected: both contribute
+        pct_detected  = "rapid",       # rapid only -- see compute_mice_by_aez()'s own header
+        c("traps", "rapid")            # activity_index (and any other composite metric): both contribute
       )
       # For single-method metrics, also drop rows where that method's result is
       # NA (e.g. a rapid survey that deployed burrow transects but no chew cards
@@ -1767,7 +1809,7 @@ server <- function(input, output, session) {
         result_traps  = "result_traps",
         result_burrow = "result_burrow",
         chew_per10    = "chew_per10",
-        NULL  # pct_detected uses both types, no extra column filter needed
+        NULL  # pct_detected/activity_index: no single results column to filter on
       )
       sys_surv <- dplyr::filter(surv, data_type %in% surv_types,
                                 !is.na(longitude_paddock), !is.na(latitude_paddock))
@@ -1997,10 +2039,10 @@ server <- function(input, output, session) {
            else                    c("year_adj", "season", "ae_zone", "paddock_id")
 
     if (metric == "pct_detected") {
-      # Restricted to traps/rapid — see compute_mice_by_aez() for why MouseAlert
-      # observations are excluded from this systematic-survey detection rate.
+      # Restricted to rapid assessment only — see compute_mice_by_aez() for why
+      # both live-trapping and MouseAlert are excluded from this detection rate.
       trend <- d |>
-        dplyr::filter(data_type %in% c("traps", "rapid")) |>
+        dplyr::filter(data_type == "rapid") |>
         dplyr::group_by(dplyr::across(dplyr::all_of(grp))) |>
         dplyr::summarise(val = any(mice_detected), .groups = "drop") |>
         dplyr::group_by(dplyr::across(dplyr::all_of(setdiff(grp, "paddock_id")))) |>
@@ -2223,10 +2265,10 @@ server <- function(input, output, session) {
 
     # Aggregate to one value per paddock × x-category (avoid pseudoreplication)
     if (metric == "pct_detected") {
-      # Restricted to traps/rapid — see compute_mice_by_aez() for why MouseAlert
-      # observations are excluded from this systematic-survey detection rate.
+      # Restricted to rapid assessment only — see compute_mice_by_aez() for why
+      # both live-trapping and MouseAlert are excluded from this detection rate.
       per_pad <- d |>
-        dplyr::filter(data_type %in% c("traps", "rapid")) |>
+        dplyr::filter(data_type == "rapid") |>
         dplyr::group_by(dplyr::across(dplyr::all_of(grp_pad))) |>
         dplyr::summarise(val = as.numeric(any(mice_detected)), .groups = "drop")
     } else if (metric == "n_high_paddocks") {

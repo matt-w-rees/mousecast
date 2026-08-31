@@ -1,11 +1,11 @@
 # Trailing rolling average, per pixel, across a monthly covariate stack's
 # chronological sequence of layers (e.g. the coarsened GPP raster this
 # pipeline builds -- see _targets.R's GPP section). Unlike a fixed calendar
-# window (build_seasonal_window_raster(), r/b_build_seasonal_window_raster.R),
-# a rolling window recomputes every month and so isn't tied to a particular
-# start/end month -- used for GPP because GPP reflects whatever a farmer
-# actually planted (or fallowed), which varies opportunistically in
-# dual-cropping zones, rather than following one fixed cropping calendar.
+# window (build_seasonal_window_raster(), r_not_in_use/b_build_seasonal_window_raster.R,
+# no longer used in the pipeline), a rolling window recomputes every month and so isn't tied to a
+# particular start/end month -- used for GPP because GPP reflects whatever a farmer actually
+# planted (or fallowed), which varies opportunistically in dual-cropping zones, rather than
+# following one fixed cropping calendar.
 #
 # Layers are first sorted into chronological order (parsed from their
 # "<month>_<year>" names, attach_time_variables()'s convention) since the
@@ -25,17 +25,20 @@
 
 compute_rolling_mean_raster <- function(rast, window = 12) {
 
+  # parse each layer's own calendar month/year from its "<month>_<year>" name
   months <- as.integer(sub("_.*", "", names(rast)))
   years  <- as.integer(sub(".*_", "", names(rast)))
 
+  # sort layers into true chronological order before rolling (their stack order isn't assumed sorted)
   chron_order <- order(years, months)
   rast <- rast[[chron_order]]
 
+  # trailing mean of the last `window` months, per pixel -- NA until window months have accumulated
   rolling_mean <- function(x) {
     RcppRoll::roll_mean(x, n = window, align = "right", fill = NA_real_)
   }
 
-  result <- terra::app(rast, fun = rolling_mean)
-  names(result) <- names(rast)
+  result <- terra::app(rast, fun = rolling_mean) # applies rolling_mean() along each pixel's own layer sequence
+  names(result) <- names(rast)                   # now-chronological layer names, matching the reordered stack
   result
 }

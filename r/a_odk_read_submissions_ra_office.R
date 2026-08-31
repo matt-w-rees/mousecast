@@ -73,6 +73,18 @@ odk_read_submissions_ra_office <- function(
   }
 
 
+  # --- 5b. Recode bait_history "unknown" (some form versions) back to "unsure" ---
+  # Mirrors the field reader's own step 5b (r/a_odk_read_submissions_ra_field.R) --
+  # currently a no-op here (this form's raw data has only ever recorded "no"/
+  # "unsure" for bait_history, confirmed against the current export), but kept
+  # for consistency in case retrospective entry is ever done on an older
+  # cached form version that had the same "unsure" -> "unknown" choice rename.
+  if ("bait_history" %in% names(submissions)) {
+    submissions <- dplyr::mutate(submissions,
+      bait_history = dplyr::if_else(bait_history == "unknown", "unsure", bait_history)
+    )
+  }
+
   # --- 6. Drop admin and uninformative columns (KEY retained until after joins) ---
   # date_today is dropped: survey_date captures the actual survey date, and
   # date_start_form / date_end_form capture when the form was submitted

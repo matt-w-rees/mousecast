@@ -7,16 +7,17 @@
 #    handful of years' daily SILO composites per branch instead of decades
 #    of full-country daily layers in one tapp() call. That single-call
 #    approach is what repeatedly got min_temp_raster's build OOM-killed
-#    (~2.4h in). Every block still reads from the single, whole-range
-#    silo_daily_files_min_temp download target, so a change to any one file
-#    in it (e.g. the still-forming latest year, in December) invalidates
-#    every block, not just the one whose own years actually changed --
-#    confirmed live against a throwaway `targets` pipeline. This bounds peak
-#    memory per block, but NOT unnecessary rebuilds -- real per-block
-#    isolation would need separate download targets per block, which SILO's
-#    download_silo_daily_data() (one shared out_dir per variable) doesn't
-#    support, so this trades some redundant recompute (~1 month/year) for a
-#    much simpler pipeline.
+#    (~2.4h in). Originally (through 2026-08) silo_daily_files_min_temp was
+#    one single whole-range download target, so a change to any one file in
+#    it (e.g. the still-forming latest year) invalidated every block, not
+#    just the one whose own years actually changed -- confirmed live against
+#    a throwaway `targets` pipeline. That's fixed now: silo_daily_files_min_temp
+#    itself branches over these same blocks (pattern = map(min_temp_year_blocks)
+#    in _targets.R), and download_silo_daily_data() returns only the files
+#    each call actually requested rather than its whole out_dir (see that
+#    function's own header) -- so each block's own files are now tracked
+#    independently, matching gpp_viirs_blocks' own genuine per-block
+#    isolation below, not just this function's bounded-memory branching.
 #
 #  - gpp_viirs_blocks (_targets.R section 2): so each block gets its own
 #    download_gpp_block() call (r/b_download_gpp_block.R) into its own

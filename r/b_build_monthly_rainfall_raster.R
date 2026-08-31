@@ -1,7 +1,7 @@
 # Stack SILO's pre-aggregated monthly rainfall GeoTIFFs (download_silo_monthly_data(),
 # r/b_download_silo_monthly_data.R) into one SpatRaster, one layer per month_year --
 # no aggregation needed here (SILO has already summed daily rain to monthly
-# totals), unlike GPP's build_seasonal_gpp_raster(), which must collapse raw
+# totals), unlike GPP's build_gpp_period_raster(), which must collapse raw
 # 8-day composites itself. Each file is already a clean single-band raster
 # on the standard national SILO grid (0.05 degree, EPSG:4326, confirmed live).
 #
@@ -18,7 +18,7 @@
 
 build_monthly_rainfall_raster <- function(files) {
 
-  files <- files[grepl("\\.monthly_rain\\.tif$", files)]
+  files <- files[grepl("\\.monthly_rain\\.tif$", files)] # drop any non-raster sidecar file tracked alongside these
   r <- terra::rast(files)
 
   # Parse "<yyyymm>.monthly_rain.tif" filenames into month_year labels --

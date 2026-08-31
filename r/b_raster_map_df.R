@@ -28,21 +28,22 @@ raster_map_df <- function(rast) {
   is_month_year  <- grepl("^[0-9]+_[0-9]+$", labels)
   is_season_year <- grepl("^[A-Za-z]+-[0-9]+$", labels)
 
+  # build a human-readable facet label per layer, matching whichever naming convention is detected
   if (all(is_month_year)) {
     month  <- as.integer(sub("_.*", "", labels))
     year   <- sub(".*_", "", labels)
-    pretty <- paste(month.name[month], year)
+    pretty <- paste(month.name[month], year)   # e.g. "July 2026"
   } else if (all(is_season_year)) {
     season   <- sub("-.*", "", labels)
     year_adj <- sub(".*-", "", labels)
-    pretty   <- paste(season, year_adj)
+    pretty   <- paste(season, year_adj)        # e.g. "Winter 2026"
   } else {
-    pretty <- labels
+    pretty <- labels                            # already readable as-is (e.g. a plain year)
   }
 
-  names(rast) <- pretty
+  names(rast) <- pretty # relabel layers before pivoting, so the long-format "label" column uses these directly
 
-  as.data.frame(rast, xy = TRUE) |>
-    tidyr::pivot_longer(-c(x, y), names_to = "label", values_to = "value") |>
-    dplyr::mutate(label = factor(label, levels = pretty))
+  as.data.frame(rast, xy = TRUE) |>                                       # one row per cell, one column per layer
+    tidyr::pivot_longer(-c(x, y), names_to = "label", values_to = "value") |> # -> one row per cell x layer
+    dplyr::mutate(label = factor(label, levels = pretty))                  # preserve rast's own layer order for faceting
 }

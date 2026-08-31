@@ -45,13 +45,15 @@ compute_climatology_raster <- function(rast, stat = c("mean", "sd"), smooth_wind
 
   stat <- match.arg(stat)
 
+  # calendar month, season name, or one shared group -- see group_raster_layers()'s own header
   groups <- group_raster_layers(names(rast))
 
+  # one output layer per group, collapsing all of that group's own years into one statistic
   climatology_layers <- purrr::map(sort(unique(groups)), function(g) {
-    idx   <- which(groups == g)
-    layer <- terra::app(rast[[idx]], fun = stat, na.rm = TRUE)
+    idx   <- which(groups == g)                        # this group's own layer positions in rast
+    layer <- terra::app(rast[[idx]], fun = stat, na.rm = TRUE) # per-pixel mean/SD across those years
     if (!is.null(smooth_window)) {
-      layer <- terra::focal(layer, w = smooth_window, fun = "mean", na.rm = TRUE)
+      layer <- terra::focal(layer, w = smooth_window, fun = "mean", na.rm = TRUE) # blend across neighbouring pixels
     }
     layer
   })

@@ -38,7 +38,7 @@
 # live this session that PML-V2's own raw file has no masking applied at all
 # (just a bounding-box crop), while this pipeline's own MOD17/VNP17 record is
 # masked to the Australian coastline plus a fill/sentinel-code threshold
-# (build_seasonal_gpp_raster()'s aus_shp/valid_max arguments) -- so PML
+# (build_gpp_period_raster()'s aus_shp/valid_max arguments) -- so PML
 # retains valid values across tens of thousands of cells (~39,000 of ~55,000
 # nationally, confirmed against the actual 1999/2000 splice) that MOD17/VNP17
 # has zero data for at all. Defaulting those cells to ratio = 1 would leave
@@ -48,7 +48,7 @@
 # hugely out of line right at the 2000 boundary, since the two eras of the
 # record end up averaged over two different geographic footprints. NA here
 # instead means: this pixel gets excluded from the corrected output entirely
-# (NA * anything = NA downstream in build_gpp_historic_corrected_raster()),
+# (NA * anything = NA downstream in apply_gpp_pixel_ratio_correction()),
 # so both eras of the splice end up sharing the same valid-pixel footprint.
 #
 # Arguments:
@@ -56,30 +56,44 @@
 #                     shift the denominator TOWARDS -- e.g. this pipeline's
 #                     own MOD17/VNP17-based GPP (for the PML splice) or
 #                     gap-filled VIIRS (for the near-real-time splice), one
-#                     layer per month_year
+#                     layer per period (see months_of)
 #   denominator_rast  the source actually being corrected -- e.g. PML-V2 or
-#                     non-gap-filled VIIRS, one layer per month_year, same
+#                     non-gap-filled VIIRS, one layer per period, same
 #                     grid as numerator_rast
 #   max_ratio         both-direction clamp bound (default 10) -- see above
+#   months_of         function mapping a vector of shared layer names to
+#                     their own calendar month (1-12) -- default parses the
+#                     "<month>_<year>" convention every monthly-grain caller
+#                     here uses (e.g. build_gpp_period_raster()'s own
+#                     output). A composite-grain caller (layers named by
+#                     as.character(date) instead, e.g.
+#                     load_and_clamp_gpp_composites()'s own output) passes
+#                     something like function(x) lubridate::month(as.Date(x))
+#                     instead -- 2026-08, added once this function needed to
+#                     work at both grains, rather than teach it a second
+#                     hard-coded string format.
 #
 # Returns a SpatRaster, one layer per calendar month present in both inputs
 # (named "1"-"12"), one numerator/denominator ratio value per pixel per
-# month, averaged across every year (or, for a single-year comparison, just
-# that year) both sides cover. NA wherever numerator_rast has no valid data
-# at all for that pixel/month (see above) -- not necessarily the same
+# month, averaged across every period (or, for a single-period comparison,
+# just that one) both sides cover. NA wherever numerator_rast has no valid
+# data at all for that pixel/month (see above) -- not necessarily the same
 # footprint as denominator_rast's own valid cells.
 
-build_gpp_pixel_ratio_raster <- function(numerator_rast, denominator_rast, max_ratio = 10) {
+build_gpp_pixel_ratio_raster <- function(numerator_rast, denominator_rast, max_ratio = 10,
+                                          months_of = function(x) as.integer(sub("_.*", "", x))) {
 
+  # only layers both rasters actually share can be compared
   common <- intersect(names(numerator_rast), names(denominator_rast))
   if (length(common) == 0) {
-    stop("numerator_rast and denominator_rast share no month_year layers in common.")
+    stop("numerator_rast and denominator_rast share no layers in common.")
   }
-  months <- as.integer(sub("_.*", "", common))
+  months <- months_of(common) # each shared layer's own calendar month (1-12)
 
+  # one ratio layer per calendar month present, averaged over every year that month occurs in
   ratio_layers <- purrr::map(sort(unique(months)), function(m) {
-    layer_names <- common[months == m]
-    mean_numerator   <- terra::mean(numerator_rast[[layer_names]], na.rm = TRUE)
+    layer_names <- common[months == m]                                    # every shared layer for this one calendar month
+    mean_numerator   <- terra::mean(numerator_rast[[layer_names]], na.rm = TRUE)   # per-pixel mean across those years
     mean_denominator <- terra::mean(denominator_rast[[layer_names]], na.rm = TRUE)
 
     # Captured from mean_numerator BEFORE any of the mutations below -- once a
@@ -92,10 +106,10 @@ build_gpp_pixel_ratio_raster <- function(numerator_rast, denominator_rast, max_r
     ratio <- mean_numerator / mean_denominator
     ratio <- terra::ifel(is.nan(ratio), 1, ratio) # genuine 0/0 (both sides validly zero) -> neutral, no correction
     ratio <- terra::ifel(no_numerator_data, NA, ratio) # no correction is meaningful with zero numerator data -- exclude, don't default to neutral
-    terra::clamp(ratio, lower = 1 / max_ratio, upper = max_ratio, values = TRUE)
+    terra::clamp(ratio, lower = 1 / max_ratio, upper = max_ratio, values = TRUE) # guard against a blown-up ratio at low-signal pixels
   })
 
   ratio_rast <- terra::rast(ratio_layers)
-  names(ratio_rast) <- as.character(sort(unique(months)))
+  names(ratio_rast) <- as.character(sort(unique(months))) # "1"-"12", one layer per calendar month
   ratio_rast
 }

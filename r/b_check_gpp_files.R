@@ -22,7 +22,7 @@
 # download_gpp()'s header) -- so the size comparison groups by (region,
 # layer), where "region" here is really that batch subfolder's name (an
 # earlier version of this pipeline split composites into west/east region
-# subfolders instead, since retired -- see build_seasonal_gpp_raster()'s
+# subfolders instead, since retired -- see build_gpp_period_raster()'s
 # header -- the grouping column name is unchanged but no longer means
 # geographic region). Since raw_data/predictor_variables/gpp/ has a product
 # folder (modis/viirs_historic/viirs_recent) above those batch folders, pass
@@ -55,29 +55,30 @@ check_gpp_files <- function(gpp_dir = "raw_data/predictor_variables/gpp/viirs_hi
 
   checked <- tibble::tibble(
     path    = files,
-    region  = basename(dirname(files)),
+    region  = basename(dirname(files)), # the batch subfolder each file sits in -- see header note on grouping
     layer   = dplyr::case_when(
       grepl("Gpp_500m", files)    ~ "Gpp_500m",
       grepl("Psn_QC_500m", files) ~ "Psn_QC_500m",
-      TRUE                        ~ NA_character_
+      TRUE                        ~ NA_character_ # a non-composite file (e.g. sidecar/metadata) -- dropped below
     ),
     size_mb = file.size(files) / 1e6
   ) |>
-    dplyr::filter(!is.na(layer)) |>
+    dplyr::filter(!is.na(layer)) |> # only real composite files continue past here
     dplyr::mutate(
-      group_median_mb = stats::ave(size_mb, region, layer, FUN = stats::median),
-      group_mad_mb    = stats::ave(size_mb, region, layer, FUN = stats::mad),
-      group_n         = stats::ave(size_mb, region, layer, FUN = length),
-      mad_below       = ifelse(group_mad_mb > 0, (group_median_mb - size_mb) / group_mad_mb, 0),
-      undersized      = group_n >= min_group_n & mad_below > mad_threshold
+      group_median_mb = stats::ave(size_mb, region, layer, FUN = stats::median), # typical size for this (region, layer) group
+      group_mad_mb    = stats::ave(size_mb, region, layer, FUN = stats::mad),    # robust spread for that same group
+      group_n         = stats::ave(size_mb, region, layer, FUN = length),        # how many files are in that group
+      mad_below       = ifelse(group_mad_mb > 0, (group_median_mb - size_mb) / group_mad_mb, 0), # how many MADs below the group median
+      undersized      = group_n >= min_group_n & mad_below > mad_threshold       # flagged only if the group is big enough to trust
     )
 
+  # the authoritative signal -- actually opens and reads each file's data, not just its header
   checked$readable <- vapply(checked$path, gpp_file_readable, logical(1))
 
   checked |>
-    dplyr::filter(!readable | undersized) |>
+    dplyr::filter(!readable | undersized) |>                              # keep only flagged files
     dplyr::mutate(reason = ifelse(!readable, "unreadable", "undersized")) |>
     dplyr::select(path, region, layer, size_mb, group_median_mb, mad_below, readable, reason) |>
-    dplyr::arrange(readable, dplyr::desc(mad_below))
+    dplyr::arrange(readable, dplyr::desc(mad_below)) # unreadable files first, then worst undersized first
 
 }

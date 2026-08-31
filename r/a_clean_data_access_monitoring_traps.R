@@ -147,22 +147,8 @@ clean_data_access_monitoring_traps <- function(data) {
     # identity was recorded use "noname1", "noname2", etc. as stand-ins.
     dplyr::filter(!grepl("noname", farmer, ignore.case = TRUE))
 
-  # Flag distinct subsites sharing identical coordinates — likely a data-entry
-  # error in the Access database's site reference table (e.g. multiple trap
-  # lines/grids at one site recorded with a single site-level coordinate
-  # instead of per-subsite coordinates), which causes downstream joins on
-  # (longitude, latitude) to merge those subsites into one paddock.
-  dup_coords <- cleaned |>
-    dplyr::distinct(longitude, latitude, site_name, subsite_name) |>
-    dplyr::group_by(longitude, latitude) |>
-    dplyr::filter(dplyr::n_distinct(subsite_name) > 1) |>
-    dplyr::ungroup() |>
-    dplyr::arrange(longitude, latitude, subsite_name)
-
-  if (nrow(dup_coords) > 0) {
-    message("clean_data_access_monitoring_traps(): subsites sharing identical coordinates:")
-    print(dup_coords, n = Inf)
-  }
+  # See r/a_flag_duplicate_subsite_coordinates.R for why this matters.
+  .flag_duplicate_subsite_coordinates(cleaned, "clean_data_access_monitoring_traps")
 
   cleaned
 }

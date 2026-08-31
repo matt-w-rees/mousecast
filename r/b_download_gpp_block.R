@@ -34,7 +34,7 @@
 #
 # Arguments:
 #   block_years     integer vector, one block from gpp_viirs_blocks (e.g. 2012:2016)
-#   roi             sf polygon -- passed straight through to download_gpp() (study_area)
+#   roi             sf polygon -- passed straight through to download_gpp() (covariate_download_region)
 #   out_dir_base    parent folder each block gets its own "<first>_<last>" subfolder under
 #   earthdata_user  Earthdata Login username -- passed straight through
 #   product         AppEEARS product string -- passed straight through
@@ -52,11 +52,12 @@ download_gpp_block <- function(block_years, roi, out_dir_base, earthdata_user, p
                                 end_date_cap = as.character(Sys.Date()), time_out = 28800) {
 
   start_date <- paste0(min(block_years), "-01-01")
-  end_date   <- as.character(min(as.Date(paste0(max(block_years), "-12-31")), as.Date(end_date_cap)))
+  end_date   <- as.character(min(as.Date(paste0(max(block_years), "-12-31")), as.Date(end_date_cap))) # clamp to end_date_cap
 
+  # single-year block -> "2026"; multi-year block -> "2012_2016"
   block_label <- if (min(block_years) == max(block_years)) as.character(min(block_years))
                  else paste0(min(block_years), "_", max(block_years))
-  out_dir     <- file.path(out_dir_base, block_label)
+  out_dir     <- file.path(out_dir_base, block_label) # this block's own permanent, isolated folder
 
   download_gpp(
     roi            = roi,

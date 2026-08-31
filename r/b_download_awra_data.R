@@ -59,9 +59,10 @@ download_awra_data <- function(variables = c("sm_pct"),
     url       <- awra_urls[[var]]
     dest_path <- file.path(out_dir, paste0(var, ".nc"))
 
-    needs_download <- !file.exists(dest_path)
+    needs_download <- !file.exists(dest_path) # always true if never downloaded before
 
     if (!needs_download) {
+      # file exists locally -- only worth re-downloading if the remote copy is newer
       remote_time <- tryCatch({
         resp <- httr::HEAD(url)
         as.POSIXct(httr::headers(resp)$`last-modified`, format = "%a, %d %b %Y %H:%M:%S", tz = "GMT")
@@ -80,7 +81,7 @@ download_awra_data <- function(variables = c("sm_pct"),
         warning = function(w) -1L
       )
       if (!identical(result, 0L)) {
-        if (file.exists(dest_path)) file.remove(dest_path)
+        if (file.exists(dest_path)) file.remove(dest_path) # remove any partial/corrupt file rather than leave it looking complete
         stop("Failed to download AWRA variable '", var, "' from ", url)
       }
     }

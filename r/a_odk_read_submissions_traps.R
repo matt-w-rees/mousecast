@@ -122,7 +122,12 @@ odk_read_submissions_traps <- function(
   )
 
   # --- 3. One row per (session x night) from the main table's per-night summary columns ---
-  nights_summary <- dplyr::bind_rows(lapply(1:6, function(n) .odk_extract_night_summary(main, n)))
+  # Night count read from main's own "night_N_date" columns, not hardcoded --
+  # so this doesn't need editing (or worse, silently drop the extra night(s))
+  # if the form is ever extended past 6 nights.
+  max_night <- max(as.integer(sub("^night_([0-9]+)_date$", "\\1",
+                                   grep("^night_[0-9]+_date$", names(main), value = TRUE))))
+  nights_summary <- dplyr::bind_rows(lapply(seq_len(max_night), function(n) .odk_extract_night_summary(main, n)))
 
   # --- 4. One row per individual capture from the captures_N sub-tables ---
   capture_nights <- as.integer(sub(".*-captures_([0-9]+)\\.csv$", "\\1", capture_files, ignore.case = TRUE))

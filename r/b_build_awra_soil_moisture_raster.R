@@ -18,6 +18,17 @@
 # build_pml_gpp_raster()'s header), and AWRA is a modelled national surface,
 # not a remotely-sensed product with fill/ocean codes to clamp.
 #
+# sm_pct.nc carries no CRS in its own metadata, so terra::rast() guesses one
+# at read time, emitting a "[rast] guessed crs" warning every run -- confirmed
+# live (2026-08) the guess itself (WGS84 lon/lat) is correct (extent matches
+# Australia, matches every other covariate raster in this pipeline), so the
+# warning is suppressed at its source below (the guess happens the moment
+# rast() reads the file, so setting crs() afterwards doesn't stop it being
+# raised) -- the same intent as the explicit crs() raster_mean_series()
+# already sets on its own points argument for the same reason
+# (r/b_raster_mean_series.R's own header), just applied where this specific
+# warning actually originates.
+#
 # Arguments:
 #   file   path to sm_pct.nc (download_awra_data()'s output)
 #
@@ -25,7 +36,8 @@
 
 build_awra_soil_moisture_raster <- function(file) {
 
-  r <- terra::rast(file)
+  r <- suppressWarnings(terra::rast(file)) # confirmed-correct guessed CRS -- see header
+  terra::crs(r) <- "EPSG:4326" # set explicitly so it's no longer just a guess
 
   dates <- as.Date(terra::time(r))
   names(r) <- paste0(lubridate::month(dates), "_", lubridate::year(dates))

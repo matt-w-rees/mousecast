@@ -24,7 +24,10 @@
 # raster-building functions: "<month>_<year>" (e.g. "7_2026", one layer per
 # calendar month), "<Season>-<year_adj>" (e.g. "Winter-2026",
 # build_seasonal_raster()'s own convention), and plain "<year>"
-# (build_seasonal_window_raster()'s own convention, one layer per year).
+# (build_seasonal_window_raster()'s own convention, one layer per year). That
+# parsing step is shared with raster_zone_series() (r/b_raster_zone_series.R)
+# -- its own per-AE-zone counterpart -- via the internal raster_layer_dates()
+# helper below, not duplicated between them.
 #
 # Arguments:
 #   rast    SpatRaster, one layer per period, named in one of the three
@@ -44,12 +47,28 @@
 raster_mean_series <- function(rast, points = NULL) {
 
   if (is.null(points)) {
-    vals <- as.numeric(terra::global(rast, "mean", na.rm = TRUE)[[1]])
+    vals <- as.numeric(terra::global(rast, "mean", na.rm = TRUE)[[1]]) # one national mean per layer
   } else {
     points_vect <- terra::vect(points, crs = "EPSG:4326")
-    extracted   <- terra::extract(rast, points_vect, ID = FALSE)
-    vals        <- colMeans(extracted, na.rm = TRUE)
+    extracted   <- terra::extract(rast, points_vect, ID = FALSE)       # one row per point, one column per layer
+    vals        <- colMeans(extracted, na.rm = TRUE)                   # collapse points to one mean per layer
   }
+
+  tibble::tibble(date = raster_layer_dates(rast), value = vals) |>
+    dplyr::arrange(date) # chronological order regardless of rast's own layer order
+}
+
+# Shared date-parsing step behind raster_mean_series() and
+# raster_zone_series() (r/b_raster_zone_series.R) -- both need to turn a
+# SpatRaster's own layer names into a real Date to plot/sort by, and this is
+# the one place that logic lives, rather than being copied between them.
+#
+# Same three layer-naming conventions as raster_mean_series() documents:
+# "<month>_<year>", "<Season>-<year_adj>", plain "<year>".
+#
+# Returns a Date vector, one per layer of rast, in rast's own layer order
+# (not yet sorted chronologically -- callers sort after attaching values).
+raster_layer_dates <- function(rast) {
 
   labels <- names(rast)
   is_month_year  <- grepl("^[0-9]+_[0-9]+$", labels)
@@ -58,15 +77,13 @@ raster_mean_series <- function(rast, points = NULL) {
   if (all(is_month_year)) {
     month <- as.integer(sub("_.*", "", labels))
     year  <- as.integer(sub(".*_", "", labels))
-    date  <- as.Date(paste(year, month, "15", sep = "-"))
+    as.Date(paste(year, month, "15", sep = "-")) # 15th of the month
   } else if (all(is_season_year)) {
     season   <- sub("-.*", "", labels)
     year_adj <- as.integer(sub(".*-", "", labels))
     season_mid_month <- c(Summer = 1L, Autumn = 4L, Winter = 7L, Spring = 10L)[season]
-    date <- as.Date(paste(year_adj, season_mid_month, "15", sep = "-"))
+    as.Date(paste(year_adj, season_mid_month, "15", sep = "-")) # 15th of that season's own mid-month
   } else {
-    date <- as.Date(paste0(labels, "-06-30")) # plain year
+    as.Date(paste0(labels, "-06-30")) # plain year
   }
-
-  tibble::tibble(date = date, value = vals) |> dplyr::arrange(date)
 }

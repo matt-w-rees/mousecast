@@ -9,7 +9,7 @@
 # Summarise daily SILO NetCDF composites (r/b_download_silo_daily_data.R) to
 # one raster layer per calendar month, for a single variable.
 #
-# Unlike GPP's MODIS/VIIRS composites (r/b_build_seasonal_gpp_raster.R), SILO
+# Unlike GPP's MODIS/VIIRS composites (r/b_build_gpp_period_raster.R), SILO
 # is BOM's own interpolated national climate surface, not a remotely-sensed
 # product with fill/sentinel codes or ocean noise to mask -- it's already
 # land-only, so no equivalent to that function's valid_max clamp or aus_shp
@@ -65,6 +65,14 @@ summarise_silo_to_month <- function(files, summary_func = "mean", min_days_per_m
     stop("summary_func must be one of: ", paste(allowed_funcs, collapse = ", "))
   }
 
+  # Let GDAL parallelise decompression/aggregation across cores -- terra
+  # defaults to threads = 0 (off) in this installation (confirmed live
+  # 2026-08, see load_and_clamp_gpp_composites()'s own header for the fuller
+  # investigation). Matters most for step 2's tapp() call below, which
+  # aggregates potentially years' worth of full-country daily chunks down to
+  # monthly layers.
+  terra::terraOptions(threads = TRUE)
+
   # ── 1. Load daily composites, one layer per day (metadata only -- terra is
   # lazy, actual decompression happens only when values are later read) ─────
   rasters <- terra::rast(files)
@@ -88,17 +96,17 @@ summarise_silo_to_month <- function(files, summary_func = "mean", min_days_per_m
 
   if (!is.null(roi)) {
     bbox <- sf::st_bbox(roi)
-    rasters <- terra::crop(rasters, terra::ext(
+    rasters <- terra::crop(rasters, terra::ext( # shrinks the in-memory array tapp() works with, see roi's own header note
       bbox["xmin"] - margin_deg, bbox["xmax"] + margin_deg,
       bbox["ymin"] - margin_deg, bbox["ymax"] + margin_deg
     ))
   }
 
   # ── 2. Collapse days to month means/sums ──────────────────────────────────
-  month_lbl <- paste0(all_months, "_", all_years)
+  month_lbl <- paste0(all_months, "_", all_years) # this pipeline's "<month>_<year>" convention, per day
 
-  days_count      <- table(month_lbl)
-  complete_months <- names(days_count[days_count >= min_days_per_month])
+  days_count      <- table(month_lbl)                                          # how many daily layers landed in each month
+  complete_months <- names(days_count[days_count >= min_days_per_month])       # only months with enough days to trust
   keep      <- month_lbl %in% complete_months
   rasters   <- rasters[[keep]]
   month_lbl <- month_lbl[keep]
