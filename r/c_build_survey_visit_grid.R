@@ -51,7 +51,7 @@ build_survey_visit_grid <- function(data, survey_type = c("traps", "rapid"), fir
   # one-row-per-session grain these need); rapid's own transect/chewcard
   # totals are already one row per visit, no aggregation required.
   response_cols <- switch(survey_type,
-    traps = c("number_functional_traps_session", "number_unique_individuals_session"),
+    traps = c("number_functional_traps_session", "number_unique_individuals_session", "number_mice_caught_session"),
     rapid = c("burrow_transects_surveyed", "burrow_total_count",
               "chewcards_deployed", "chewcards_detected", "chewcards_detected_first10",
               "chewcards_deployed_block2", "chewcards_deployed_block3", "chewcards_deployed_block4",
