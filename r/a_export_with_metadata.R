@@ -537,6 +537,12 @@ get_all_variable_definitions <- function() {
       values = "> 0",
       source = "Sum of number_functional_traps across all nights in data_traps_session_summary()"
     ),
+    number_mice_caught_session = list(
+      desc   = "Session summary: total mouse captures (recaptures included) across all nights of the session -- the numerator for trap success",
+      type   = "Integer",
+      values = ">= 0; NA if every night's capture count is missing",
+      source = "Sum of number_mice_caught across all nights in clean_traps_to_session_level()"
+    ),
 
     # --- Rapid-specific: burrows ---
     burrow_transects_surveyed = list(

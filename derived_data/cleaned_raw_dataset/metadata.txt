@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-08-11 16:24:40
+Generated: 2026-09-25 13:27:33
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -189,8 +189,8 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 3096
-  Number of columns: 44
+  Number of rows: 3120
+  Number of columns: 45
 
 UNIQUE VARIABLES (specific to traps dataset):
 ----------------------------------------------------------------------------
@@ -303,6 +303,12 @@ number_functional_traps_session
   Values:      > 0
   Source:      Sum of number_functional_traps across all nights in data_traps_session_summary()
 
+number_mice_caught_session
+  Description: Session summary: total mouse captures (recaptures included) across all nights of the session -- the numerator for trap success
+  Type:        Integer
+  Values:      >= 0; NA if every night's capture count is missing
+  Source:      Sum of number_mice_caught across all nights in clean_traps_to_session_level()
+
 id_method
   Description: Which (if any) marking method this capture's identity relies on -- the key data-quality flag for CMR use (see raw_data/survey_data/README.md's quality tiers)
   Type:        Character
@@ -323,7 +329,7 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 3845
+  Number of rows: 4035
   Number of columns: 92
 
 UNIQUE VARIABLES (specific to rapid dataset):
@@ -456,7 +462,7 @@ structured survey with a fixed method or effort measure. Considered less
 reliable than the traps/rapid datasets and weighted accordingly downstream.
 
 DATA STRUCTURE:
-  Number of rows: 1393
+  Number of rows: 1391
   Number of columns: 30
 
 UNIQUE VARIABLES (specific to observations dataset):
@@ -505,7 +511,7 @@ recoverable depending on which marking method (pit tag vs ear mark vs none)
 was used for a given capture.
 
 DATA STRUCTURE:
-  Number of rows: 28982
+  Number of rows: 29069
   Number of columns: 28
 
 VARIABLES (specific to individual_captures; join keys shared with traps

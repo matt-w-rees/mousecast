@@ -528,10 +528,20 @@ compute_trend_activity_index <- function(d, join_keys, weights) {
 # in the cycle -- and so the "Fortnight ending" label -- lands on a Friday, e.g.
 # "Fortnight ending 17 Jul 2026"); the 14-day cycle extends both forwards and
 # backwards to cover the full history.
+#
+# Forward end bounded by Sys.Date() (not a fixed length.out) -- a fixed count of
+# future periods (length.out = 5 previously) is only ever valid for as long as
+# the app happens to be opened within that original ~10-week window from
+# whenever this was last edited; past that, the schedule silently stops
+# advancing and the tab reads as stuck on a real but increasingly stale
+# "most recent" fortnight (confirmed live, 2026-09: with length.out = 5 the
+# forward list ran out at 17 Jul 2026, over 6 weeks stale by September).
+# +60 days of headroom past today so the dropdown always has upcoming periods
+# to show, not just whatever's already elapsed.
 znp_anchor <- as.Date("2026-05-22")
 znp_fortnight_ends <- sort(unique(c(
-  seq(znp_anchor, by = "14 days",  length.out = 5),   # scheduled future dates
-  seq(znp_anchor, by = "-14 days", length.out = 14)   # backwards ~6 months
+  seq(znp_anchor, by = "14 days",  to = Sys.Date() + 60),  # scheduled future dates, always current
+  seq(znp_anchor, by = "-14 days", length.out = 14)        # backwards ~6 months
 )))
 
 # Show only periods whose window has started and fall within the last 6 months,
@@ -1119,6 +1129,7 @@ ui <- fluidPage(
                            "Season"       = "season",
                            "Month"        = "month",
                            "Ground cover" = "ground_cover",
+                           "Crop group"   = "crop_group",
                            "Bait history" = "bait_history"
                          ),
                          selected = "season")
@@ -1295,7 +1306,8 @@ server <- function(input, output, session) {
       bb <- sf::st_bbox(aez_base_surveyed)
       leaflet(aez_base_surveyed, options = leafletOptions(zoomControl = FALSE)) |>
         fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]) |>
-        addProviderTiles("CartoDB.Positron") |>
+        # Esri light grey canvas: keyless, unlike CartoDB.Positron which now needs an API key.
+        addProviderTiles("Esri.WorldGrayCanvas") |>
         addPolygons(
           layerId          = ~ae_zone,
           fillColor        = ifelse(aez_base_surveyed$ae_zone %in% selected, "#EC7014", "#AAAAAA"),
@@ -1619,7 +1631,8 @@ server <- function(input, output, session) {
     bb <- sf::st_bbox(aez_base)
     leaflet(width = "100%", height = "560px") |>
       fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]) |>
-      addProviderTiles("CartoDB.Positron",     group = "Light (default)") |>
+      # Esri light grey canvas: keyless, unlike CartoDB.Positron which now needs an API key.
+      addProviderTiles("Esri.WorldGrayCanvas", group = "Light (default)") |>
       addProviderTiles("Esri.WorldImagery",    group = "Satellite") |>
       addProviderTiles("OpenStreetMap.Mapnik", group = "OpenStreetMap") |>
       addLegend(position = "bottomleft",
@@ -2207,8 +2220,8 @@ server <- function(input, output, session) {
     if (isTRUE(input$pattern_metric == "result_traps")) notes <- c(notes, "Mice per trap night applies to trapping surveys only.")
     if (isTRUE(input$pattern_metric %in% c("result_burrow", "chew_per10"))) notes <- c(notes, "This metric applies to rapid assessment surveys only.")
     if (isTRUE(input$pattern_metric == "n_high_paddocks") &&
-        isTRUE(input$pattern_xvar %in% c("ground_cover", "bait_history")))
-      notes <- c(notes, "MouseAlert reports do not include ground cover or bait history — select Season or Month as the x-variable.")
+        isTRUE(input$pattern_xvar %in% c("ground_cover", "crop_group", "bait_history")))
+      notes <- c(notes, "MouseAlert reports do not include ground cover, crop group or bait history — select Season or Month as the x-variable.")
     if (length(notes) > 0)
       tags$p(paste(notes, collapse = " "), style = "color: #888; font-size: 0.85em; margin-bottom: 8px;")
   })
@@ -2246,6 +2259,22 @@ server <- function(input, output, session) {
     } else if (xvar == "month") {
       d       <- dplyr::mutate(d, xval = month)
       x_label <- "Month"
+    } else if (xvar == "crop_group") {
+      # Drop surveys with no crop group recorded (all MouseAlert reports, plus a
+      # few trap/rapid sessions); "unknown" is kept as its own bar, placed last.
+      d <- dplyr::filter(d, !is.na(crop_group))
+      crop_levels <- c("cereals", "oilseeds", "legumes", "cotton",
+                       "pasture", "bare_soil", "unknown")
+      # Any crop group not in the fixed order above is appended before "unknown"
+      # so a newly-added category still shows up rather than becoming NA.
+      extra_levels <- setdiff(sort(unique(d$crop_group)), crop_levels)
+      crop_levels  <- c(setdiff(crop_levels, "unknown"), extra_levels, "unknown")
+      d <- dplyr::mutate(d,
+        xval = factor(crop_group, levels = crop_levels,
+                      # Tidy labels for the axis, e.g. "bare_soil" -> "Bare Soil"
+                      labels = tools::toTitleCase(gsub("_", " ", crop_levels)))
+      )
+      x_label <- "Crop group"
     } else {
       d       <- dplyr::mutate(d, xval = factor(bait_history))
       x_label <- "Were mice baited in last 2 months?"
@@ -2611,7 +2640,8 @@ server <- function(input, output, session) {
     bb <- sf::st_bbox(aez_base)
     m <- leaflet(width = "100%", height = "560px") |>
       fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]]) |>
-      addProviderTiles("CartoDB.Positron",     group = "Light (default)") |>
+      # Esri light grey canvas: keyless, unlike CartoDB.Positron which now needs an API key.
+      addProviderTiles("Esri.WorldGrayCanvas", group = "Light (default)") |>
       addProviderTiles("Esri.WorldImagery",    group = "Satellite") |>
       addProviderTiles("OpenStreetMap.Mapnik", group = "OpenStreetMap") |>
       addLegend(position = "bottomleft",

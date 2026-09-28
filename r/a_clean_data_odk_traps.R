@@ -58,10 +58,11 @@ clean_data_odk_traps <- function(data) {
       number_traps_set = traps_set,
       number_phantoms = night_phantoms,
       number_functional_traps = number_traps_set - number_phantoms,
-      # night_captures counts every captures_N row (real captures + phantoms);
-      # subtract phantoms to get actual mice caught, the same way the form's
-      # own total_real_captures = total_captures - total_phantoms is defined.
-      number_mice_caught = night_captures - night_phantoms,
+      # night_captures is already real captures only: the form defines
+      # night_N_captures as count(${phantom_N}[. = 'no']), i.e. capture rows
+      # NOT flagged as phantoms (see odk_forms/mouse_livetrap.xlsx), so phantoms
+      # must not be subtracted again.
+      number_mice_caught = night_captures,
 
       grid_location_x = trap_x,
       grid_location_y = trap_y,

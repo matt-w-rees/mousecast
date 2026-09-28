@@ -28,6 +28,24 @@
 # every such conflict is printed (see sex_conflicts below) so it stays
 # visible for manual follow-up, not just silently resolved. TODO: no further
 # action taken yet -- see _targets.R's own TO-DO note on this.
+#
+# Sessions with no individual-level capture rows at all (no class recorded
+# and no pit tags -- e.g. historic_qld and historic_roseworthy, which only
+# record nightly totals in number_mice_caught) can't be counted from
+# individual rows, so the formulas above would return 0 regardless of how
+# many mice were caught. For those sessions:
+#   - no captures at all (number_mice_caught totals 0): a genuine zero, for
+#     any trap type -- a session that caught nothing has no individual rows
+#     either, so this has to be checked first;
+#   - kill traps (kill_trap_types, e.g. snapback): a killed mouse can't be
+#     caught again, so every capture is a different individual --
+#     number_unique_individuals_session is the session's total captures;
+#   - live traps: recaptures are possible and unmarked animals can't be told
+#     apart, so unique individuals are unknown -- NA, not 0.
+# n_males_site/n_females_site are NA for sessions that caught mice but have no
+# individual rows, since sex is only counted from individual rows.
+kill_trap_types <- c("snapback")
+
 data_traps_session_summary <- function(data) {
 
   data <- data |>
@@ -99,10 +117,24 @@ data_traps_session_summary <- function(data) {
       # with no resolved canonical_sex (all its sex values NA this session) would otherwise be
       # missed by both.
       number_unique_individuals_session = dplyr::n_distinct(.individual_id[.id_method == "pit_tag"], na.rm = TRUE) +
-        sum(.id_method != "pit_tag" & (class == "first_capture" | class == "recapture_bw_trips"), na.rm = TRUE)
+        sum(.id_method != "pit_tag" & (class == "first_capture" | class == "recapture_bw_trips"), na.rm = TRUE),
       # see r_not_in_use/breeding_sign_indicators.R for an abandoned draft of
       # sex-ratio-proportion and breeding-sign columns that could go here
+      # Total captures across the session's rows.
+      .session_captures = sum(number_mice_caught, na.rm = TRUE),
+      # TRUE for a session that caught mice but has no individual-level capture rows (see header).
+      .totals_only = all(is.na(class)) & all(.id_method != "pit_tag") & .session_captures > 0,
+      # Kill traps: every capture is a unique individual; live traps: unknown. A session with no
+      # captures keeps its 0 from the formula above.
+      number_unique_individuals_session = dplyr::case_when(
+        !.totals_only ~ as.numeric(number_unique_individuals_session),
+        trap_type %in% kill_trap_types ~ as.numeric(.session_captures),
+        TRUE ~ NA_real_
+      ),
+      # Sex is only counted from individual rows, so it's unknown for these sessions.
+      n_males_site = dplyr::if_else(.totals_only, NA_real_, as.numeric(n_males_site)),
+      n_females_site = dplyr::if_else(.totals_only, NA_real_, as.numeric(n_females_site))
     ) |>
     dplyr::ungroup() |>
-    dplyr::select(-.pit_tag_id_lower, -.pit_tag_id_suspect, -.id_method, -.individual_id, -.canonical_sex)
+    dplyr::select(-.pit_tag_id_lower, -.pit_tag_id_suspect, -.id_method, -.individual_id, -.canonical_sex, -.session_captures, -.totals_only)
 }

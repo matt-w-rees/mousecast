@@ -25,6 +25,9 @@
 # returned as the raw ODK choice codes (e.g. vagina is "1"/"2"/"3"/"4"); a
 # later cleaning step is expected to recode these to the project's canonical
 # labels, the same way clean_data_odk_rapid() does for the rapid assessment forms.
+#
+# Any session ODK Central's review workflow has marked "rejected" is dropped
+# before any of the above (see r/a_odk_filter_rejected_submissions.R).
 
 # Internal helper: read one night's captures_N sub-table, strip the trailing
 # "_N" from its column names, and tag every row with the night number.
@@ -105,6 +108,11 @@ odk_read_submissions_traps <- function(
 
   # --- 1. Read main submissions ---
   main <- readr::read_csv(main_file, show_col_types = FALSE)
+
+  # --- 1b. Drop submissions ODK Central's review workflow has marked "rejected" ---
+  # See r/a_odk_filter_rejected_submissions.R -- done here, before the per-night/
+  # per-capture joins below, so a rejected submission's own rows drop out with it.
+  main <- .odk_filter_rejected_submissions(main)
 
   # ODK Central's CSV export keeps each begin_group's name as a column prefix
   # (e.g. "night_1-night_1_date"), duplicating the field's own "night_1_" prefix.

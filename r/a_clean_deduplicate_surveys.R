@@ -22,7 +22,8 @@ resolve_duplicate_group <- function(group, crop_cols, sum_cols, value_col, surve
 
     combined <- group |>
       dplyr::summarise(
-        dplyr::across(dplyr::all_of(sum_cols), ~ sum(.x, na.rm = TRUE)),
+        # A column that's NA in every duplicate stays NA (unknown), rather than summing to 0.
+        dplyr::across(dplyr::all_of(sum_cols), ~ if (all(is.na(.x))) NA else sum(.x, na.rm = TRUE)),
         dplyr::across(dplyr::all_of(other_cols), dplyr::first),
         comments = if ("comments" %in% names(group)) {
           vals <- unique(comments[!is.na(comments)])
@@ -139,7 +140,8 @@ clean_deduplicate_surveys <- function(data, survey_type = c("traps", "rapid")) {
   if (survey_type == "traps") {
     sum_cols  <- c("number_traps_set", "number_phantoms", "number_functional_traps",
                    "number_mice_caught", "n_males_site", "n_females_site",
-                   "number_unique_individuals_session", "number_functional_traps_session")
+                   "number_unique_individuals_session", "number_functional_traps_session",
+                   "number_mice_caught_session")
     value_col <- "number_mice_caught"
   } else {
     sum_cols  <- c("burrow_transects_surveyed", "burrow_total_count",

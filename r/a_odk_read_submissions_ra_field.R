@@ -13,8 +13,10 @@
 #
 # Returns a tibble with the same schema as odk_download_rapid_submissions():
 #   active_burrows_tN and chewcard_percent_N already normalised, date_today
-#   renamed to survey_date, and bait_history "unknown" (newer form versions)
-#   recoded to "unsure" to match the rest of the pipeline.
+#   renamed to survey_date, bait_history "unknown" (newer form versions)
+#   recoded to "unsure" to match the rest of the pipeline, and any submission
+#   ODK Central's review workflow has marked "rejected" already dropped (see
+#   r/a_odk_filter_rejected_submissions.R).
 
 # Uses the shared .odk_pivot_csv_wide()/.odk_pivot_wide() helpers -- see r/a_odk_pivot_csv_wide.R.
 
@@ -37,6 +39,11 @@ odk_read_submissions_ra_field <- function(
     main_file,
     show_col_types = FALSE
   )
+
+  # --- 1b. Drop submissions ODK Central's review workflow has marked "rejected" ---
+  # See r/a_odk_filter_rejected_submissions.R -- done here, before the sub-table
+  # joins below, so a rejected submission's burrow/chew rows drop out with it.
+  submissions <- .odk_filter_rejected_submissions(submissions)
 
   # --- 2. Rename columns to match API output schema ---
   submissions <- dplyr::rename(submissions,
