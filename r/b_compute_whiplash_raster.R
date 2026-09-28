@@ -91,6 +91,24 @@
 # warm-up convention, e.g. GPP's own rolling average), same layer names as
 # anomaly_rast's own (sorted) periods. Each cell's value is the swing in the
 # requested direction, anchored as anchor above describes.
+#
+# The sweep itself (step 3 below) runs on an in-memory matrix (terra::values(),
+# ncell x n), not directly on the SpatRaster layers, and is converted back to a
+# SpatRaster only once at the end -- confirmed live (2026-09) this is not a
+# cosmetic change: the original layer-by-layer version (each sweep step calling
+# SpatRaster `-`/max()/min() directly, ~(n-window)*(window-1)*3 separate terra
+# operations for rain's own 524-layer/window=12 case) took 2798s to build
+# rain_whiplash_trough_to_peak, ~200x longer than every OTHER step in the same
+# covariate chain (rain_whiplash_source_anomaly, a similarly-sized raster,
+# built in 13.9s) -- each terra arithmetic call round-trips through the
+# GDAL/disk-backed raster backend even though the resulting object is small,
+# so the real cost was call overhead multiplied thousands of times over, not
+# genuine computation. Pulling values into memory once and running the
+# IDENTICAL algorithm (same window logic, pmax()/pmin() standing in for
+# terra's own cellwise max()/min()) as plain matrix arithmetic avoids that --
+# confirmed live the two implementations produce identical output (compared
+# directly, both to the old rain_whiplash_trough_to_peak target and a fresh
+# soil-moisture rebuild) before this replaced the layer-by-layer version.
 
 compute_whiplash_raster <- function(anomaly_rast, window, direction = c("trough_to_peak", "peak_to_trough"), anchor = c("anywhere", "current")) {
 
@@ -131,9 +149,11 @@ compute_whiplash_raster <- function(anomaly_rast, window, direction = c("trough_
     stop("anomaly_rast has fewer periods (", n, ") than window (", window, ").")
   }
 
-  # one output layer per period from the window'th onward (the first window-1
+  # one output COLUMN per period from the window'th onward (the first window-1
   # periods have no full trailing window yet, see header)
-  swing_layers <- vector("list", n - window + 1)
+  vals      <- terra::values(anomaly_rast) # ncell x n matrix, read from disk once
+  n_out     <- n - window + 1
+  swing_mat <- matrix(NA_real_, nrow = nrow(vals), ncol = n_out)
 
   # ---- 3. For each output period, sweep its own trailing window for the swing to report ----
   # "buy low, sell high" maximum-subarray sweep (see header): running_extreme
@@ -143,30 +163,33 @@ compute_whiplash_raster <- function(anomaly_rast, window, direction = c("trough_
   # candidate computed on this sweep's own LAST step -- t's own value against
   # the running extreme of every period strictly before it (anchor = "current").
   # Both are cheap to track in the same pass, so anchor only decides which one
-  # gets kept at the end, not how the sweep itself runs.
+  # gets kept at the end, not how the sweep itself runs. Identical logic to the
+  # original layer-by-layer version (see header) -- pmax()/pmin() here are the
+  # plain-matrix equivalent of terra's own cellwise max()/min() on a SpatRaster.
   for (t in window:n) {
-    idx <- (t - window + 1):t                     # this output period's own trailing window of layer indices
-    running_extreme <- anomaly_rast[[idx[1]]]      # window's first layer -- starting point for both trackers
-    best_swing       <- anomaly_rast[[idx[1]]] * 0 # zero raster (same grid/extent) -- no swing possible yet, one layer in
-    current_swing    <- best_swing                 # same starting point -- updated every step, only the last one is kept
+    idx <- (t - window + 1):t                # this output period's own trailing window of column indices
+    running_extreme <- vals[, idx[1]]        # window's first column -- starting point for both trackers
+    best_swing       <- rep(0, nrow(vals))   # no swing possible yet, one column in
+    current_swing    <- best_swing           # same starting point -- updated every step, only the last one is kept
 
-    for (j in idx[-1]) {                           # sweep forward through the rest of this window, in order
-      layer_j <- anomaly_rast[[j]]
+    for (j in idx[-1]) {                     # sweep forward through the rest of this window, in order
+      col_j <- vals[, j]
       if (direction == "trough_to_peak") {
-        current_swing    <- layer_j - running_extreme          # candidate swing: current layer vs lowest-so-far
-        best_swing       <- max(best_swing, current_swing)
-        running_extreme  <- min(running_extreme, layer_j)      # update the running trough
+        current_swing    <- col_j - running_extreme            # candidate swing: current column vs lowest-so-far
+        best_swing       <- pmax(best_swing, current_swing)
+        running_extreme  <- pmin(running_extreme, col_j)       # update the running trough
       } else {
-        current_swing    <- running_extreme - layer_j          # candidate swing: highest-so-far vs current layer
-        best_swing       <- max(best_swing, current_swing)
-        running_extreme  <- max(running_extreme, layer_j)      # update the running peak
+        current_swing    <- running_extreme - col_j            # candidate swing: highest-so-far vs current column
+        best_swing       <- pmax(best_swing, current_swing)
+        running_extreme  <- pmax(running_extreme, col_j)       # update the running peak
       }
     }
 
-    swing_layers[[t - window + 1]] <- if (anchor == "anywhere") best_swing else current_swing
+    swing_mat[, t - window + 1] <- if (anchor == "anywhere") best_swing else current_swing
   }
 
-  swing_rast <- terra::rast(swing_layers)
+  swing_rast <- terra::rast(anomaly_rast, nlyr = n_out) # empty template, same grid/extent/crs as the input
+  terra::values(swing_rast) <- swing_mat
   names(swing_rast) <- labels[window:n] # same chronological labels as the periods these swings were computed for
   swing_rast
 }

@@ -7,8 +7,8 @@
 # gpp_gf_pixel_ratio_rast (VIIRS gap-filled vs non-gap-filled, near-real-time
 # splice) -- but generic enough to reuse for any two-source GPP ratio.
 #
-# Why pixel-scale, not a single national factor: confirmed empirically this
-# session that PML's own raw value at survey paddocks (productive
+# Why pixel-scale, not a single national factor: confirmed empirically that
+# PML's own raw value at survey paddocks (productive
 # grain-growing land) can differ hugely from its national mean (e.g. August:
 # ~5.9 vs ~1.6 gC/m^2/day) -- a single paddock-calibrated correction, applied
 # to the whole national raster, necessarily assumes that gap generalises
@@ -34,22 +34,23 @@
 # to a neutral ratio of 1 (no correction) rather than left as NaN.
 #
 # A pixel with NO valid numerator data anywhere in the shared overlap gets NA
-# here instead, deliberately NOT the same neutral-1 treatment -- confirmed
-# live this session that PML-V2's own raw file has no masking applied at all
-# (just a bounding-box crop), while this pipeline's own MOD17/VNP17 record is
-# masked to the Australian coastline plus a fill/sentinel-code threshold
-# (build_gpp_period_raster()'s aus_shp/valid_max arguments) -- so PML
-# retains valid values across tens of thousands of cells (~39,000 of ~55,000
-# nationally, confirmed against the actual 1999/2000 splice) that MOD17/VNP17
-# has zero data for at all. Defaulting those cells to ratio = 1 would leave
-# PML's own raw, uncorrected value sitting there in the final corrected
-# splice -- invisible in any paddock-level check (paddocks always have valid
-# data on both sides), but it drags a national-mean view of the splice
-# hugely out of line right at the 2000 boundary, since the two eras of the
-# record end up averaged over two different geographic footprints. NA here
-# instead means: this pixel gets excluded from the corrected output entirely
-# (NA * anything = NA downstream in apply_gpp_pixel_ratio_correction()),
-# so both eras of the splice end up sharing the same valid-pixel footprint.
+# here instead, deliberately NOT the same neutral-1 treatment. This is a
+# general safeguard against a mismatched valid-data footprint between the
+# two sides: pml_gpp_rast is masked to the same footprint as this pipeline's
+# own MOD17/VNP17 record at its own build step (_targets.R's "viii. Crop PML
+# to same area"), but a genuinely identical footprint still isn't guaranteed
+# for every caller of this function (e.g. the MOD17-vs-VNP17 and GF-vs-NGF
+# corrections it also computes). The underlying logic holds regardless of
+# how close the two footprints happen to be: defaulting a numerator-less
+# cell to ratio = 1 would leave the denominator's own raw, uncorrected value
+# sitting there in the final corrected splice -- invisible in any
+# paddock-level check (paddocks always have valid data on both sides), but
+# it drags a national-mean view of the splice hugely out of line right at a
+# splice boundary, since the two eras of the record would end up averaged
+# over two different geographic footprints. NA here instead means: this
+# pixel gets excluded from the corrected output entirely (NA * anything = NA
+# downstream in apply_gpp_pixel_ratio_correction()), so both eras of the
+# splice end up sharing the same valid-pixel footprint.
 #
 # Arguments:
 #   numerator_rast    the source whose typical level the correction should
@@ -69,9 +70,8 @@
 #                     as.character(date) instead, e.g.
 #                     load_and_clamp_gpp_composites()'s own output) passes
 #                     something like function(x) lubridate::month(as.Date(x))
-#                     instead -- 2026-08, added once this function needed to
-#                     work at both grains, rather than teach it a second
-#                     hard-coded string format.
+#                     instead, since its own layers aren't named
+#                     "month_year".
 #
 # Returns a SpatRaster, one layer per calendar month present in both inputs
 # (named "1"-"12"), one numerator/denominator ratio value per pixel per

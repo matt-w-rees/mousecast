@@ -1,57 +1,23 @@
 # Downloads PML-V2's monthly global GPP netCDF archive from TPDC's FTP
-# server -- this was previously the pipeline's one manually-downloaded raw
-# data source (used for the 1982-1999 pre-VIIRS/MODIS GPP splice, _targets.R
-# section 5); this function makes it reproducible from a fresh clone instead
-# of a one-off manual step.
+# server, for the 1982-1999 pre-VIIRS/MODIS GPP splice -- a fixed, completed
+# historical archive (currently 1982-2020),
+# so there's no "always re-check the newest year" logic needed the way
+# download_silo_daily_data()/download_gpp() both need. Shells out to the
+# system curl binary, not the "curl" R package (curl::curl_download() hangs
+# against this server) -- --disable-epsv is required since TPDC's FTP
+# server doesn't support passive-mode EPSV. A file already in out_dir is
+# only trusted if its size matches TPDC's own currently-reported size (a
+# cheap HEAD request), catching a locally truncated file, not just a
+# missing one. Given how slow this connection is, each transfer resumes
+# rather than restarts and retries transient failures, and is downloaded to
+# a .part sibling first, only renamed to its real name on success, so an
+# interrupted transfer never leaves a truncated file looking complete.
 #
-# TPDC's PML-V2 archive is a fixed, completed historical product (currently
-# 1982-2020, confirmed live) -- unlike SILO/GPP's own current-year files, a
-# year's file here never changes once published, so there's no "always
-# re-check the newest year" logic needed the way download_silo_daily_data()/
-# download_gpp() both need.
-#
-# Shells out to the system curl binary rather than the "curl" R package --
-# confirmed live this session that curl::curl_download() simply hangs
-# against this server (never transfers a byte), while the CLI binary works
-# fine, just slowly (~27 KB/s observed from this network -- a single ~30 MB
-# file took several minutes; a full from-scratch archive could take hours).
-# --disable-epsv is required either way -- TPDC's FTP server doesn't support
-# passive-mode EPSV, confirmed live.
-#
-# A file already sitting in out_dir is only trusted if its size matches
-# what TPDC's own server currently reports for it (remote_size(), a HEAD-
-# style request -- confirmed live this session it returns Content-Length in
-# a couple of seconds, not a full transfer) -- not just checked for
-# existence. There's no single hardcoded "correct size" to check against
-# instead: real file sizes vary year to year (leap years, differing
-# compression). This also catches a locally truncated/corrupted file, not
-# just a missing one -- confirmed live this session that a --max-time
-# cutoff on this slow connection leaves exactly that kind of partial file
-# under what would otherwise look like a normal filename.
-#
-# Given how slow and seemingly failure-prone this connection is, each
-# transfer: resumes instead of restarting (-C -, against the same .part
-# file a previous interrupted attempt left behind) and retries transient
-# failures 3 times with a delay. Downloaded to a .part sibling first, only
-# renamed to its real name on success -- so a transfer that dies partway
-# through never leaves a truncated file sitting under its real name looking
-# complete (the same concern gpp_file_readable(), r/b_download_gpp.R,
-# guards against for GPP). A wrong-sized file already at the real name is
-# deleted before its own redownload attempt, rather than resumed from --
-# there's no guarantee it's a valid prefix of the real file (could be
-# corrupted mid-file, not just truncated at the end), unlike a .part file
-# this function wrote itself.
-#
-# Credentials never appear in this script, _targets.R, or a process list
-# (ps) visible to other users on a shared machine -- both the FTP username
-# and password come from the OS keychain (via the "keyring" package) and
-# are only ever written into a temporary, current-user-only-readable
-# .netrc file passed to curl via --netrc-file, deleted again once the call
-# returns. TPDC issues its download account as part of a personal,
-# application-tied data access grant, not a freely chosen login handle like
-# download_gpp()'s Earthdata username -- so unlike that function, the
-# username itself is treated as sensitive here too. One-off setup (run
-# interactively in the console, never in a script):
+# Credentials never appear in this script, _targets.R, or a process list --
+# both the FTP username and password come from the OS keychain (via the
+# "keyring" package), written only into a temporary, current-user-only
+# .netrc file passed to curl, deleted once the call returns. One-off setup
+# (run interactively in the console, never in a script):
 #   keyring::key_set(service = "tpdc_pml", username = "<tpdc_account_id>")
 # (prompts for the password interactively).
 #

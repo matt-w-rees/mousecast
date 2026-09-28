@@ -36,6 +36,25 @@
 
 build_awra_soil_moisture_raster <- function(file) {
 
+  # Guard against an incomplete/failed AWRA download reaching terra::rast() as an empty or
+  # missing path -- download_awra_data() deliberately drops a variable from its own return value
+  # on a partial transfer (its own header comment: non-fatal, resumed on the next tar_make() call),
+  # so a call site filtering awra_files by variable name (e.g. soil_moisture_raster, _targets.R)
+  # can end up passing character(0) here instead of a real path. terra::rast(character(0)) throws
+  # an opaque "[rast] filename is empty" error with no mention of AWRA/sm_pct at all -- confirmed
+  # live 2026-09, traced back to a dropped mid-transfer connection (curl exit 18) leaving
+  # sm_pct.nc.part on disk instead of a finished sm_pct.nc. This turns that into an actionable
+  # message pointing at the real cause instead.
+  if (length(file) == 0 || !file.exists(file)) {
+    stop(
+      "build_awra_soil_moisture_raster(): no AWRA sm_pct.nc file to read (got ",
+      if (length(file) == 0) "no path at all" else paste0("'", file, "', which doesn't exist"),
+      "). download_awra_data() has likely not finished downloading it yet -- check for a ",
+      "'sm_pct.nc.part' file under its out_dir (a transfer still in progress or interrupted ",
+      "partway through) and rerun tar_make() to resume it."
+    )
+  }
+
   r <- suppressWarnings(terra::rast(file)) # confirmed-correct guessed CRS -- see header
   terra::crs(r) <- "EPSG:4326" # set explicitly so it's no longer just a guess
 

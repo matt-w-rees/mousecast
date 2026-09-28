@@ -35,18 +35,12 @@ gpp_downloaded_dates <- function(out_dir, layers) {
 }
 
 # Round a polygon's coordinates to `digits` decimal degrees (default 6, ~11 cm
-# -- far finer than GPP's 500m pixels, so no real spatial detail is lost) via
-# a WKT round-trip, which works generically across POLYGON/MULTIPOLYGON with
-# holes. Needed because AppEEARS's own polygon validator rejects roi with
-# "One or more features has an invalid polygon" even when sf::st_is_valid()
-# says TRUE -- confirmed directly, isolating the cause by elimination
-# (multi-part geometry, ring winding order via an RFC7946 GeoJSON round-trip,
-# interior holes, and Douglas-Peucker simplification down to ~1km tolerance
-# all still failed) until only coordinate precision remained: rounding to 4
-# decimal places on an otherwise-untouched polygon made AppEEARS accept it.
-# The likely cause is float noise from repeated sf::st_buffer()/st_union()
-# calls on geographic coordinates (build_study_area()) -- GEOS's validity
-# check tolerates it, but AppEEARS's parser apparently does not.
+# -- far finer than GPP's 500m pixels) via a WKT round-trip, generic across
+# POLYGON/MULTIPOLYGON with holes. Needed because AppEEARS's own polygon
+# validator rejects roi with "One or more features has an invalid polygon"
+# even when sf::st_is_valid() says TRUE -- coordinate precision (likely
+# float noise from repeated sf::st_buffer()/st_union() calls) turned out to
+# be the cause; GEOS's own validity check tolerates it, AppEEARS's does not.
 gpp_round_roi_precision <- function(roi, digits = 6) {
   wkt <- sf::st_as_text(sf::st_geometry(roi), digits = digits)
   sf::st_sf(geometry = sf::st_as_sfc(wkt, crs = sf::st_crs(roi)))
@@ -54,18 +48,11 @@ gpp_round_roi_precision <- function(roi, digits = 6) {
 
 # TRUE if `path` actually opens and its data can be read -- not just that the
 # file exists. A GDAL header can open fine even when the data body is
-# truncated/corrupt, so file.exists() alone (as gpp_downloaded_dates() above
-# uses, for speed -- see its own note) can't tell a genuinely-complete
-# composite from one that died mid-write. terra::global(..., "notNA") forces
-# a real read of every cell, not just the header.
-#
-# Used by check_gpp_files() (r/b_check_gpp_files.R) for its diagnostic sweep,
-# and by r_not_in_use/b_import_viirs_gpp_bundle.R (superseded -- see that
-# script's header). Deliberately NOT used by gpp_downloaded_dates() -- that
-# check runs on every tar_make(), and opening/reading every one of
-# potentially thousands of composites daily just to catch a rare corruption
-# would trade a real, recurring cost for a small, occasional benefit; run
-# check_gpp_files() periodically instead to catch that case.
+# truncated/corrupt, so file.exists() alone can't tell a genuinely-complete
+# composite from one that died mid-write. Used by check_gpp_files() for its
+# diagnostic sweep; deliberately NOT used by gpp_downloaded_dates() itself,
+# since that check runs on every tar_make() and opening/reading every
+# composite just to catch a rare corruption isn't worth the recurring cost.
 gpp_file_readable <- function(path) {
   tryCatch({
     r <- terra::rast(path)
@@ -75,38 +62,19 @@ gpp_file_readable <- function(path) {
 }
 
 # Recover specific missing files from an already-processed AppEEARS bundle,
-# rather than re-transferring the whole thing. appeears::rs_transfer() re-GETs
-# every file in the bundle on every call, which (confirmed directly) doesn't
-# reliably converge: retrying a ~1100-file bundle to recover 2 failed files
-# left 8 different files missing, since each retry re-rolls ~1100 independent
-# per-file failure chances rather than only re-fetching what's actually gone.
-# Used by download_gpp() to recover from a transfer that died partway through
-# (appeears::rs_request()'s internal download() throws the moment even one
-# file fails a GET, with no retry of its own).
-#
-# dest_dir should match where appeears's own successful transfer would have
-# written files -- out_dir/<job_name>/, confirmed directly from both a live
-# test and appeears:::appeears_service$download()'s own final_path
-# construction (path/<task_name>/, where task_name is this pipeline's
-# job_name) -- so a recovered file lands exactly where
-# build_gpp_period_raster() etc. already expect to find it, not in a
-# second, separate location the way rs_transfer() does (it writes flat into
-# whatever `path` it's given, ignoring the task-name subfolder entirely).
-#
-# already_have below only scans dest_dir itself, NOT the wider out_dir a
-# bundle's files might duplicate -- deliberately (download_gpp()'s own retry
-# loop calls this repeatedly against the SAME dest_dir, where that scope is
-# exactly right). A fresh, standalone dest_dir (e.g. hand-recovering an
-# orphaned task per the stop()-message instructions below) loses that
-# protection: AppEEARS' own bundle can legitimately span far more dates than
-# were actually missing (see gpp_group_contiguous_dates()'s own header, "one
-# task, multiple date sub-ranges" doesn't reliably stop it delivering the
-# full bounding range), so a manual call here can genuinely re-fetch files
-# that already exist elsewhere in out_dir (confirmed live, 2026-08: a
-# standalone recovery call re-downloaded 15+ already-present MODIS
-# composites this way). ALWAYS follow a manual call to this function with
-# gpp_remove_redundant_files(out_dir, dest_dir) -- download_gpp() itself
-# always pairs the two (see its own step 5 comment) for exactly this reason.
+# rather than re-transferring the whole thing -- appeears::rs_transfer()
+# re-GETs every file in the bundle on every call, which doesn't reliably
+# converge on a large bundle (retrying a ~1100-file bundle to recover 2
+# failed files left 8 different files missing). Used by download_gpp() to
+# recover from a transfer that died partway through. dest_dir should match
+# where appeears's own successful transfer would have written files --
+# out_dir/<job_name>/ -- so a recovered file lands exactly where downstream
+# readers already expect to find it. already_have only scans dest_dir
+# itself, not the wider out_dir -- correct for download_gpp()'s own repeated
+# retry calls against the same dest_dir, but a standalone manual call should
+# always be followed by gpp_remove_redundant_files(out_dir, dest_dir), since
+# AppEEARS' own bundle can legitimately span more dates than were actually
+# missing.
 #
 # Arguments:
 #   task_id         AppEEARS task ID (must already be status "done")
@@ -154,31 +122,16 @@ gpp_fetch_missing_bundle_files <- function(task_id, earthdata_user, dest_dir) {
 
 # Split a sorted vector of missing composite dates into contiguous runs --
 # consecutive dates no more than step_days (the expected composite spacing)
-# apart stay in the same run; a bigger gap (an already-downloaded date
-# sitting in between two separate missing stretches) starts a new one.
-# Used so an AppEEARS request can be scoped tightly to each genuinely
-# missing stretch, rather than one [min, max] bounding range that would
-# also re-request every already-downloaded date sitting between two
-# scattered gaps (e.g. the isolated missing-quality-flag composites
-# described in download_gpp()'s own recheck_after_days note) -- confirmed
-# live this session: a handful of scattered gaps in an otherwise-complete
-# historic MODIS record turned into a single, ~10.8GB bounding-range
-# request that re-fetched most of an already-downloaded year alongside them.
-#
-# This narrows the REQUEST (task_df below gets one tight {start, end} row
-# per run); it does NOT reliably narrow what AppEEARS actually DELIVERS.
-# Confirmed live again, 2026-08: two tight, well-separated runs (a 6-date
-# Jan-Feb 2000 gap and a 2-date June 2001 gap, over a year apart) submitted
-# as two separate date rows under one task still came back as a single
-# 69-file bundle spanning the ENTIRE 17 months between them, not just the 8
-# genuinely missing dates -- so AppEEARS' own area-request processing
-# appears to collapse a task's multiple date sub-ranges down to their outer
-# bounding range server-side, regardless of what the submitted request.json
-# itself contains. This is accepted as a platform limitation, not fixed by
-# submitting one task per run (which would just multiply server-side
-# processing time for a rare case) -- download_gpp()'s own post-fetch
-# gpp_remove_redundant_files() call is what actually keeps this from
-# polluting out_dir with duplicates; see that function's header.
+# apart stay in the same run; a bigger gap starts a new one. Used so an
+# AppEEARS request can be scoped tightly to each genuinely missing stretch,
+# rather than one [min, max] bounding range that would also re-request every
+# already-downloaded date sitting between two scattered gaps. This narrows
+# the REQUEST; it does NOT reliably narrow what AppEEARS actually DELIVERS
+# -- confirmed live: two well-separated tight runs, submitted as two
+# separate date rows under one task, still came back as a single bundle
+# spanning the entire range between them. Accepted as a platform limitation
+# -- download_gpp()'s own post-fetch gpp_remove_redundant_files() call is
+# what actually keeps this from polluting out_dir with duplicates.
 #
 # Returns a list of Date vectors, one per run (a single run, unchanged from
 # before, when the whole gap is genuinely one contiguous stretch).
@@ -190,22 +143,14 @@ gpp_group_contiguous_dates <- function(dates, step_days = 8) {
 }
 
 # Remove a just-downloaded file if an identical-name copy already exists in
-# an OLDER sibling subfolder under request_dir. Confirmed live: AppEEARS can
-# return a composite that sits outside a request's own missing_dates (e.g.
-# VNP17A2GF.002_Gpp_500m_doy2025361... -- the 8-day period touching a
-# calendar year's start, delivered under the PRECEDING year's own
-# day-of-year label, so it never matches gpp_expected_dates()'s per-year
-# grid for the current request). Every call writes into a fresh,
-# job_name-dated subfolder (see download_gpp()'s dest_dir), so that
-# composite gets silently re-fetched and re-saved into a brand new folder
-# every time the surrounding genuine gap gets rechecked (e.g. every
-# recheck_after_days), even though an identical copy from an earlier run is
-# already sitting right there -- confirmed directly: the same file
-# duplicated across two dated subfolders two days apart, purely from this.
-# Keeps the OLDER copy (already correctly read by build_gpp_period_raster(),
-# which merges same-date files across folders anyway -- see its own header),
-# deletes the redundant new one, so disk usage doesn't keep growing on every
-# recheck for however many months the real gap stays open.
+# an OLDER sibling subfolder under request_dir. AppEEARS can return a
+# composite that sits outside a request's own missing_dates (e.g. an 8-day
+# period touching a calendar year's start, delivered under the PRECEDING
+# year's own day-of-year label) -- every call writes into a fresh dated
+# subfolder, so that composite would otherwise get silently re-fetched and
+# re-saved every time the surrounding gap is rechecked. Keeps the OLDER copy
+# (already correctly read by build_gpp_period_raster(), which merges
+# same-date files across folders anyway), deletes the redundant new one.
 gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 
   new_files <- list.files(new_subdir, pattern = "\\.tif$", full.names = TRUE)
@@ -230,75 +175,35 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 # grainbelt, via NASA's AppEEARS service ("appeears" R package,
 # https://github.com/bluegreen-labs/appeears -- not on CRAN, install with
 # remotes::install_github("bluegreen-labs/appeears")). Works for either of
-# this pipeline's two GPP sources -- MODIS (MOD17A2HGF.061, Terra,
-# 2000-01-01+) for the historical record, spliced into VIIRS (VNP17A2GF.002,
-# 2012-01-01+) for recent/ongoing composites -- since both products share
-# identical layer names, fill-value codes, scale factor and 8-day cadence
-# (confirmed live via appeears::rs_products()/rs_layers()); only the
-# `product`/`start_date`/`end_date`/`out_dir` arguments differ between calls.
-# _targets.R calls this once directly for the single, fixed MODIS range, and
-# once per fixed calendar-year VIIRS block via download_gpp_block()
-# (r/b_download_gpp_block.R), which derives start_date/end_date/out_dir from
-# each block and calls this function underneath.
-#
-# Why _targets.R hands off from MODIS to VIIRS specifically at 2011/2012 (not
-# some other year, and not by continuing to pull both indefinitely): VIIRS is
-# NASA's own designated operational continuation of MODIS, not just a second
-# independent product that happens to measure the same thing (see
-# build_gpp_period_raster()'s own header on the two sharing an identical
-# spec) -- and MOD17A2HGF.061 is not indefinitely available: NASA's own
-# guidance (an Earthdata/NSIDC alert, May 2025) has the Terra and Aqua
-# platforms carrying MODIS beginning to shut down in late 2026/early 2027,
-# after which MODIS data collection ends and a final reprocessing takes
-# place, with users actively encouraged to transition to the equivalent
-# VIIRS products. This pipeline's 2012 handoff already anticipates that
-# transition rather than reacting to it -- MOD17A2HGF.061 was still
-# confirmed live as "2000-01-01+" (open-ended, not yet retired) at the time
-# this was written, so treat "still collecting data today" as likely-but-
-# unconfirmed for any specific date; check NASA's own MODIS status page
-# directly if a render needs certainty on exactly when it stopped.
+# this pipeline's two GPP sources -- MODIS (MOD17A2HGF.061, 2000-01-01+) for
+# the historical record, spliced into VIIRS (VNP17A2GF.002, 2012-01-01+) for
+# recent/ongoing composites, since both products share an identical spec
+# (layer names, fill codes, scale factor, 8-day cadence). _targets.R calls
+# this once directly for the fixed MODIS range, and once per calendar-year
+# VIIRS block via download_gpp_block() (r/b_download_gpp_block.R). The
+# 2011/2012 MODIS->VIIRS handoff anticipates MODIS's own eventual retirement
+# (Terra/Aqua MODIS collection is set to end in late 2026/early 2027, per
+# NASA) -- VIIRS is NASA's own designated operational continuation, not just
+# a second independent product.
 #
 # One-off setup (run interactively in the console -- NEVER hard-code a
-# password in a script): store an Earthdata Login username/password in the
-# OS keychain via the "keyring" package (used internally by appeears):
+# password in a script):
 #   appeears::rs_set_key(user = "<earthdata_username>", password = "<password>")
 # download_gpp() then only needs the username; rs_login() reads the
 # password back out of the keychain itself.
 #
-# `roi` is the pipeline's shared covariate_download_region target (r/b_build_study_area.R) --
-# already buffered and dissolved to one polygon, so a region always means the
-# same physical area whichever product's request it comes from. VIIRS/MODIS
-# are delivered on the same ~10x10 degree sinusoidal tile grid, and an area
-# request has to server-side mosaic every tile its polygon touches --
-# restricting the outline to wherever covariate_download_region actually points (rather than
-# the full national GRDC layer, which spans the whole grainbelt coast-to-
-# coast) keeps the number of tiles touched, and so the download size, well
-# down.
+# `roi` is the pipeline's shared covariate_download_region target -- always
+# the same physical area whichever product's request it comes from, kept
+# tight to limit how many of VIIRS/MODIS's sinusoidal tiles a request touches.
 #
-# Incremental along two independent axes:
-#  - Temporal: before touching AppEEARS, the requested [start_date, end_date]
-#    is expanded to its expected 8-day composite dates (gpp_expected_dates())
-#    and compared against what's already sitting in out_dir
-#    (gpp_downloaded_dates()). If only some dates are missing (e.g. a
-#    previous run was interrupted, or this is just today's new composite),
-#    only the [min, max] span of the missing dates is requested -- not the
-#    full start_date/end_date range.
-#  - Spatial: covariate_download_region can grow between runs (e.g. widening from a small
-#    test area to the full national selection, see build_study_area()'s
-#    header). A sidecar file (out_dir/study_area.gpkg, not a .tif so
-#    build_gpp_period_raster()'s Gpp_500m.*\.tif$ filter ignores it)
-#    remembers the ROI actually used for out_dir's last download. If `roi`
-#    has grown beyond it, only the newly-uncovered area is requested (into a
-#    dated out_dir/expansion_* subfolder, so its same-named
-#    "..._aid0001.tif" outputs don't collide with the original download's) --
-#    composites already covering the rest of covariate_download_region are reused, not
-#    re-fetched. build_gpp_period_raster() already mosaics same-date files
-#    from different subfolders together (originally written to handle a
-#    west/east regional split, since retired -- see that function's header),
-#    so no changes were needed there to consume an expansion_* subfolder.
-#  If both checks find nothing missing, the function returns immediately
-# without logging in or submitting a task -- so it's safe to call from
-# tar_make() on every run.
+# Incremental along two independent axes, so it's safe to call from
+# tar_make() on every run: temporally, only the missing span within
+# [start_date, end_date] is requested (gpp_expected_dates()/
+# gpp_downloaded_dates()); spatially, if covariate_download_region has grown
+# since out_dir's last download (tracked via an out_dir/study_area.gpkg
+# sidecar), only the newly-uncovered area is requested into a dated
+# expansion_* subfolder. If neither check finds anything missing, the
+# function returns immediately without logging in or submitting a task.
 #
 # Arguments:
 #   roi                    sf polygon object -- the pipeline's covariate_download_region
@@ -306,23 +211,15 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 #   out_dir                folder the downloaded rasters are written into
 #   earthdata_user         Earthdata Login username (password comes from the
 #                          OS keychain, see setup note above)
-#   product                AppEEARS "ProductAndVersion" string. This
-#                          pipeline uses two: "MOD17A2HGF.061" (MODIS/Terra,
+#   product                AppEEARS "ProductAndVersion" string -- this
+#                          pipeline uses "MOD17A2HGF.061" (MODIS/Terra,
 #                          gap-filled, 2000-01-01+) for historical composites
 #                          and "VNP17A2GF.002" (VIIRS, gap-filled,
-#                          2012-01-01+) for recent/ongoing ones -- both
-#                          confirmed live via appeears::rs_products(). Their
-#                          own non-gap-filled siblings (MOD17A2H.061,
-#                          VNP17A2.002) are near-real-time; both also report a
-#                          suspiciously recent TemporalExtentStart (2021-01-01
-#                          and 2025-01-01), but that turned out to only be a
-#                          misreport for MOD17A2H.061 -- VNP17A2.002 confirmed
-#                          live (three separate frozen years, 2016/2020/2024,
-#                          all returned 0 of 46 requested dates) to genuinely
-#                          be a rolling near-real-time product with no deep
-#                          historical archive, unlike VNP17A2GF.002's full
-#                          2012+ reprocessing. So this field still can't be
-#                          trusted blindly either way -- check live per-product.
+#                          2012-01-01+) for recent/ongoing ones. Their
+#                          non-gap-filled siblings (MOD17A2H.061, VNP17A2.002)
+#                          are near-real-time only, with no deep historical
+#                          archive -- check live per-product before trusting
+#                          any reported date range.
 #   layers                 layers to request. Gpp_500m is the GPP estimate
 #                          itself; Psn_QC_500m is its per-pixel quality flag,
 #                          kept alongside so poor-quality/cloud-affected
@@ -342,31 +239,19 @@ gpp_remove_redundant_files <- function(request_dir, new_subdir) {
 #                          national-scale request can take a long time to
 #                          process server-side)
 #   max_transfer_attempts  total attempts (including the first) to fetch the
-#                          task's files before giving up (default 3). Only
-#                          covers transfer/download failures, not a timeout
-#                          (see step 5's comments for why those are handled
-#                          differently) -- confirmed directly that even one
-#                          flaky file out of 1000+ in a bundle otherwise
-#                          crashes the whole call with no retry at all
-#   recheck_after_days     if AppEEARS is asked for a genuine gap (missing_dates
-#                          non-empty) but doesn't actually fill it, that exact
-#                          gap is recorded (request_dir/gpp_pending_check.rds)
-#                          and skipped on every call for this many days
-#                          (default 7), rather than resubmitting an identical,
-#                          unfulfillable AppEEARS request on every single
-#                          tar_make(). Two confirmed causes this guards against:
-#                          (1) rs_request() reports success but the requested
-#                          dates simply haven't been published upstream yet
-#                          (recent/ongoing data only); (2) a composite date's
-#                          Psn_QC_500m file is permanently absent from
-#                          AppEEARS' own bundle (its Gpp_500m file is present)
-#                          -- confirmed directly on two independent historic
-#                          tasks -- so missing_dates can never reach zero and
-#                          every call re-fails the transfer and re-requests
-#                          the full range from scratch. The first time either
-#                          gap is hit it still surfaces the normal error/message
-#                          (so it's noticed); only a recurrence within this
-#                          window is silently skipped
+#                          task's files before giving up (default 3) -- one
+#                          flaky file out of thousands otherwise crashes the
+#                          whole call with no retry at all
+#   recheck_after_days     if AppEEARS is asked for a genuine gap but doesn't
+#                          fill it (e.g. the date isn't published upstream
+#                          yet, or a specific file is permanently absent from
+#                          its bundle), that exact gap is recorded and
+#                          skipped on every call for this many days (default
+#                          7), rather than resubmitting an identical,
+#                          unfulfillable request on every tar_make(). The
+#                          first time a gap is hit it still surfaces the
+#                          normal error/message; only a recurrence within
+#                          this window is silently skipped.
 
 download_gpp <- function(roi,
                           out_dir = "raw_data/predictor_variables/gpp",
@@ -397,18 +282,14 @@ download_gpp <- function(roi,
   if (file.exists(sidecar_path)) {
     previous_roi <- sf::st_make_valid(sf::read_sf(sidecar_path))
 
-    # s2 is disabled for both the st_difference() and st_area() calls below
-    # (GEOS/lwgeom instead) -- the repeated buffer/union operations behind
-    # roi/previous_roi occasionally leave a degenerate vertex that GEOS
-    # tolerates but s2 rejects as invalid topology (the same s2-vs-GEOS
-    # mismatch load_paddocks(), match_surveys_to_paddocks() and
-    # attach_grdc_subregion() already work around for their own set
-    # operations). st_area() must run in this same s2-off block, not after
-    # it's restored -- GEOS's st_difference() output can still trip s2's
-    # stricter check the moment something (like st_area()) hands it back to
-    # s2. lwgeom's geodesic area calculation (used here in GEOS mode) is not
-    # a lower-precision fallback -- it's a proper ellipsoidal area, just via
-    # a different library than s2's. Restored on exit either way.
+    # s2 disabled for both calls below (GEOS/lwgeom instead) -- repeated buffer/union operations
+    # on roi/previous_roi can leave a degenerate vertex GEOS tolerates but s2 rejects; restored on exit.
+    # requireNamespace() makes this a real, visible dependency for renv's own static dependency
+    # scanner -- sf::st_make_valid() needs lwgeom installed once s2 is off, but only loads it
+    # internally, with no explicit library(lwgeom)/lwgeom::fun() call anywhere in this file --
+    # confirmed live that a plain renv::snapshot() silently drops lwgeom from renv.lock
+    # without a line like this one, since renv only records packages it can actually see referenced.
+    requireNamespace("lwgeom")
     s2_was_on <- sf::sf_use_s2()
     suppressMessages(sf::sf_use_s2(FALSE))
     uncovered <- suppressWarnings(suppressMessages(
@@ -417,14 +298,8 @@ download_gpp <- function(roi,
     uncovered_km2 <- if (length(uncovered) == 0) 0 else as.numeric(sum(sf::st_area(uncovered))) / 1e6
     suppressMessages(sf::sf_use_s2(s2_was_on))
 
-    # < 25 km^2 treated as floating-point/topology noise from repeated
-    # buffer/union operations, not a genuine expansion -- empirically, a pure
-    # subset (roi unchanged or shrunk) still leaves a few km^2 of sliver
-    # along the boundary (observed ~2.9 km^2 for a covariate_download_region the size of
-    # this pipeline's full default selection), so the cutoff needs headroom
-    # above that, not just above zero. Comfortably smaller than any real
-    # single-subregion/AEZ addition (the smallest, Yorke Peninsula, is
-    # ~19,000 km^2 including its buffer).
+    # < 25 km^2 treated as floating-point/topology noise from repeated buffer/union operations,
+    # not a genuine expansion -- comfortably smaller than any real single-subregion/AEZ addition.
     if (uncovered_km2 >= 25) {
       message(
         "covariate_download_region has grown by ~", round(uncovered_km2), " km^2 beyond ", out_dir,
@@ -459,10 +334,10 @@ download_gpp <- function(roi,
   # exact gap was already tried and genuinely isn't published yet" from a
   # brand-new gap, which always gets a fresh attempt regardless of the
   # cooldown. Compares the full missing-date SET (pending$missing_dates), not
-  # just its max -- an earlier version compared only max(missing_dates),
-  # which could wrongly treat a genuinely new, unrelated missing date (e.g. a
-  # composite deleted/corrupted upstream) as "the same old gap" whenever its
-  # own date happened to sit before the previously recorded max.
+  # just its max -- comparing only the max could wrongly treat a genuinely
+  # new, unrelated missing date (e.g. a composite deleted/corrupted
+  # upstream) as "the same old gap" whenever its own date happened to sit
+  # before the previously recorded max.
   pending_path <- file.path(request_dir, "gpp_pending_check.rds")
   if (file.exists(pending_path)) {
     pending <- readRDS(pending_path)
@@ -495,19 +370,10 @@ download_gpp <- function(roi,
   # ── 3. Log in (password pulled from the OS keychain, see setup note) ─────
   appeears::rs_login(user = earthdata_user)
 
-  # ── 3b. Check for an already-submitted task under this job_name, before ──
-  # building a new one. Confirmed live this session: killing the local R
-  # process partway through a call does NOT cancel the underlying AppEEARS
-  # task -- it keeps processing server-side, orphaned, since nothing will
-  # ever come back to fetch it. job_name is only unique per calendar day by
-  # default (Sys.Date()-based), so re-invoking this same call again the same
-  # day (e.g. after killing an earlier tar_make() to change something, then
-  # rerunning it) would otherwise submit a second, fully redundant task under
-  # the identical name -- confirmed directly this session: three separate
-  # same-named tasks ended up queued simultaneously from three separate
-  # invocations in one day, wasting AppEEARS's queue for no benefit (only the
-  # very latest one was ever actually used; the other two had to be deleted
-  # by hand via appeears::rs_delete()).
+  # ── 3b. Check for an already-submitted task under this job_name, before building a new one ──
+  # Killing the local R process partway through a call does NOT cancel the underlying AppEEARS
+  # task -- it keeps processing server-side, orphaned. job_name is only unique per calendar day,
+  # so re-invoking this call again the same day would otherwise submit a redundant duplicate task.
   result  <- NULL
   task_id <- NULL
 
@@ -538,18 +404,11 @@ download_gpp <- function(roi,
     result <- request_dir # any character value satisfies is.character() below
   }
 
-  # ── 4. Build the area-request task (skipped if step 3b already found and ─
-  # fetched a completed task above) ─────────────────────────────────────────
-  # One row per requested layer per missing_runs entry (rs_build_task()
-  # supports multiple subtasks/date-ranges under the same task/subtask name
-  # -- confirmed live via a real submitted task's own request.json, which
-  # stores "dates" as a list of {startDate, endDate} objects), so the
-  # REQUEST itself is always scoped tightly, one row per gap -- but AppEEARS
-  # doesn't reliably honour that server-side; see gpp_group_contiguous_dates()'s
-  # own header for the confirmed bounding-range delivery behaviour and why
-  # gpp_remove_redundant_files() (step 5 below) is what actually matters here.
-  # latitude/longitude are left NA since request_roi (a polygon) takes
-  # precedence over point coordinates for area requests.
+  # ── 4. Build the area-request task (skipped if step 3b already found and fetched one) ──
+  # One row per requested layer per missing_runs entry, so the REQUEST itself is scoped tightly,
+  # one row per gap -- though AppEEARS doesn't reliably honour that server-side (see
+  # gpp_group_contiguous_dates()'s own header). latitude/longitude are left NA since request_roi
+  # (a polygon) takes precedence over point coordinates for area requests.
   if (is.null(result)) {
 
   task_df <- do.call(rbind, lapply(missing_runs, function(run) {
@@ -568,39 +427,22 @@ download_gpp <- function(roi,
   task <- appeears::rs_build_task(df = task_df, roi = request_roi, format = format)
 
   # ── 5. Submit and wait for AppEEARS to process + deliver the files ───────
-  # NOTE: job_name is deliberately NOT passed to rs_request() -- supplying it
-  # switches rs_request() into launching the whole call as an RStudio
-  # background Job (see appeears:::rs_request source), which both requires
-  # RStudio and is broken outside it (it tries to eval() captured call
-  # symbols like `task` in the wrong environment before it even gets to the
-  # RStudio-only check). The AppEEARS task's own name/subtask instead comes
-  # from the task/subtask columns already baked into `task` by rs_build_task().
+  # job_name is deliberately NOT passed to rs_request() -- supplying it switches rs_request()
+  # into launching as an RStudio background Job, which is broken outside RStudio; the task's own
+  # name/subtask instead comes from the task/subtask columns already baked into `task`.
   #
-  # rs_request() does NOT error on a TIMED-OUT transfer -- it messages a
-  # warning and returns the request object instead of a file path (see
-  # appeears:::rs_request source), which would otherwise let this function
-  # fall through and return a silently incomplete file list that tar_make()
-  # would treat as a successful build. A local timeout doesn't touch the
-  # underlying AppEEARS task (only a successful transfer deletes it), so it
-  # keeps processing server-side and can be fetched later without
-  # resubmitting -- the final stop() below spells out exactly how, and this
-  # function does NOT retry a timeout itself (the loop below is only for the
-  # DOWNLOAD-failure case just below).
+  # rs_request() does NOT error on a TIMED-OUT transfer -- it messages a warning and returns the
+  # request object instead of a file path, so that case is checked explicitly below rather than
+  # silently falling through. A local timeout doesn't cancel the underlying AppEEARS task (only a
+  # successful transfer does), so it keeps processing server-side and can be fetched later without
+  # resubmitting -- this function does NOT retry a timeout itself, only a download failure.
   #
-  # rs_request() DOES throw a hard, uncaught error the moment even one file
-  # in the bundle fails a single GET (appeears:::appeears_service$download()
-  # -- confirmed directly: 2 flaky files out of 1104 crashed the whole call,
-  # with no retry of any kind). By the time that error is reachable, the
-  # AppEEARS task has essentially always already finished processing
-  # server-side (the error is in the download phase, which only starts once
-  # the task is done) -- so retrying by resubmitting a fresh task via
-  # rs_build_task()/rs_request() would waste a full, possibly multi-hour,
-  # server-side reprocess for what's usually just one or two transient
-  # failures. Instead, later attempts look the task up by name
-  # (rs_list_task()) and call gpp_fetch_missing_bundle_files() directly
-  # against its task_id, which -- unlike appeears::rs_transfer(), confirmed
-  # directly to re-GET every file in the bundle every call and so not
-  # reliably converge -- only re-fetches whatever's actually still missing.
+  # rs_request() DOES throw a hard, uncaught error the moment even one file in the bundle fails a
+  # single GET, with no retry of its own -- and by then the AppEEARS task has essentially always
+  # already finished processing server-side, so retrying by resubmitting a fresh task would waste
+  # a full, possibly multi-hour reprocess. Instead, later attempts look the task up by name and
+  # call gpp_fetch_missing_bundle_files() directly against its task_id, which only re-fetches
+  # whatever's actually still missing (unlike appeears::rs_transfer(), which re-GETs everything).
   for (attempt in seq_len(max_transfer_attempts)) {
 
     if (attempt == 1) {
@@ -658,14 +500,9 @@ download_gpp <- function(roi,
   } # end of `if (is.null(result))` from step 4 (skipped when step 3b already found a completed task)
 
   if (is.null(result)) {
-    # Before giving up, check whether the remaining gap is a known, already-
-    # recorded persistent one rather than a fresh problem -- confirmed
-    # directly: AppEEARS can permanently omit a composite date's Psn_QC_500m
-    # file from a bundle (the Gpp_500m file for that same date is present)
-    # with no amount of retrying ever producing it. Without this check,
-    # missing_dates can never reach zero for a date like that, and every
-    # single call re-requests (and re-fails to transfer) the full historic
-    # range from scratch, forever.
+    # Before giving up, check whether the remaining gap is a known, already-recorded persistent
+    # one (e.g. a permanently-missing Psn_QC_500m file) rather than a fresh problem -- otherwise
+    # every call would re-request and re-fail the full range from scratch, forever.
     still_missing_final <- setdiff(
       gpp_expected_dates(request_start_date, request_end_date),
       gpp_downloaded_dates(request_dir, layers)
@@ -726,13 +563,8 @@ download_gpp <- function(roi,
   gpp_remove_redundant_files(request_dir, file.path(request_dir, job_name))
 
   # ── 5b. Record whether this attempt actually filled the gap it targeted ──
-  # rs_request() reported success (no error, no timeout), but that only means
-  # the transfer itself worked -- it says nothing about whether AppEEARS
-  # actually HAD every requested date to deliver. Re-checking against
-  # request_start_date/request_end_date (not just missing_dates directly)
-  # mirrors the retry loop's own still_missing check above, for the same
-  # reason: gpp_expected_dates() regenerates the full theoretical range so
-  # this isn't confused by a gap that was only partially contiguous.
+  # rs_request() reporting success only means the transfer itself worked -- it says nothing about
+  # whether AppEEARS actually HAD every requested date to deliver.
   still_missing_after <- setdiff(
     gpp_expected_dates(request_start_date, request_end_date),
     gpp_downloaded_dates(request_dir, layers)

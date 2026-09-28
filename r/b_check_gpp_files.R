@@ -1,34 +1,14 @@
 # Flag GPP (MODIS or VIIRS) composite files that look corrupt or incomplete.
-#
-# Two signals are checked:
-#   readable    the authoritative one -- gpp_file_readable()
-#               (r/b_download_gpp.R) actually opens the file and reads
-#               its data, not just its header. A file that fails this is
-#               always flagged.
-#   undersized  a fast, cheap heuristic -- suspiciously small for its
-#               (region, layer) group, using a robust median absolute
-#               deviation (MAD) rather than a fixed byte threshold, since
-#               genuine composites still vary a little in size (more
-#               cloud/gap-fill activity compresses differently). Kept as a
-#               secondary/informational signal only, not something to act on
-#               by itself: checked against this dataset, several undersized
-#               files turned out to open and read perfectly (correct
-#               dimensions, extent and NA pattern) -- just legitimately
-#               better-compressed, not truncated.
-# File size varies systematically by two things that have nothing to do with
-# completeness -- layer (Gpp_500m is float32; Psn_QC_500m is a much smaller
-# byte-type QC layer) and the download batch (each AppEEARS job lands in its
-# own job_name-dated subfolder, e.g. "gpp_viirs_historic_20260727/" -- see
-# download_gpp()'s header) -- so the size comparison groups by (region,
-# layer), where "region" here is really that batch subfolder's name (an
-# earlier version of this pipeline split composites into west/east region
-# subfolders instead, since retired -- see build_gpp_period_raster()'s
-# header -- the grouping column name is unchanged but no longer means
-# geographic region). Since raw_data/predictor_variables/gpp/ has a product
-# folder (modis/viirs_historic/viirs_recent) above those batch folders, pass
-# one product's subfolder at a time (e.g. ".../gpp/viirs_historic") --
-# scanning multiple products together would conflate their same-named batch
-# folders into one group.
+# Two signals: "readable" (the authoritative one -- actually opens and reads
+# the file's data, via gpp_file_readable()) and "undersized" (a secondary,
+# informational heuristic -- suspiciously small relative to its own (region,
+# layer) group's median, using a robust MAD rather than a fixed byte
+# threshold, since genuine composites still vary a little in size). File
+# size varies systematically by layer (Gpp_500m vs. the smaller Psn_QC_500m)
+# and by download batch (each AppEEARS job lands in its own dated
+# subfolder, "region" here) -- pass one product's subfolder at a time
+# (e.g. .../gpp/viirs_historic), since scanning several together would
+# conflate their same-named batch folders into one group.
 #
 # Arguments:
 #   gpp_dir         root folder to scan recursively for composite tifs --

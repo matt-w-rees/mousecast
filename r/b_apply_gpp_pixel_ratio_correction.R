@@ -1,30 +1,13 @@
 # Apply a per-pixel, per-calendar-month ratio correction
 # (build_gpp_pixel_ratio_raster()'s output) to a raw GPP raster, elementwise.
-# Pixel-scale, not a single national factor -- see
-# build_gpp_pixel_ratio_raster()'s own header for why (a source's raw value
-# at survey paddocks can differ hugely from its national mean, so a
-# paddock-only correction applied everywhere doesn't generalise; this
-# mirrors PML-V2's own published approach to its structurally identical
-# AVHRR-to-MODIS/VIIRS splice, which is also pixel-scale, not a single/
-# uniform factor).
-#
-# Each layer's own calendar month picks out the matching ratio LAYER (not a
-# scalar) from ratio_correction_rast, then the two (same-extent, same-grid)
-# rasters are multiplied elementwise -- a genuine per-pixel correction, not
-# terra's usual length-nlyr() vector recycling. A ratio can't turn a
-# non-negative GPP value negative (unlike a subtraction).
-#
-# Generic across every product this pipeline corrects this way (2026-08 --
-# renamed from build_gpp_historic_corrected_raster() once it gained a second
-# real caller, VIIRS non-gap-filled, alongside its original PML one; the
-# function body itself never had any product-specific logic, only its old
-# name did): PML-V2's raw GPP raster gets ratio-corrected before merging with
-# this pipeline's own MOD17/VNP17 record (its pre-2000 portion is the only
-# part that ever wins that merge); VIIRS non-gap-filled gets ratio-corrected
-# before merging with gap-filled VIIRS the same way (its own months where
-# gap-filled hasn't published yet are the only ones that ever win that
-# merge) -- see _targets.R's "v. Compute pixel-scale corrections" and
-# "vi. Splice into one continuous stack".
+# Pixel-scale, not a single national factor -- a source's raw value at survey
+# paddocks can differ hugely from its national mean, so a paddock-only
+# correction applied everywhere doesn't generalise (mirrors PML-V2's own
+# published approach to its structurally identical AVHRR-to-MODIS/VIIRS
+# splice). Each layer's own calendar month picks out the matching ratio
+# LAYER (not a scalar) before multiplying elementwise -- a genuine per-pixel
+# correction, not terra's usual vector recycling. Generic across every
+# product this pipeline corrects this way (PML-V2, VIIRS non-gap-filled).
 #
 # Arguments:
 #   raw_rast                 raw GPP SpatRaster to correct, one layer per
@@ -42,7 +25,7 @@
 #                           the "<month>_<year>" convention; a composite-
 #                           grain caller (date-named layers) passes
 #                           something like function(x) lubridate::month(as.Date(x))
-#                           instead -- 2026-08, same reason as
+#                           instead -- same reason as
 #                           build_gpp_pixel_ratio_raster()'s own months_of
 #                           argument, see that function's header.
 #

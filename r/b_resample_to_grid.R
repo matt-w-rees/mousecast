@@ -7,22 +7,18 @@
 # against a coarse pixel confounds a genuine covariate difference with a
 # pure scale/heterogeneity artifact).
 #
-# Generalises the crop-then-resample pattern first written in an earlier,
-# PML-specific bias-check function (check_gpp_pml_bias(), since renamed and
-# generalised into compare_gpp_rasters(), r/b_compare_gpp_rasters.R) for
-# reuse across every covariate this pipeline coarsens onto PML-V2's 0.1
+# Used across every covariate this pipeline coarsens onto PML-V2's 0.1
 # degree grid (rain, soil moisture, MOD17/VNP17 GPP -- see _targets.R's
-# coarse/anomaly section). compare_gpp_rasters() itself no longer resamples
-# inline -- every caller in _targets.R now calls this function explicitly
-# first (2026-08 -- confirmed the original PML-specific function had never
-# actually been updated to call this, despite this function's own header
-# already claiming to generalise it out).
+# coarse/anomaly section). compare_gpp_rasters() (r/b_compare_gpp_rasters.R)
+# itself doesn't resample inline -- every caller in _targets.R calls this
+# function explicitly first, so the two sides of a comparison are always
+# already on the same grid before compare_gpp_rasters() ever runs.
 #
 # template is cropped to source's own extent (+ margin) before resampling,
 # so this only ever processes the relevant region -- matters most when
 # template is a much larger raster than source actually needs (e.g. before
 # pml_gpp_rast was itself cropped to covariate_download_region at its own build step,
-# _targets.R's section 6.i, it was PML-V2's full near-global grid).
+# _targets.R's section 2.viii, it was PML-V2's full near-global grid).
 #
 # Arguments:
 #   source      SpatRaster to resample (the finer/native-resolution raster)
@@ -53,11 +49,15 @@ resample_to_grid <- function(source, template, margin_deg = 0.5) {
     )
   }
 
+  # source's own extent, padded by margin_deg on every side.
   source_ext <- terra::ext(source)
+  # Crop template down to that padded extent first -- avoids resampling against a much larger
+  # template raster than this call actually needs (e.g. PML-V2's own near-global native grid).
   template_cropped <- terra::crop(template[[1]], terra::ext( # [[1]] -- only one layer's grid geometry is needed
     source_ext$xmin - margin_deg, source_ext$xmax + margin_deg,
     source_ext$ymin - margin_deg, source_ext$ymax + margin_deg
   ))
 
-  terra::resample(source, template_cropped, method = "average") # area-weighted average onto template's own grid
+  # area-weighted average onto template's own grid
+  terra::resample(source, template_cropped, method = "average")
 }

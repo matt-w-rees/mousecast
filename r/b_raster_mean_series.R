@@ -2,32 +2,15 @@
 # -- either nationally (terra::global(..., "mean"), the default) or at a
 # fixed set of points (terra::extract() + colMeans(), when points is
 # supplied) -- used throughout this pipeline and covariate_summary.qmd as a
-# simple, single-line summary of an otherwise spatially-varying covariate,
-# purely for visualising its temporal behaviour (not a spatial map).
-#
-# Supersedes raster_national_mean_series() and raster_paddock_mean_series()
-# (r_not_in_use/, both dated), which were near-identical copies of the same
-# date-parsing logic differing only in this one aggregation step, and
-# covariate_summary.qmd's own local raster_to_mean_series() helper (removed
-# from the qmd entirely, now calls this instead) -- three copies of the same
-# logic collapsed into one.
-#
-# points = NULL (national mean) is cheap enough for the qmd to call directly
-# at render time for coarse (PML-grid, ~0.1 degree) rasters, but NOT for
-# GPP's native-500m, 100+-layer stacks (MODIS, VIIRS gap-filled) -- confirmed
-# live this session that doing that inside the qmd itself hangs the render
-# for minutes. Those specific cases stay pre-computed as their own cached
-# _targets.R targets (gpp_modis_national_mean etc.) instead of being called
-# fresh on every render.
-#
-# Three layer-naming conventions are handled, matching this pipeline's own
-# raster-building functions: "<month>_<year>" (e.g. "7_2026", one layer per
-# calendar month), "<Season>-<year_adj>" (e.g. "Winter-2026",
-# build_seasonal_raster()'s own convention), and plain "<year>"
-# (build_seasonal_window_raster()'s own convention, one layer per year). That
-# parsing step is shared with raster_zone_series() (r/b_raster_zone_series.R)
-# -- its own per-AE-zone counterpart -- via the internal raster_layer_dates()
-# helper below, not duplicated between them.
+# simple summary of an otherwise spatially-varying covariate's temporal
+# behaviour (not a spatial map). Cheap enough to call directly at render
+# time for coarse (PML-grid) rasters, but NOT for GPP's native-500m,
+# 100+-layer stacks -- those specific cases stay pre-computed as their own
+# cached _targets.R targets instead. Handles three layer-naming conventions
+# this pipeline's own raster-building functions use: "<month>_<year>",
+# "<Season>-<year_adj>", and plain "<year>" -- shared with
+# raster_zone_series() (r/b_raster_zone_series.R) via the internal
+# raster_layer_dates() helper below.
 #
 # Arguments:
 #   rast    SpatRaster, one layer per period, named in one of the three

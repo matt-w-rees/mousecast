@@ -1,24 +1,12 @@
-# Build a seasonal (Summer/Autumn/Winter/Spring) or monthly mean Gross
-# Primary Productivity (GPP) raster from 8-day Gpp_500m composites, spanning
-# two spliced satellite products (downloaded via r/b_download_gpp.R into
-# raw_data/predictor_variables/gpp/{modis,viirs}/): MODIS (MOD17A2HGF.061,
-# 2000-01-01+) and VIIRS (VNP17A2GF.002, 2012-01-01+) -- a well-established,
-# NASA-endorsed continuous record (VIIRS's GPP algorithm is the designed
-# operational continuation of MODIS's; confirmed live via
-# appeears::rs_products()/rs_layers() that both products share identical
-# layer names, fill-value codes, scale factor and 8-day cadence).
-#
-# A convenience wrapper (2026-08) around load_and_clamp_gpp_composites()
-# (load, clamp sentinel/fill codes, convert to daily rate -- composite grain)
-# and finish_gpp_period_raster() (off-shore mask, aggregate to period means)
-# -- see each function's own header for the full rationale behind that
-# split. The real NASA processing pipeline (_targets.R's GPP section, "A)
-# NASA") calls those two functions separately, with bias-checking,
-# correcting and splicing NASA's own sources happening in between, at
-# composite grain -- this one-shot wrapper is for callers that just want a
-# single raw-source's own monthly raster directly (e.g. the report-only
-# national/paddock mean diagnostics, "x." in gpp_processing.qmd, which show
-# each raw source on its own, not the corrected/spliced record).
+# Build a seasonal or monthly mean GPP raster from 8-day Gpp_500m composites
+# (MODIS and/or VIIRS, downloaded via r/b_download_gpp.R). A convenience
+# wrapper around load_and_clamp_gpp_composites() (load, clamp, convert to
+# daily rate) and finish_gpp_period_raster() (off-shore mask, aggregate to
+# period means) -- see each function's own header for the split's rationale.
+# The real NASA pipeline (_targets.R's "A) NASA") calls those two separately
+# instead, with bias-checking/correcting/splicing in between; this one-shot
+# wrapper is for callers that just want one raw source's own monthly raster
+# directly (e.g. gpp_processing.qmd's report-only diagnostics).
 #
 # Arguments:
 #   gpp_files                  file paths under raw_data/predictor_variables/gpp
@@ -51,8 +39,10 @@ build_gpp_period_raster <- function(gpp_files,
 
   summarise_by <- match.arg(summarise_by)
 
+  # Composite grain: load, clamp sentinel/fill codes, convert to a daily rate.
   composite_rast <- load_and_clamp_gpp_composites(gpp_files, valid_max)
-  if (is.null(composite_rast)) return(NULL)
+  if (is.null(composite_rast)) return(NULL) # no composites found
 
+  # Off-shore mask, then aggregate composites into period (season/month) means.
   finish_gpp_period_raster(composite_rast, aus_shp, summarise_by, min_composites_per_period)
 }

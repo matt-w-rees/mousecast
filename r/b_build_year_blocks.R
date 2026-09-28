@@ -7,26 +7,24 @@
 #    handful of years' daily SILO composites per branch instead of decades
 #    of full-country daily layers in one tapp() call. That single-call
 #    approach is what repeatedly got min_temp_raster's build OOM-killed
-#    (~2.4h in). Originally (through 2026-08) silo_daily_files_min_temp was
-#    one single whole-range download target, so a change to any one file in
-#    it (e.g. the still-forming latest year) invalidated every block, not
-#    just the one whose own years actually changed -- confirmed live against
-#    a throwaway `targets` pipeline. That's fixed now: silo_daily_files_min_temp
-#    itself branches over these same blocks (pattern = map(min_temp_year_blocks)
-#    in _targets.R), and download_silo_daily_data() returns only the files
-#    each call actually requested rather than its whole out_dir (see that
-#    function's own header) -- so each block's own files are now tracked
-#    independently, matching gpp_viirs_blocks' own genuine per-block
-#    isolation below, not just this function's bounded-memory branching.
+#    (~2.4h in). silo_daily_files_min_temp itself branches over these same
+#    blocks too (pattern = map(min_temp_year_blocks) in _targets.R), and
+#    download_silo_daily_data() returns only the files each call actually
+#    requested rather than its whole out_dir (see that function's own
+#    header) -- so each block's own files are tracked independently: a
+#    single whole-range download target would otherwise invalidate every
+#    block whenever any one file changed (e.g. the still-forming latest
+#    year), not just the block whose own years actually changed, matching
+#    gpp_viirs_blocks' own genuine per-block isolation below, not just this
+#    function's bounded-memory branching.
 #
 #  - gpp_viirs_blocks (_targets.R section 2): so each block gets its own
 #    download_gpp_block() call (r/b_download_gpp_block.R) into its own
-#    out_dir, replacing the old rolling gpp_recent_cutoff +
-#    prune_stale_before/archive_stale_before_to migration scheme. Because
-#    AppEEARS downloads (unlike SILO's) can be scoped to an arbitrary
-#    out_dir per call, this case gets genuine per-block isolation, not just
-#    bounded memory -- confirmed live: changing one block's files left every
-#    other block's own downstream branch skipped, not just cheap to rebuild.
+#    out_dir. Because AppEEARS downloads (unlike SILO's) can be scoped to
+#    an arbitrary out_dir per call, this case gets genuine per-block
+#    isolation, not just bounded memory: changing one block's files leaves
+#    every other block's own downstream branch untouched, not just cheap
+#    to rebuild.
 #
 # Arguments:
 #   years        integer vector of years to split (e.g. 1980:2025)

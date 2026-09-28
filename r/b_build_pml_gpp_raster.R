@@ -1,16 +1,10 @@
-# Stack PML-V2.2b's yearly monthly-GPP NetCDFs (downloaded manually via TPDC
-# FTP into raw_data/predictor_variables/gpp/pml_v2_historic/monthly/, one
-# file per year, 12 layers each -- see that folder for the download details)
-# into one SpatRaster, one layer per month_year, in the same units and naming
-# convention as this pipeline's own MOD17/VNP17 record (attach_time_variables()'s
-# "<month>_<year>", e.g. "7_1990") so the two can be compared/joined directly.
-#
-# Unit conversion: PML's monthly files report the MONTH'S TOTAL GPP
-# (gC/m^2/month, confirmed live via terra::units()) -- this pipeline's own
-# GPP (build_gpp_period_raster()'s period mean of 8-day composites) is a
-# MEAN DAILY RATE (gC/m^2/day). Dividing each layer by its own days-in-month
-# converts PML to the same mean-daily-rate convention, making the two
-# directly comparable/subtractable rather than off by each month's length.
+# Stack PML-V2.2b's yearly monthly-GPP NetCDFs (raw_data/predictor_variables/gpp/pml_v2_historic/monthly/,
+# downloaded via download_pml_data(), r/b_download_pml_data.R) into one SpatRaster, one layer per
+# month_year, in the same naming convention as this pipeline's own MOD17/VNP17 record
+# (attach_time_variables()'s "<month>_<year>") so the two can be compared/joined directly. PML's
+# monthly files report the MONTH'S TOTAL GPP (gC/m^2/month); dividing by each layer's own
+# days-in-month converts to the same MEAN DAILY RATE (gC/m^2/day) this pipeline's own GPP record
+# uses, so the two are directly comparable/subtractable rather than off by each month's length.
 #
 # Arguments:
 #   files   PML-V2.2b_GPP_<year>.nc file paths
@@ -19,13 +13,13 @@
 
 build_pml_gpp_raster <- function(files) {
 
-  r <- terra::rast(files)
+  r <- terra::rast(files) # stack every yearly NetCDF into one multi-layer raster
 
-  dates      <- terra::time(r)
+  dates      <- terra::time(r) # each layer's own month, from the NetCDF's own time dimension
   days_in_month <- lubridate::days_in_month(dates)
-  r <- r / days_in_month
+  r <- r / days_in_month # month-total -> mean daily rate
 
-  names(r) <- paste0(lubridate::month(dates), "_", lubridate::year(dates))
+  names(r) <- paste0(lubridate::month(dates), "_", lubridate::year(dates)) # "<month>_<year>", matching this pipeline's own convention
 
   r
 }

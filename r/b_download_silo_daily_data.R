@@ -11,7 +11,7 @@
 # still needed here. Confirmed live: each variable-year is ~420 MB (checked
 # at both an 1889 and a 2020 file) -- the full 1889+ history would be ~56 GB,
 # so earliest_year lets this be scoped down deliberately instead (this
-# pipeline currently requests from 1980, ~20 GB).
+# pipeline currently requests from 1970, ~24 GB).
 #
 # National coverage, no ROI/covariate_download_region needed: each year's file already
 # covers the whole continent regardless of which paddocks are surveyed, so
@@ -111,6 +111,12 @@ download_silo_daily_data <- function(data, lag_years = 1, earliest_year = NULL, 
   if (!"year_adj" %in% names(data)) {
     stop("Input data must contain a 'year_adj' column.")
   }
+
+  # Each annual file is ~420 MB: R's default 60 s download timeout isn't enough when several blocks
+  # download at once on parallel workers (1970 and 1975 both failed this way, 2026-09), so it is
+  # raised for this call only and restored on exit.
+  old_options <- options(timeout = max(3600, getOption("timeout")))
+  on.exit(options(old_options), add = TRUE)
 
   current_year <- lubridate::year(Sys.Date())
   # earliest_year, when supplied, is used verbatim (a deliberate cost-control

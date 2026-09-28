@@ -1,24 +1,12 @@
 # Collapse per-date GPP composites (already masked and unit-converted) into
-# period (season or month) means. Factored out of build_gpp_period_raster()
-# (2026-08) as its own aggregation step.
-#
-# A period (season or month) is only summarised if it has at least
-# min_composites_per_period composites, so an in-progress period isn't
-# reported on a fraction of the data (a full season has ~11 8-day
-# composites; a full month has ~3-4). Each output layer is named to match
-# attach_time_variables()'s own convention (r/a_attach_time_variables.R)
-# exactly -- "Season-Year" (e.g. "Winter-2026") for summarise_by = "season",
-# "Month_Year" (e.g. "7_2026") for "month" -- so a monthly or seasonal GPP
-# covariate can be left_join()'d/attach_raster_covs()'d straight onto survey
-# or paddock data by that same column. Each layer carries its composite
-# count as a "n_composites" layer metag (see terra::metags()), read back off
-# by whichever consumer wants it.
-#
-# season_info() (r/a_season_info.R) gives the same Summer/Autumn/Winter/
-# Spring, December-rolls-into-next-year convention used everywhere else in
-# the pipeline. The month case needs no such year-boundary adjustment --
-# plain calendar month/year -- and matches attach_time_variables()'s own
-# month_year format ("<month>_<year>", e.g. "7_2026") exactly.
+# period (season or month) means. A period is only summarised if it has at
+# least min_composites_per_period composites, so an in-progress period isn't
+# reported on a fraction of the data. Each output layer is named to match
+# attach_time_variables()'s own convention ("Season-Year" via season_info(),
+# or "Month_Year") so a GPP covariate can be joined straight onto survey/
+# paddock data by that same column, and carries its own composite count as
+# an "n_composites" layer metag (terra::metags()). Returns NULL if no period
+# qualifies, rather than letting terra's own `[[` error on an empty selection.
 #
 # Arguments:
 #   rast                        SpatRaster, one layer per composite date,
