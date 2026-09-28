@@ -42,19 +42,22 @@
 # count's own information for robustness to within-transect card correlation a plain binomial can't
 # otherwise absorb.
 #
-# trap_count == number_unique_individuals_session (r/a_data_traps_session_summary.R) is a genuine
-# unique-individual count only where a PIT tag was read (a real physical identifier) -- where a
-# capture instead relied on ear_mark/unmarked identification (no reliable individual identity, see
-# r/a_build_individual_log.R), it falls back to counting first_capture/recapture_bw_trips CAPTURE
-# EVENTS as a proxy, not distinct individuals. PIT-tagging is the more recent identification method,
-# so historic sessions likely lean more on the event-based proxy -- a second, separate detection-
-# heterogeneity source from the trap-nights effort issue below, not resolved here, worth keeping in
-# mind alongside trap_count's own unresolved pseudo-residual miscalibration (r/d_fit_plague_hmm.R).
+# trap_count == number_mice_caught_session (r/a_clean_traps_to_session_level.R): total captures across
+# the session's nights, recaptures included, so the trap stream models trap success (captures per
+# trap-night, via the log_trap_effort offset). Chosen over number_unique_individuals_session following
+# quarto_reports/trap_count_exploration.qmd (2026-09): the two responses agree on every mean term and
+# their per-trap-night rates correlate at r = 0.97, but the proportional effort offset fits trap success
+# (free coefficient ~1.1) better than unique individuals (~0.9, which level off as later nights mostly
+# recapture the same animals), and captures exist for every session -- unique individuals are unknown
+# for unmarked live-trap sessions that only recorded nightly totals.
 #
 # Arguments:
 #   plague_state_anchors r/c_anchor_plague_state.R's output
 #   state_filter           one or more Australian state abbreviations (e.g.
-#                           c("NSW", "VIC", "SA", "QLD") for the first pass)
+#                           c("NSW", "VIC", "SA", "QLD", "WA") -- hmm_states,
+#                           _targets.R, WA added 2026-09 once the transition
+#                           formula's own zone slope moved to a hierarchical
+#                           spec, see r/d_fit_plague_hmm.R's header)
 #                           to restrict the fit to; NULL keeps every state.
 #                           Filters on the paddock's own state (r/a_attach_state.R),
 #                           not ae_zone (2026-08, replaced an ae_zone_filter
@@ -102,7 +105,10 @@
 #
 # Returns one row per paddock x season_year_adj, sorted by ID then season,
 # with ID/state/trap_count/burrow_count/chewcard_count plus every covariate
-# column carried through unchanged. The Australian-state column
+# column carried through unchanged, plus crop_group_det/crop_stage_det/
+# soil_type_det, plus crop_group_trap_det/crop_stage_trap_det from the trap survey
+# (detection-covariate factors, missing crop as "not recorded").
+# The Australian-state column
 # (r/a_attach_state.R) is kept too, renamed to aus_state -- hmmTMB's own
 # reserved "state" column (the anchor) needs the plain "state" name, so the
 # two can't coexist under one name, but aus_state is real, useful downstream
@@ -128,7 +134,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
       ID           = paddock_id,
       aus_state    = state,
       state        = plague_state,
-      trap_count   = number_unique_individuals_session,
+      trap_count   = number_mice_caught_session,
       burrow_count = burrow_total_count,
       chewcard_count = chewcards_detected_first10,
       chewcard_block2 = chewcards_detected_block2,
@@ -215,6 +221,18 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     dplyr::mutate(
       bait_history_traps = factor(bait_history_traps, levels = c("unsure", "no", "yes")),
       bait_history_rapid = factor(bait_history_rapid, levels = c("unsure", "no", "yes"))
+    ) |>
+    # Detection-covariate versions of the rapid assessment's own crop fields and the paddock's soil
+    # type, for fit_plague_hmm()'s optional detection_terms. hmmTMB needs a covariate value on every
+    # row -- including seasons with no rapid visit, where crop is NA -- so missing crop (and a
+    # recorded "unknown") becomes its own "not recorded" level rather than an NA.
+    dplyr::mutate(
+      crop_group_det = factor(dplyr::if_else(is.na(crop_group_rapid) | crop_group_rapid == "unknown", "not recorded", crop_group_rapid)),
+      crop_stage_det = factor(dplyr::if_else(is.na(crop_stage_rapid), "not recorded", crop_stage_rapid)),
+      soil_type_det  = factor(soil_type),
+      # The trap survey's own crop fields, the same way (for trap-stream covariates).
+      crop_group_trap_det = factor(dplyr::if_else(is.na(crop_group_traps) | crop_group_traps == "unknown", "not recorded", crop_group_traps)),
+      crop_stage_trap_det = factor(dplyr::if_else(is.na(crop_stage_traps), "not recorded", crop_stage_traps))
     ) |>
     dplyr::arrange(ID, season_year_adj)
 }

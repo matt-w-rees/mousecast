@@ -8,6 +8,15 @@
 # first (see that function's own header), and prints every such conflict --
 # currently just for visibility, no further handling. May come back to this.
 
+# plague_risk_map_nowcast (2026-09, r/d_predict_plague_risk.R) uses the latest complete calendar
+# month instead of waiting for the next Feb/May/Aug/Nov boundary, so a current-season forecast is
+# available at the start of that season rather than one season late. Added quickly to unblock a
+# real Spring-2026 request -- revisit the design once it's had a few real uses: is "nowcast" the
+# right name for something that's still 100% real, complete-month data (no extrapolation)? should
+# it get an uncertainty variant (deliberately deferred for now, see the target's own comment)? do
+# gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast need to stay separate cached
+# targets, or would inlining them into plague_risk_map_nowcast's own command be just as clear?
+
 
 # SET-UP ----------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -40,8 +49,20 @@ tar_option_set(
   memory = "transient",
   # cleans up garbage every xth target
   garbage_collection = 10, 
-  # Lets independent targets (e.g. section B's covariate downloads) run concurrently instead of strictly sequentially.
-  controller = crew::crew_controller_local(workers = 4),
+  # Two named controllers, not one -- "main" (4 workers) for the great majority of targets, which are small/fast and benefit from real concurrency, and
+  # "heavy" (2 workers) for the handful of targets that load/aggregate a full raw archive at once (GPP composite loading, SILO daily-to-monthly aggregation --
+  # see heavy_resources below for exactly which). Confirmed live 2026-09: running 4 of those simultaneously (the "main"-only setup this replaces) exhausted
+  # available RAM and crashed 3 of 4 crew workers mid-run (all three restarted together, losing ~20 minutes of already-completed work on those branches) --
+  # this doesn't reduce parallelism for the rest of the pipeline, just keeps the memory-heavy targets from ever piling up more than a couple at a time.
+  # 2 (not the original 1) chosen the same evening after confirming live that even a single heavy worker alone left the system with only ~99MB of RAM free
+  # (32GB total) -- genuinely tight, so 2 is a deliberate, still-cautious middle ground versus the 4 that crashed, not a return to "no limit"; 3 was
+  # considered and rejected as too close to the crashing configuration given how little headroom a single worker already leaves. A target with no
+  # resources= argument (the great majority) lands on "main" automatically -- confirmed live, a crew_controller_group() with no controller specified in
+  # push() uses its first member -- so this needed no changes anywhere else in this file.
+  controller = crew::crew_controller_group(
+    crew::crew_controller_local(name = "main",  workers = 4),
+    crew::crew_controller_local(name = "heavy", workers = 2)
+  ),
   # An error in one target (e.g. a GPP bug) no longer kills already-running, unrelated targets (e.g. min_temp's own long block builds) -- confirmed live this session (and directly costly: the same GPP error killed an in-progress ~1hr min_temp block twice in one day under the "stop" default) that "trim" lets currently-running work finish and only blocks new work actually downstream of the error, instead of tar_make()'s own default of halting every worker immediately.
   error = "trim"
 )
@@ -57,6 +78,11 @@ gpp_modis_end_date <- "2026-08-21"
 
 # GDAL creation options for every covariate tar_terra_rast() target below (GPP, rainfall, soil moisture, min_temp), in place of geotargets' own default (plain COMPRESS=LZW, no predictor) -- confirmed live 2026-08 this was leaving real compression on the table for this pipeline's large float32 rasters: a 30-layer MODIS subset shrank from 470.8MB (default) to 390.1MB (this setting) at IDENTICAL write time (both ~250-260s -- five different settings tested, all within a few seconds of each other, so compression choice here is genuinely free). The gain is far bigger on any pixel-ratio-CORRECTED raster specifically (e.g. composite_gpp_rast_modis_corrected): the correction step's per-pixel multiplication destroys the byte-level repetition plain LZW relies on, but PREDICTOR=3 (floating-point delta encoding) recovers most of it from the data's still-smooth spatial structure -- confirmed live, the same 30-layer corrected subset shrank ~39% (1105.3MB -> 672.6MB), again at no measurable time cost. Originally scoped to GPP only pending a separate test of rain/soil-moisture/min-temp rasters elsewhere in this pipeline -- that test (2026-08) confirmed the same win on real objects from each family, at every grain tested, with no time cost either way and byte-identical values on read-back: rain_raster_coarse 124.8MB -> 80.8MB (-35%, write 0.9s both), soil_moisture_raster_coarse 46.8MB -> 30.1MB (-36%, write 0.3s both, read+sum 0.2s -> 0.1s), min_temp_raster_coarse 136.5MB -> 74.5MB (-45%, write 0.8s both, read+sum 0.6s -> 0.3s), and the full-resolution soil_moisture_raster (this pipeline's single largest stored object) 1820.8MB -> 1142.2MB (-37%, write 13.2s -> 12.1s) -- so this now applies pipeline-wide, not GPP-only.
 covariate_gdal_options <- c("COMPRESS=ZSTD", "PREDICTOR=3", "ZSTD_LEVEL=9")
+
+# Routes a target to the single-worker "heavy" crew controller (tar_option_set() above) instead of the default "main" one -- see that controller's own
+# comment for why. Passed as resources = heavy_resources on load_and_clamp_gpp_composites()/summarise_silo_to_month()'s own targets below, the two
+# functions confirmed to load/aggregate a full raw archive into memory at once.
+heavy_resources <- tar_resources(crew = tar_resources_crew(controller = "heavy"))
 
 # Determine most recent season that has fully completed as of today (Used so seasonal covariates only processed at end of every season, currently used for SILO's min temp variable).
 latest_complete_season_end  <- season_info(season_info(todays_date)$season_start - 1)$season_end
@@ -86,9 +112,11 @@ tar_plan(
     sf::st_transform(crs = "EPSG:4326"),
   
   # GRDC "Agro-ecological" zones (used to link sites and derive seperate process models), this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main
+  # Kangaroo Island removed from "SA Midnorth-Lower Yorke Eyre" -- zero real survey paddocks there, so any prediction reaching it is pure extrapolation. 
   aez_adj = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |>
     dplyr::rename(ae_zone = AEZ) |>
-    dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)), 
+    dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)) |>
+    remove_kangaroo_island(),
 
   # GRDC growing subregions — finer-grained alternative zone system, provided by GRDC
   grdc_subregion_adj = sf::read_sf("raw_data/predictor_variables/grdc_regions/growing_subregion/GRDC SubRegion_region.shp") |>
@@ -104,18 +132,21 @@ tar_plan(
   
   # a) Rapid assessment (separate forms for field and retrospective submissions)
   # Download rapid assessment surveys collected in the field 
-  tar_file(odk_ra_field_files, list.files("raw_data/survey_data/odk/rapid_assessment.csv", full.names = TRUE, recursive = TRUE)),
+  # cue = "always" re-lists the folder every run, so a newly added file is picked up (targets only re-hashes the files it already knows about otherwise).
+  tar_file(odk_ra_field_files, list.files("raw_data/survey_data/odk/rapid_assessment.csv", full.names = TRUE, recursive = TRUE), cue = tar_cue(mode = "always")),
   raw_data_odk_ra_field = odk_read_submissions_ra_field(odk_ra_field_files),
   
   # Download rapid assessment surveys filled in retrospectively (key difference from above: has explicit survey_date and entered_by)
-  tar_file(odk_ra_office_files, list.files("raw_data/survey_data/odk/rapid_assessment_retrospective.csv", full.names = TRUE, recursive = TRUE)),
+  # cue = "always" re-lists the folder every run, so a newly added file is picked up (targets only re-hashes the files it already knows about otherwise).
+  tar_file(odk_ra_office_files, list.files("raw_data/survey_data/odk/rapid_assessment_retrospective.csv", full.names = TRUE, recursive = TRUE), cue = tar_cue(mode = "always")),
   raw_data_odk_ra_office = odk_read_submissions_ra_office(odk_ra_office_files),
   
   # Bind field and retro submissions, and further clean up  
   data_odk_rapid = clean_data_odk_rapid(raw_data_odk_ra_field, raw_data_odk_ra_office),
   
   # b) Live-trap (just retrospective submission)
-  tar_file(odk_trap_files, list.files("raw_data/survey_data/odk/mouse_livetrap.csv/", full.names = TRUE, recursive = TRUE)),
+  # cue = "always" re-lists the folder every run, so a newly added file is picked up (targets only re-hashes the files it already knows about otherwise).
+  tar_file(odk_trap_files, list.files("raw_data/survey_data/odk/mouse_livetrap.csv/", full.names = TRUE, recursive = TRUE), cue = tar_cue(mode = "always")),
   raw_data_odk_traps = odk_read_submissions_traps(odk_trap_files),
   
   # clean ODK live-trap submissions, mapped onto the canonical trap schema.
@@ -185,7 +216,7 @@ tar_plan(
   # Citizen-science mouse sightings from the FeralScan / MouseAlert platform. Each record is an ordinal abundance observation (none / low / medium / high) submitted by a farmer or member of the public.
   
   # Track the database file for changes 
-  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-7-16.csv"),
+  tar_file(mouse_alert_file, "raw_data/survey_data/mouse_alert/species_data_Mouse_Sighting_2026-9-24.csv"),
   
   # clean the MouseAlert data 
   data_mouse_alert = clean_data_mouse_alert(mouse_alert_file),
@@ -392,10 +423,9 @@ tar_plan(
 
   # Each season, refresh the "## Overview" / "## Management recommendations" text BEFORE running tar_make(), in two steps:
   #   1) Draft: regenerate _overview.md from the latest data by rendering once with draft_overview = TRUE (this render's own HTML output is a throwaway -- only _overview.md matters). _management.md is a standalone, hand-maintained checklist and is NOT touched by this step -- the qmd substitutes the current Moderate/High zone names into its "(list zones)" placeholder itself at render time:
-  #        quarto::quarto_render(
-  #          "quarto_reports/mouseforecast.com/raw_data_update.qmd",
-  #          execute_params = list(draft_overview = TRUE)
-  #        )
+  #       quarto::quarto_render(
+  #         "quarto_reports/mouseforecast.com/raw_data_update.qmd",
+  #         execute_params = list(draft_overview = FALSE)),
   #   2) Edit: hand-edit _overview.md as needed (e.g. add specific town names, rapid-assessment anecdotes, trend notes), and _management.md if the recommended actions themselves need to change.
   # Then run tar_make("forecast_html") (draft_overview defaults to FALSE), which {{< include >}}s the edited files as-is and re-renders whenever they change (see extra_files below).
   
@@ -422,7 +452,6 @@ tar_plan(
       file.copy("quarto_reports/mouseforecast.com/raw_data_update.html", "docs/index.html", overwrite = TRUE)
       "docs/index.html"
     }),
-  
     # Git commit of docs/index.html will then deploy to mouseforecast.com (important to specify in Claude.md to never commit this folder)
   
     # Track the email QMD as a file target so edits to it invalidate email_draft.
@@ -463,18 +492,22 @@ tar_plan(
     buffer_km              = 20
   ),
 
-  # iii. Paddock x month scaffold for monthly covariates below ----------------------------------------------------------------------------------------------
-  # first_year = 1980 matches the earliest trap survey data (1980-04-06); every Section B covariate raster already covers 1982+ (GPP's PML-V2 splice, section 2; rain/soil_moisture trimmed to match, sections 3/4), with min_temp back to 1980 itself, so 1980-1981 rows only miss GPP/rain/soil_moisture, and every other row gets full coverage. Extra lead-in years before the earliest real survey also give any future lagged covariate (Section C) real history to look back on, not just NA.
+  # iii. Standard covariate grid template (extent/resolution/CRS only, no real data) ------------------------------------------------------------------------
+  # This pipeline's own shared 0.1 degree grid -- every covariate that needs to sit on it (rainfall/soil_moisture/min_temp's own resample_to_grid() calls, sections 3/4/5; monthly_gpp_rast_coarse, section 2's own "ix.") depends on THIS, not on pml_gpp_rast directly, even though pml_gpp_rast's own real grid is where this numeric definition originally came from -- resample_to_grid()'s own "template" argument only ever reads geometry, never values (see that function's own header), so a real, changing data product (pml_gpp_rast, subject to its own masking/correction fixes over time) was never the right thing for those targets to depend on. Built from pml_gpp_rast_cropped (section 2's own "viii.", forward-referenced here -- targets doesn't care about file order, only the dependency graph) specifically because that's the crop-only, pre-masking stage: any future change to PML's own masking (or anything else downstream of the crop) leaves pml_gpp_rast_cropped's own output, and so this template, untouched. terra::rast(x, vals = NA) strips pml_gpp_rast_cropped down to geometry only (one layer, no real data) -- confirmed live this keeps the target trivially small regardless of how many months PML's own archive covers, and (more importantly) means this target's own hash only changes if the grid itself genuinely changes, not on every PML data update.
+  tar_terra_rast(covariate_grid_template, terra::rast(pml_gpp_rast_cropped[[1]], vals = NA), gdal = covariate_gdal_options),
+
+  # iv. Paddock x month scaffold for monthly covariates below ----------------------------------------------------------------------------------------------
+  # first_year = 1980 matches the earliest trap survey data (1980-04-06); GPP covers 1982+ (PML-V2 splice, section 2), rain/soil_moisture/min_temp 1970+ (sections 3-5), so 1980-1981 rows only miss GPP, and every other row gets full coverage. Extra lead-in years before the earliest real survey also give any future lagged covariate (Section C) real history to look back on, not just NA.
   paddock_month_grid = paddocks_sf |>
     sf::st_drop_geometry() |>
     dplyr::filter(paddock_id %in% structured_paddock_ids) |>
     dplyr::transmute(paddock_id, longitude = longitude_paddock, latitude = latitude_paddock) |>
     build_monthly_rows(site_id_cols = "paddock_id", first_year = 1970),
 
-  # iv. Paddock x season scaffold -- the final covariate attach step (6) is built on this, not paddock_month_grid directly, since the model itself steps seasonally. See r/b_build_paddock_season_grid.R.
+  # v. Paddock x season scaffold -- the final covariate attach step (6) is built on this, not paddock_month_grid directly, since the model itself steps seasonally. See r/b_build_paddock_season_grid.R.
   paddock_season_grid = build_paddock_season_grid(paddock_month_grid),
 
-  # v. Structured-survey paddock points (longitude/latitude only) -- shared by every paddock-centroid GPP product comparison below (gpp_gf_bias_check/gpp_modis_bias_check, section 2), computed once rather than rebuilt identically in each.
+  # vi. Structured-survey paddock points (longitude/latitude only) -- shared by every paddock-centroid GPP product comparison below (gpp_gf_bias_check/gpp_modis_bias_check, section 2), computed once rather than rebuilt identically in each.
   structured_survey_points = dplyr::filter(paddocks_sf, paddock_id %in% structured_paddock_ids) |>
     sf::st_drop_geometry() |>
     dplyr::transmute(longitude = longitude_paddock, latitude = latitude_paddock),
@@ -485,9 +518,10 @@ tar_plan(
 
   ## A) NASA (MODIS/VIIRS) ====================================================================================================================================
 
+# @knitr gpp-step-i
   # i. Download NASA products (MODIS, VIIRS) ----------------------------------------------------------------------------------------------------------------
 
-  # Download MODIS (2000-01-01 to gpp_modis_end_date, gap-filled) -- FROZEN, not open-ended like VIIRS (below): MODIS is only ever used for the pre-2012 portion of the merged record (v. below, VIIRS wins 2012+) and the MOD17-vs-VNP17 bias check/correction (iii./iv.), both already well served once the archive reaches a recent date -- chasing every new day via todays_date bought nothing further for either use, while AppEEARS' own request handling collapses even a tiny few-date top-up into a full re-delivery of this whole multi-GB archive (see gpp_group_contiguous_dates()'s header, r/b_download_gpp.R) -- confirmed live 2026-08 costing ~10h and ~17GB just to add a few months of new composites. A fixed gpp_modis_end_date keeps this target stable once complete instead of re-triggering that same costly full re-request on every later tar_make() (a handful of permanently-missing historic composite dates can still occasionally retrigger it every recheck_after_days -- accepted, much rarer than the old daily todays_date growth). Confirmed live 2026-08-26: one such full re-request (still under the old todays_date-chasing behaviour, made the same day this freeze was added) delivered zero 2026 composites at all -- MOD17A2HGF's own gap-filled processing lags well behind real-time regardless of what end_date is requested -- and still didn't fill the historic Psn_QC_500m gap either, so freezing end_date costs nothing further to fill either shortfall.
+  # Download MODIS (2000-01-01 to gpp_modis_end_date, gap-filled) -- FROZEN, not open-ended like VIIRS (below): MODIS is only ever used for the pre-2012 portion of the merged record (v. below, VIIRS supplies 2012+) and the MOD17-vs-VNP17 bias check/correction (iii./iv.), both already well served once the archive reaches a recent date -- chasing every new day via todays_date buys nothing further for either use, while AppEEARS' own request handling collapses even a tiny few-date top-up into a full re-delivery of this whole multi-GB archive (a single such top-up costs ~10h and ~17GB just to add a few months of new composites; see gpp_group_contiguous_dates()'s header, r/b_download_gpp.R). A fixed gpp_modis_end_date keeps this target stable once complete instead of re-triggering that same costly full re-request on every later tar_make(). recheck_after_days is raised from the function's own 7-day default to 36500 for the same reason: even the "handful of permanently-missing historic composite dates" case the 7-day default was sized for still recurs often enough in practice to periodically re-trigger this, this pipeline's single most expensive target (~6h just to reload/clamp the archive after a successful transfer, on top of the AppEEARS request itself) -- MODIS is capped/frozen precisely because the current archive already more than covers its only two uses above, so there is no genuine benefit to ever automatically retrying that permanent gap again; a real reason to re-request MODIS (e.g. deliberately extending gpp_modis_end_date) should be a manual, deliberate action, not something recheck_after_days' own cooldown ever does on its own.
   tar_file(gpp_files_modis, download_gpp(
     roi                 = covariate_download_region,
     out_dir             = "raw_data/predictor_variables/gpp/modis",
@@ -496,7 +530,16 @@ tar_plan(
     start_date          = "2000-01-01",
     end_date            = gpp_modis_end_date,
     job_name            = paste0("gpp_modis_", format(Sys.Date(), "%Y%m%d")),
-    time_out            = 28800)),
+    time_out            = 28800,
+    recheck_after_days  = 36500)),
+
+  # MODIS's own 5-year calendar blocks -- so composite_gpp_rast_modis_block below (loading
+  # + clamping) can branch over them the same way composite_gpp_rast_viirs_frozen_block/
+  # min_temp_raster_block already do, rather than one single ~6h target covering the whole 2000-2026
+  # archive at once. gpp_files_modis itself stays one unbranched download (MODIS is frozen, fetched
+  # once as a whole archive, above) -- filter_gpp_files_by_year() (r/b_filter_gpp_files_by_year.R)
+  # is what turns that one flat file list into each block's own subset.
+  tar_target(modis_year_blocks, build_year_blocks(2000:lubridate::year(as.Date(gpp_modis_end_date))), iteration = "list"),
 
 
   # VIIRS's own yearly calendar blocks (2012+) -- needed before any VIIRS download below can run.
@@ -536,67 +579,89 @@ tar_plan(
     time_out       = 28800)),
 
 
+# @knitr gpp-step-ii
   # ii. Load and clamp NASA composites (composite grain) -----------------------------------------------------------------------------------------------------
   # load_and_clamp_gpp_composites() loads each raw source's own composites, clamps sensor sentinel/fill codes, and converts to a true daily rate -- deliberately NOT off-shore-masked or aggregated to monthly yet (see that function's own header for why those two specifically are safe to defer to vi. below, once, rather than doing them four times here). Everything below (iii.-v.) works at this same composite grain -- one layer per 8-day composite date, not per month -- so bias-checking/correcting NASA's own sources can match by exact date instead of a coarser "which months/years are complete enough" heuristic.
 
-  # MODIS: the full 2000 to gpp_modis_end_date archive (i. above), not just 2000-2011 -- only ever wins the merge (v. below) where VIIRS genuinely has no data (2012+ VIIRS takes priority automatically, see combine_spatraster_list()'s own header).
-  tar_terra_rast(composite_gpp_rast_modis, load_and_clamp_gpp_composites(gpp_files_modis), gdal = covariate_gdal_options),
+  # MODIS: the full 2000 to gpp_modis_end_date archive (i. above), not just 2000-2011 -- only ever ends up in the merged record (v. below) where VIIRS genuinely has no data (2012+ VIIRS is used automatically, see combine_spatraster_list()'s own header).
+  # Branched over modis_year_blocks, one calendar block per branch -- same reasoning as composite_gpp_rast_viirs_frozen_block/min_temp_raster_block below: without this, a single ~6h monolithic target here would mean an unrelated pipeline-settings change, or one bad file anywhere in the archive (a single OneDrive dataless placeholder), forces a full ~6h redo of all 26 years, not just the one block actually affected. Recombined into the same composite_gpp_rast_modis name every downstream target already expects (gpp_modis_bias_check/gpp_modis_pixel_ratio_rast/composite_gpp_rast_modis_corrected/gpp_modis_national_mean/gpp_modis_paddock_mean below all keep working unchanged) via combine_spatraster_list() -- same recombination function VIIRS's own frozen blocks already use, non-overlapping blocks by construction so this is a plain concatenation in practice, not genuine merge-precedence logic.
+  tar_terra_rast(
+    composite_gpp_rast_modis_block,
+    load_and_clamp_gpp_composites(filter_gpp_files_by_year(gpp_files_modis, modis_year_blocks)),
+    pattern   = map(modis_year_blocks),
+    gdal      = covariate_gdal_options,
+    resources = heavy_resources
+  ),
+  tar_terra_rast(composite_gpp_rast_modis, combine_spatraster_list(composite_gpp_rast_modis_block), gdal = covariate_gdal_options),
 
   # VIIRS gap-filled, frozen (complete, no longer changing) blocks -- one branch per calendar-year block.
   tar_terra_rast(
     composite_gpp_rast_viirs_frozen_block,
     load_and_clamp_gpp_composites(gpp_files_viirs_frozen_block),
-    pattern = map(gpp_files_viirs_frozen_block),
-    gdal    = covariate_gdal_options
+    pattern   = map(gpp_files_viirs_frozen_block),
+    gdal      = covariate_gdal_options,
+    resources = heavy_resources
   ),
 
   # VIIRS gap-filled, recent (still-catching-up) blocks -- plain gap-filled only, no non-gap-filled fallback spliced in here; that happens later, at the merge in v., not per-composite-date -- see combine_spatraster_list()'s own header for why that's safe.
-  tar_terra_rast(composite_gpp_rast_viirs_recent_block, load_and_clamp_gpp_composites(gpp_files_viirs_recent_block), gdal = covariate_gdal_options),
+  tar_terra_rast(
+    composite_gpp_rast_viirs_recent_block,
+    load_and_clamp_gpp_composites(gpp_files_viirs_recent_block),
+    gdal      = covariate_gdal_options,
+    resources = heavy_resources
+  ),
 
-  # VIIRS gap-filled, frozen + recent combined -- the full, current, clean gap-filled record, used by the real splice (v.), and by the GF-vs-NGF bias check/correction (iii./iv.) -- those two specifically NEED the recent block, since composite_gpp_rast_viirs_nongf only ever covers the recent ~2 years by construction and so has zero overlap with frozen-only GF (confirmed live 2026-08 -- see gpp_gf_bias_check's own comment, iii. below). NOT used by the MOD17-vs-VNP17 bias check/correction any more -- see composite_gpp_rast_viirs_gf_frozen's own comment for why those two could be stabilised where GF-vs-NGF couldn't.
+  # VIIRS gap-filled, frozen + recent combined -- the full, current, clean gap-filled record, used by the real splice (v.), and by the GF-vs-NGF bias check/correction (iii./iv.) -- those two specifically NEED the recent block, since composite_gpp_rast_viirs_nongf only ever covers the recent ~2 years by construction and so has zero overlap with frozen-only GF (see gpp_gf_bias_check's own comment, iii. below). Not used by the MOD17-vs-VNP17 bias check/correction, though -- that pair is stabilised on the frozen-only stack instead (composite_gpp_rast_viirs_gf_frozen, below), which GF-vs-NGF can't use given the zero-overlap constraint above.
   tar_terra_rast(composite_gpp_rast_viirs_gf, combine_spatraster_list(c(composite_gpp_rast_viirs_frozen_block, list(composite_gpp_rast_viirs_recent_block))), gdal = covariate_gdal_options),
 
-  # VIIRS gap-filled, FROZEN ONLY -- a stable reference that only changes once a year (when a block gets promoted out of "recent"), unlike composite_gpp_rast_viirs_gf above, which changes on essentially every tar_make() call as the still-open recent block keeps catching up. Used by the MOD17-vs-VNP17 bias check and pixel-scale correction (iii./iv.) instead of the full GF stack, so that pair of steps (~1h combined, confirmed live 2026-08) doesn't rerun on every recent-block catch-up -- mirrors the same stability trick this pipeline's own PML correction already used pre-2026-08 (monthly_gpp_rast_frozen, since retired) before this composite-grain redesign, confirmed live to have been dropped by it. NOT usable for the GF-vs-NGF bias check/correction, though (confirmed live 2026-08, see composite_gpp_rast_viirs_gf's own comment above and gpp_gf_bias_check's, iii. below) -- that pair still reruns on every recent-block catch-up, an accepted, structural cost of NGF's own recency-limited download window (i. above), not something this target can fix.
+  # VIIRS gap-filled, FROZEN ONLY -- a stable reference that only changes once a year (when a block gets promoted out of "recent"), unlike composite_gpp_rast_viirs_gf above, which changes on essentially every tar_make() call as the still-open recent block keeps catching up. Used by the MOD17-vs-VNP17 bias check and pixel-scale correction (iii./iv.) instead of the full GF stack, so that pair of steps (~1h combined) doesn't rerun on every recent-block catch-up. Not usable for the GF-vs-NGF bias check/correction, though (see composite_gpp_rast_viirs_gf's own comment above and gpp_gf_bias_check's, iii. below) -- that pair still reruns on every recent-block catch-up, an accepted, structural cost of NGF's own recency-limited download window (i. above), not something this target can fix.
   tar_terra_rast(composite_gpp_rast_viirs_gf_frozen, combine_spatraster_list(composite_gpp_rast_viirs_frozen_block), gdal = covariate_gdal_options),
 
   # VIIRS non-gap-filled -- the full accumulated record (download_gpp() never deletes old files, so this already reaches back further than the 2-year window gpp_files_viirs_nongf itself requests, i. above).
-  tar_terra_rast(composite_gpp_rast_viirs_nongf, load_and_clamp_gpp_composites(gpp_files_viirs_nongf), gdal = covariate_gdal_options),
+  tar_terra_rast(
+    composite_gpp_rast_viirs_nongf,
+    load_and_clamp_gpp_composites(gpp_files_viirs_nongf),
+    gdal      = covariate_gdal_options,
+    resources = heavy_resources
+  ),
 
 
-  # iii. Cross-product bias-check diagnostics ----------------------------------------------------------------------------------------------------------------
-  # NASA products only (MOD17, VNP17 gap-filled/non-gap-filled) -- PML's own diagnostic lives in ix. below instead, alongside its own correction, once both finished products (this section's monthly_gpp_rast, B)'s pml_gpp_rast) exist.
+# @knitr gpp-step-iii
+  # iii. Determine bias in NASA products   ----------------------------------------------------------------------------------------------------------------
+  # each call site pre-aligning its own two rasters onto a common grid/grain/units first; every raster here already shares the same 500m grid and gC/m^2/day units (ii. above), so no resampling is needed within this NASA-only section
 
-  # All below use compare_gpp_rasters() (r/b_compare_gpp_rasters.R) -- one shared function, each call site pre-aligning its own two rasters onto a common grid/grain/units first; every raster here already shares the same 500m grid and gC/m^2/day units (ii. above), so no resampling is needed within this NASA-only section -- that's only ever needed against PML's own coarser grid, ix. below.
-
-  # Diagnostic: how well gap-filled and non-gap-filled VIIRS agree, over their full overlap -- MUST use the full (frozen+recent) GF stack here, not composite_gpp_rast_viirs_gf_frozen: composite_gpp_rast_viirs_nongf only ever covers the last ~2 years by construction (download_gpp()'s own recent-block-matching window, i. above), so it has ZERO overlap with frozen-only GF (confirmed live 2026-08 -- build_gpp_pixel_ratio_raster() erroring "share no layers in common" when this was tried) -- unlike the MODIS correction below, whose own reference (composite_gpp_rast_modis) genuinely spans frozen years too, this one structurally needs the recent block to have any data to compare against at all, so it can't be stabilised the same way. intersect() inside compare_gpp_rasters() finds the real overlap on its own, matching by exact composite date. rast_a = non-gap-filled, rast_b = gap-filled -- positive bias_mean means gap-filled reads higher.
+  # Diagnostic: how well gap-filled and non-gap-filled VIIRS agree, over their full overlap -- MUST use the full (frozen+recent) GF stack here, not composite_gpp_rast_viirs_gf_frozen: composite_gpp_rast_viirs_nongf only ever covers the last ~2 years by construction (download_gpp()'s own recent-block-matching window, i. above), so it has ZERO overlap with frozen-only GF (confirmed live: build_gpp_pixel_ratio_raster() errors "share no layers in common" if this is tried) -- unlike the MODIS correction below, whose own reference (composite_gpp_rast_modis) genuinely spans frozen years too, this one structurally needs the recent block to have any data to compare against at all, so it can't be stabilised the same way. intersect() inside compare_gpp_rasters() finds the real overlap on its own, matching by exact composite date. rast_a = non-gap-filled, rast_b = gap-filled -- positive bias_mean means gap-filled reads higher.
   gpp_gf_bias_check = compare_gpp_rasters(composite_gpp_rast_viirs_nongf, composite_gpp_rast_viirs_gf, structured_survey_points),
 
   # Diagnostic: how well MOD17 and VNP17 agree, over the frozen portion of their real 2012+ overlap -- composite_gpp_rast_modis is the untrimmed full archive (i. above), composite_gpp_rast_viirs_gf_frozen is pure, stable VIIRS (ii. above), so intersect() inside compare_gpp_rasters() finds the overlap on its own, again by exact composite date. rast_a = MODIS, rast_b = VIIRS -- positive bias_mean means VIIRS reads higher.
   gpp_modis_bias_check = compare_gpp_rasters(composite_gpp_rast_modis, composite_gpp_rast_viirs_gf_frozen, structured_survey_points),
 
 
+# @knitr gpp-step-iv
   # iv. Compute NASA pixel-scale corrections -----------------------------------------------------------------------------------------------------------------
   # MOD17 towards VNP17, and non-gap-filled towards gap-filled VIIRS -- both NASA-internal, both at composite grain still (months_of below tells build_gpp_pixel_ratio_raster()/apply_gpp_pixel_ratio_correction() how to read a calendar month out of a date-named layer instead of their own default month_year-named convention -- see each function's own header). PML's own correction lives in ix. below instead, once this section's own finished monthly_gpp_rast (vi. below) exists as its reference.
   composite_gpp_months_of <- function(x) lubridate::month(as.Date(x)),
 
-  # Pixel-scale ratio correction for MODIS -- towards VIIRS's own level, from their real 2012+ overlap, restricted to the FROZEN (stable) portion of VIIRS (composite_gpp_rast_viirs_gf_frozen vs composite_gpp_rast_modis, ii./i. above) -- see that target's own comment for why frozen, not the full recent-catching-up stack; intersect() inside build_gpp_pixel_ratio_raster() finds the overlap on its own.
+  # Pixel-scale ratio correction for MODIS -- towards VIIRS's own level, from their real 2012+ overlap, restricted to the FROZEN (stable) portion of VIIRS (composite_gpp_rast_viirs_gf_frozen vs composite_gpp_rast_modis, ii./i. above) -- frozen so this correction doesn't refit every time the still-open recent block picks up a new composite; intersect() inside build_gpp_pixel_ratio_raster() finds the overlap on its own.
   tar_terra_rast(gpp_modis_pixel_ratio_rast, build_gpp_pixel_ratio_raster(composite_gpp_rast_viirs_gf_frozen, composite_gpp_rast_modis, months_of = composite_gpp_months_of), gdal = covariate_gdal_options),
 
-  # Corrected MODIS, full range -- only its pre-2012 portion ever wins the merge below (VIIRS takes priority automatically for 2012+, where both cover a period), so no separate pre-2012 trim is needed -- see combine_spatraster_list()'s own header for why.
+  # Corrected MODIS, full range -- only its pre-2012 portion ever ends up in the merged record below (VIIRS is used automatically for 2012+, where both cover a period), so no separate pre-2012 trim is needed -- see combine_spatraster_list()'s own header for why.
   tar_terra_rast(composite_gpp_rast_modis_corrected, apply_gpp_pixel_ratio_correction(composite_gpp_rast_modis, gpp_modis_pixel_ratio_rast, months_of = composite_gpp_months_of), gdal = covariate_gdal_options),
 
-  # Pixel-scale ratio correction for VIIRS -- from the full GF vs full NGF record (ii. above); MUST use the full (frozen+recent) GF stack here, not composite_gpp_rast_viirs_gf_frozen -- see gpp_gf_bias_check's own comment above for why (composite_gpp_rast_viirs_nongf only covers the recent ~2 years by construction, so it has zero overlap with frozen-only GF). intersect() inside build_gpp_pixel_ratio_raster() finding their real overlap on its own; no "correction years" pre-filter needed any more (2026-08: retired, see r_not_in_use/b_find_gf_nongf_correction_years.R).
+  # Pixel-scale ratio correction for VIIRS -- from the full GF vs full NGF record (ii. above); MUST use the full (frozen+recent) GF stack here, not composite_gpp_rast_viirs_gf_frozen -- see gpp_gf_bias_check's own comment above for why (composite_gpp_rast_viirs_nongf only covers the recent ~2 years by construction, so it has zero overlap with frozen-only GF). intersect() inside build_gpp_pixel_ratio_raster() finds their real overlap on its own; no "correction years" pre-filter needed.
   tar_terra_rast(gpp_gf_pixel_ratio_rast, build_gpp_pixel_ratio_raster(composite_gpp_rast_viirs_gf, composite_gpp_rast_viirs_nongf, months_of = composite_gpp_months_of), gdal = covariate_gdal_options),
 
-  # Corrected non-gap-filled VIIRS, full range -- only its dates where gap-filled hasn't published yet ever win the merge below (GF takes priority automatically, where both cover a period), so no separate per-composite-date splice function is needed any more -- see combine_spatraster_list()'s own header for why (2026-08: replaces build_viirs_recent_block_raster()/r_not_in_use/, which applied this same correction differently).
+  # Corrected non-gap-filled VIIRS, full range -- only its dates where gap-filled hasn't published yet ever end up in the merged record below (GF is used automatically, where both cover a period), so no separate per-composite-date splice function is needed -- see combine_spatraster_list()'s own header for why.
   tar_terra_rast(composite_gpp_rast_viirs_nongf_corrected, apply_gpp_pixel_ratio_correction(composite_gpp_rast_viirs_nongf, gpp_gf_pixel_ratio_rast, months_of = composite_gpp_months_of), gdal = covariate_gdal_options),
 
 
+# @knitr gpp-step-v
   # v. Splice NASA sources into one continuous stack ----------------------------------------------------------------------------------------------------------
   # Still composite grain -- merge every source into one continuous stack, most-robust-source-first: gap-filled VIIRS (frozen + recent, wherever it actually has real data), then corrected non-gap-filled VIIRS as the fallback for whatever gap-filled hasn't published yet, then corrected MODIS as the final fallback for anything VIIRS doesn't cover at all (not raw MODIS -- iv. above).
   tar_terra_rast(composite_gpp_rast, combine_spatraster_list(list(composite_gpp_rast_viirs_gf, composite_gpp_rast_viirs_nongf_corrected, composite_gpp_rast_modis_corrected)), gdal = covariate_gdal_options),
 
 
+# @knitr gpp-step-vi
   # vi. Finish NASA record: mask and aggregate to monthly ----------------------------------------------------------------------------------------------------
   # The two operations deferred since ii. -- off-shore masking and period aggregation -- run here, once, on the finished spliced composite-grain stack, rather than four times separately on each raw source before correction (finish_gpp_period_raster()'s own header has the full reasoning). This produces monthly_gpp_rast: NASA's finished, self-contained product -- everything from i. through here (A) never touches PML at all.
   tar_terra_rast(
@@ -609,28 +674,36 @@ tar_plan(
 
   ## B) PML =====================================================================================================================================================
 
+# @knitr gpp-step-vii
   # vii. Download PML -----------------------------------------------------------------------------------------------------------------------------------------
   # Download PML-V2 (1982-2020, TPDC FTP).
   tar_file(pml_gpp_files, download_pml_data(out_dir = "raw_data/predictor_variables/gpp/pml_v2_historic/monthly")),
 
 
+# @knitr gpp-step-viii
   # viii. Crop PML to same area ---------------------------------------------------------------------------------------------------------------------------------
-  # PML-V2 is a global product (1500x3600 cells), ~85x more than this pipeline ever needs -- cropping right after download keeps every downstream target's storage/IO footprint small. PML-V2 is already monthly and needs no masking/aggregation of its own (build_pml_gpp_raster()'s own job) -- this is genuinely all of B).
-  tar_terra_rast(pml_gpp_rast, {
+  # PML-V2 is a global product (1500x3600 cells), ~85x more than this pipeline ever needs -- cropping right after download keeps every downstream target's storage/IO footprint small. Split into two steps, not one: pml_gpp_rast_cropped (crop only, real PML values) is this pipeline's own actual standard grid -- also the sole ingredient of covariate_grid_template (section 1), the geometry-only target every resample_to_grid() TEMPLATE use (rainfall/soil_moisture/min_temp, and this section's own monthly_gpp_rast_coarse, ix. below) depends on instead of on pml_gpp_rast directly, since that function only ever reads a template's geometry, never its values (see its own header). pml_gpp_rast itself then masks pml_gpp_rast_cropped further (real DATA, not geometry) to covariate_download_region's own polygon and aus_shp's coastline, matching NASA's own finished record footprint (covariate_download_region's own polygon at download, aus_shp via mask_gpp_offshore() in vi.) -- without this, raw PML's own bbox+margin crop alone would leave real values across ~16,000 more nationally-averaged cells than NASA's own masked record has, corrupting any raw-PML-vs-pipeline-output national-mean comparison. Both aus_shp and covariate_download_region are shared, section-agnostic inputs (not NASA's own output), so masking to them here doesn't break A)/B)'s own independence. See build_gpp_pixel_ratio_raster()'s own header for how this also shrinks (though doesn't eliminate) the NA-vs-ratio=1 edge case its own pixel-scale correction was built to handle. The pml_gpp_rast_cropped/pml_gpp_rast split itself exists because a single combined target would mean ANY future PML-only change -- this masking step included -- invalidates every one of those geometry-only downstream consumers too, cascading all the way through the plague HMM and its own reports/shiny deployment for a change that never touched the grid at all (~104 targets, confirmed live).
+  tar_terra_rast(pml_gpp_rast_cropped, {
     r <- build_pml_gpp_raster(pml_gpp_files)
     bbox <- sf::st_bbox(covariate_download_region)
     margin_deg <- 0.5
     terra::crop(r, terra::ext(bbox["xmin"] - margin_deg, bbox["xmax"] + margin_deg, bbox["ymin"] - margin_deg, bbox["ymax"] + margin_deg))
   }, gdal = covariate_gdal_options),
 
+  tar_terra_rast(pml_gpp_rast, {
+    r <- terra::mask(pml_gpp_rast_cropped, terra::vect(covariate_download_region))
+    mask_gpp_offshore(r, aus_shp)
+  }, gdal = covariate_gdal_options),
+
 
   ## C) Combine =================================================================================================================================================
 
+# @knitr gpp-step-ix
   # ix. Bias-check, correct and splice in PML -----------------------------------------------------------------------------------------------------------------
-  # Both finished, independent products (A's monthly_gpp_rast, B's pml_gpp_rast) exist by this point -- everything below just combines them. PML only ever extends the record backwards (1982-1999, the one stretch neither MODIS nor VIIRS reaches) -- see combine_spatraster_list()'s own header for how the merge below lets PML's own corrected values win only where NASA genuinely has nothing, with no manual pre-trim needed.
+  # Both finished, independent products (A's monthly_gpp_rast, B's pml_gpp_rast) exist by this point -- everything below just combines them. PML only ever extends the record backwards (1982-1999, the one stretch neither MODIS nor VIIRS reaches) -- see combine_spatraster_list()'s own header for how the merge below only uses PML's own corrected values where NASA genuinely has nothing, with no manual pre-trim needed.
 
-  # Resample NASA's finished record onto PML's own grid -- PML's own comparison/correction reference.
-  tar_terra_rast(monthly_gpp_rast_coarse, resample_to_grid(monthly_gpp_rast, pml_gpp_rast), gdal = covariate_gdal_options),
+  # Resample NASA's finished record onto the standard covariate grid (section 1's own covariate_grid_template, not pml_gpp_rast directly -- see that target's own comment) -- PML's own comparison/correction reference.
+  tar_terra_rast(monthly_gpp_rast_coarse, resample_to_grid(monthly_gpp_rast, covariate_grid_template), gdal = covariate_gdal_options),
 
   # Diagnostic: how well PML and this pipeline's own (corrected) NASA record agree, over their full 1982-2020 overlap. rast_a = our own record, rast_b = PML -- positive bias_mean means PML reads higher.
   gpp_pml_bias_check = compare_gpp_rasters(monthly_gpp_rast_coarse, pml_gpp_rast, structured_survey_points),
@@ -638,7 +711,7 @@ tar_plan(
   # Pixel-scale ratio correction for PML. See r/b_build_gpp_pixel_ratio_raster.R for the correction itself.
   tar_terra_rast(gpp_pml_pixel_ratio_rast, build_gpp_pixel_ratio_raster(monthly_gpp_rast_coarse, pml_gpp_rast), gdal = covariate_gdal_options),
 
-  # Corrected PML, full 1982-2020 range -- only its pre-2000 portion ever wins the merge below (NASA takes priority automatically for 2000+, where both cover a period), so no separate pre-2000 trim is needed -- see combine_spatraster_list()'s own header for why.
+  # Corrected PML, full 1982-2020 range -- only its pre-2000 portion ever ends up in the merged record below (NASA is used automatically for 2000+, where both cover a period), so no separate pre-2000 trim is needed -- see combine_spatraster_list()'s own header for why.
   tar_terra_rast(pml_gpp_rast_corrected, apply_gpp_pixel_ratio_correction(pml_gpp_rast, gpp_pml_pixel_ratio_rast), gdal = covariate_gdal_options),
 
   # Merge corrected PML in underneath NASA's own record (NASA listed first/priority, PML the fallback for 1982-1999) -- the final, continuous 1982+ product every downstream covariate below is built from.
@@ -651,9 +724,10 @@ tar_plan(
   ),
 
 
+# @knitr gpp-step-x
   # x. National + paddock mean diagnostics ----------------------------------------------------------------------------------------------------------------
 
-  # National mean time series per raw GPP source -- report-only (gpp_processing.qmd), computed once here rather than at render time. Each raw source's own monthly view reuses its own already-loaded-and-clamped composite target (composite_gpp_rast_modis/composite_gpp_rast_viirs_*) via finish_gpp_period_raster() -- MODIS previously rebuilt this from raw files via build_gpp_period_raster()'s one-shot wrapper instead, silently re-running load_and_clamp_gpp_composites() over the full raw MOD17 archive a second (and, at paddock grain below, third) time; confirmed live this was the dominant cost behind gpp_modis_national_mean/gpp_modis_paddock_mean each taking ~2.5h (2026-08, see r/b_build_gpp_period_raster.R).
+  # National mean time series per raw GPP source -- report-only (gpp_processing.qmd), computed once here rather than at render time. Each raw source's own monthly view reuses its own already-loaded-and-clamped composite target (composite_gpp_rast_modis/composite_gpp_rast_viirs_*) via finish_gpp_period_raster() -- rebuilding this from raw files via build_gpp_period_raster()'s one-shot wrapper instead would silently re-run load_and_clamp_gpp_composites() over the full raw MOD17 archive a second (and, at paddock grain below, third) time; confirmed live as the dominant cost behind gpp_modis_national_mean/gpp_modis_paddock_mean each taking ~2.5h (see r/b_build_gpp_period_raster.R).
   gpp_modis_national_mean = raster_mean_series(finish_gpp_period_raster(composite_gpp_rast_modis, aus_shp, summarise_by = "month")),
   gpp_viirs_gf_national_mean = raster_mean_series(finish_gpp_period_raster(composite_gpp_rast_viirs_gf, aus_shp, summarise_by = "month")),
   gpp_viirs_nongf_national_mean = raster_mean_series(finish_gpp_period_raster(composite_gpp_rast_viirs_nongf, aus_shp, summarise_by = "month")),
@@ -666,16 +740,33 @@ tar_plan(
   gpp_corrected_paddock_mean = raster_mean_series(gpp_raster_coarse, structured_survey_points),
 
   # GPP-specific source/splice/correction methodology, rendered here (not section 6/7) since it documents exactly the record just built above -- see r/b_download_pml_data.R onward.
-  tar_quarto(gpp_processing_html, path = "quarto_reports/gpp_processing.qmd", quiet = TRUE),
+  # working_directory pinned to "quarto_reports" -- tar_quarto()'s own default (unset) forces
+  # execute_dir = getwd() at the point this command is built, i.e. project root under tar_make(),
+  # overriding quarto::quarto_render()'s own real default (the document's own directory), which a
+  # manual `quarto render` of this file uses instead. gpp_processing.qmd's own #| file: "../r/..."
+  # chunk options resolve relative to execute_dir, not the document's own location: those chunks
+  # read fine under manual render (execute_dir defaults to quarto_reports/ there) but break under
+  # tar_make() specifically once execute_dir is forced to project root instead ("../r/..." from
+  # project root doesn't exist). Pinning working_directory here keeps execute_dir consistently
+  # quarto_reports/ either way.
+  # deployment = "main" renders in the main process, one report at a time: concurrent quarto renders in quarto_reports/ on crew workers clash.
+  tar_quarto(gpp_processing_html,
+             path              = "quarto_reports/gpp_processing.qmd",
+             working_directory = "quarto_reports",
+             quiet             = TRUE,
+             deployment        = "main"),
 
 
+# @knitr gpp-step-xi
   # xi. Fine-scale, focal-smoothed GPP -- rapid assessment detection covariate ------------------------------------------------------------------------------
   # Native-resolution (not the shared 0.1 degree grid), locally-smoothed GPP for burrow_count's own detection formula.
-  tar_terra_rast(gpp_focal_raster, build_gpp_focal_raster(monthly_gpp_rast, paddocks_sf_with_soil_type, eastern_states), gdal = covariate_gdal_options),
+  # Built for every state with a paddock -- chewcard_count_exploration.qmd (Section D) and the plague HMM both need it wherever there's data.
+  tar_terra_rast(gpp_focal_raster, build_gpp_focal_raster(monthly_gpp_rast, paddocks_sf_with_soil_type), gdal = covariate_gdal_options),
   # Coverage check, kept as its own target (not bundled into the build above).
-  gpp_focal_coverage_check = warn_gpp_focal_coverage_gaps(gpp_focal_raster, paddocks_sf_with_soil_type, eastern_states),
+  gpp_focal_coverage_check = warn_gpp_focal_coverage_gaps(gpp_focal_raster, paddocks_sf_with_soil_type),
 
 
+# @knitr gpp-step-end
   # xii. Rolling averages -- one level/anomaly/climatology triplet per window in gpp_rolling_windows, via tar_map() (add/remove a window there, nothing here changes) -------------------------------
   # Level built at full monthly grain then trimmed to season-end months (window=3 there already equals a plain seasonal mean); anomaly/climatology smooth_window=3 is GPP-specific. See r/b_compute_rolling_mean_raster.R, r/b_compute_loo_anomaly_raster.R, r/b_compute_climatology_raster.R.
   tarchetypes::tar_map(
@@ -685,6 +776,14 @@ tar_plan(
     tar_terra_rast(gpp_rolling_climatology_mean, compute_climatology_raster(gpp_rolling_raster, stat = "mean", smooth_window = 3), gdal = covariate_gdal_options),
     tar_terra_rast(gpp_rolling_climatology_sd, compute_climatology_raster(gpp_rolling_raster, stat = "sd", smooth_window = 3), gdal = covariate_gdal_options)
   ),
+
+  # xii-b. Nowcast (season-end-unaligned) rolling-6 GPP -- Section E's live "current risk" prediction needs a value for whichever month is most recently
+  # complete, but the season-end trim above only ever keeps Feb/May/Aug/Nov, discarding a genuinely complete month (e.g. July) just because it isn't one of
+  # those four. Same rolling-mean computation as gpp_rolling_raster_6 above, minus that trim -- real, complete-month data only, no partial-period averaging
+  # and no extrapolation. Training is unaffected: paddock_season_grid's own attach (below) always reads period_col = "season_end_month_year", so this extra
+  # grain is invisible there. See soil_moisture_raster_coarse_nowcast (4.iii-b below, same rationale) and r/d_predict_plague_risk.R's header for how
+  # plague_risk_map_nowcast (3. below) uses both.
+  tar_terra_rast(gpp_rolling_raster_6_nowcast, compute_rolling_mean_raster(gpp_raster_coarse, window = 6), gdal = covariate_gdal_options),
 
   # Attach fragment per window -- one small paddock_season_grid-shaped table (level + anomaly columns) per window, combined below via tar_combine() into gpp_rolling_covs; adding/removing a window in gpp_rolling_windows needs no other edit.
   # level_sym/anomaly_sym are symbol columns (rlang::syms()), not plain strings -- a string looked up via get() at runtime is invisible to tar_map()'s static dependency detection, a symbol column isn't.
@@ -710,19 +809,21 @@ tar_plan(
   # 3) Rainfall: SILO's pre-aggregated monthly rainfall totals ----------------------------------------------------------------------------------------------
 
   # i. Download monthly rasters -----------------------------------------------------------------------------------------------------------------------------
-  tar_file(silo_files, download_silo_monthly_data(data = paddock_month_grid, lag_years = 1)),
+  # cue = "always" matches awra_files' own pattern (Section B cadence table, CLAUDE.md) -- without it (bug found and fixed 2026-09), this target has no
+  # dependency that ever changes day to day, so `targets` never re-ran download_silo_monthly_data() at all after its first build, silently defeating that
+  # function's own "current month always re-requested" logic and leaving rainfall (and everything downstream: rain_whiplash_trough_to_peak) stuck on
+  # whichever month the target last happened to build. The function itself is already cheap to re-call every time (file.exists() skips for every past
+  # month already on disk, one real request for the current month only) -- see r/b_download_silo_monthly_data.R's own header.
+  tar_file(silo_files, download_silo_monthly_data(data = paddock_month_grid, lag_years = 1), cue = tar_cue(mode = "always")),
 
   # ii. Stack into one raster -------------------------------------------------------------------------------------------------------------------------------
   tar_terra_rast(rainfall_raster, build_monthly_rainfall_raster(silo_files), gdal = covariate_gdal_options),
 
-  # iii. Coarsen and realign to pml_gpp_rast ----------------------------------------------------------------------------------------------------------------
+  # iii. Coarsen and realign to the standard covariate grid (section 1's own covariate_grid_template) ------------------------------------------------------
   tar_terra_rast(rain_raster_coarse, {
-    r <- resample_to_grid(rainfall_raster, pml_gpp_rast)
-    # Trimmed to 1982+ to match GPP's own earliest year (PML-V2, section 2) -- rainfall's own SILO
-    # source covers much further back, but this keeps rain pixel-for-pixel aligned with GPP across
-    # the shared rolling/anomaly/climatology treatment below. min_temp (section 5) gets no such
-    # trim since it gets none of that treatment and isn't compared against the others.
-    r[[as.integer(sub(".*_", "", names(r))) >= 1982]]
+    r <- resample_to_grid(rainfall_raster, covariate_grid_template)
+    # Trimmed to 1970+: rain_whiplash_trough_to_peak needs 42 months of history (30-month mean + 12-month sweep), so the plague hindcast can start in Summer 1983.
+    r[[as.integer(sub(".*_", "", names(r))) >= 1970]]
   }, gdal = covariate_gdal_options),
 
 
@@ -778,18 +879,30 @@ tar_plan(
   # 4) Soil moisture: AWRA-L v7's sm_pct, one file for whole-history ----------------------------------------------------------------------------------------
 
   # i. Download most recent file ----------------------------------------------------------------------------------------------------------------------------
-  tar_file(awra_files, download_awra_data(variables = c("sm_pct"))),
+  # cue = "always": download_awra_data()'s own HEAD-request check (cheap) is what actually decides whether the ~1.3GB file needs re-fetching, but that
+  # check only runs at all if targets re-invokes this command -- unlike the GPP downloads above, nothing in this command's own arguments changes day to
+  # day, so without this cue targets would treat it as up to date forever after the first successful download and never call the function again (confirmed
+  # live 2026-09: found stuck on a 2026-07-28 download while the remote file had already moved on to 2026-09-03).
+  tar_file(awra_files, download_awra_data(variables = c("sm_pct")), cue = tar_cue(mode = "always")),
 
   # ii. Label layers with month_year ------------------------------------------------------------------------------------------------------------------------
   tar_terra_rast(soil_moisture_raster, build_awra_soil_moisture_raster(awra_files[grepl("sm_pct", awra_files)]), gdal = covariate_gdal_options),
 
-  # iii. Coarsen and realign to pml_gpp_rast ----------------------------------------------------------------------------------------------------------------
+  # iii. Coarsen and realign to the standard covariate grid (section 1's own covariate_grid_template) ------------------------------------------------------
   tar_terra_rast(soil_moisture_raster_coarse, {
-    r <- resample_to_grid(soil_moisture_raster, pml_gpp_rast)
-    # Trimmed to 1982+ to match GPP's own earliest year -- same reason as rain's own trim, section 3.iii.
-    r <- r[[as.integer(sub(".*_", "", names(r))) >= 1982]]
+    r <- resample_to_grid(soil_moisture_raster, covariate_grid_template)
+    # Trimmed to 1970+, matching rainfall and min_temp (sections 3.iii/5).
+    r <- r[[as.integer(sub(".*_", "", names(r))) >= 1970]]
     # Trimmed to the 4 season-end months right here (not just before anomaly/climatology, like GPP) -- soil moisture is a raw snapshot with no rolling-window dependency on the other 8 months (unlike GPP's rolling average, which needs every month as input first), and section 6's attach only ever reads period_col = "season_end_month_year" for the raw value too, so this benefits the raw attach as well as the anomaly/climatology below.
     trim_to_season_end_months(r, season_end_months = c(2, 5, 8, 11))
+  }, gdal = covariate_gdal_options),
+
+  # iii-b. Nowcast (season-end-unaligned) soil moisture -- same rationale as gpp_rolling_raster_6_nowcast above (2.xii-b): the season-end trim discards
+  # whichever complete month doesn't land on Feb/May/Aug/Nov, so Section E's live prediction gets its own untrimmed version instead of waiting for the next
+  # season boundary. Real, complete-month AWRA data only -- no extrapolation.
+  tar_terra_rast(soil_moisture_raster_coarse_nowcast, {
+    r <- resample_to_grid(soil_moisture_raster, covariate_grid_template)
+    r[[as.integer(sub(".*_", "", names(r))) >= 1970]]
   }, gdal = covariate_gdal_options),
 
 
@@ -806,8 +919,8 @@ tar_plan(
   # Same 30/12/current parameters as rain (3.vi above), independently validated for soil moisture too (AUC=0.714) despite reversing section 4.iv's own "no rolling window" design. Needs its own resample+trim first since soil_moisture_raster_coarse is already season-end-trimmed, unlike gpp/rain_raster_coarse.
   soil_moisture_whiplash_source_window = 30,
   tar_terra_rast(soil_moisture_whiplash_source_raster, {
-    r <- resample_to_grid(soil_moisture_raster, pml_gpp_rast)
-    r <- r[[as.integer(sub(".*_", "", names(r))) >= 1982]] # same 1982+ trim as soil_moisture_raster_coarse
+    r <- resample_to_grid(soil_moisture_raster, covariate_grid_template)
+    r <- r[[as.integer(sub(".*_", "", names(r))) >= 1970]] # same 1970+ trim as soil_moisture_raster_coarse
     compute_rolling_mean_raster(r, window = soil_moisture_whiplash_source_window)
   }, gdal = covariate_gdal_options),
   tar_terra_rast(soil_moisture_whiplash_source_anomaly, compute_loo_anomaly_raster(soil_moisture_whiplash_source_raster), gdal = covariate_gdal_options),
@@ -823,7 +936,7 @@ tar_plan(
   # i. 5-year blocks, declared first so the download below can branch over them -----------------------------------------------------------------------------
   tar_target(min_temp_year_blocks, {
     latest_complete_season_end # dependency only -- forces a re-check of the block list each time a new season completes.
-    build_year_blocks(1980:year(todays_date))
+    build_year_blocks(1970:year(todays_date)) # 1970+, matching rainfall's start (section 3.iii); 5-year blocks stay aligned to 1980, 1985, ...
   }, iteration = "list"),
 
   # ii. Download daily files, one branch per block -----------------------------------------------------------------------------------------------------------
@@ -842,16 +955,17 @@ tar_plan(
   tar_terra_rast(
     min_temp_raster_block,
     summarise_silo_to_month(silo_daily_files_min_temp, summary_func = "mean", roi = covariate_download_region),
-    pattern = map(silo_daily_files_min_temp),
-    gdal    = covariate_gdal_options
+    pattern   = map(silo_daily_files_min_temp),
+    gdal      = covariate_gdal_options,
+    resources = heavy_resources
   ),
 
   # Combine blocks into one raster.
   tar_terra_rast(min_temp_raster, combine_spatraster_list(min_temp_raster_block), gdal = covariate_gdal_options),
 
-  # iv. Coarsen and realign to pml_gpp_rast -----------------------------------------------------------------------------------------------------------------
-  # Just needs realigned grid, since it's already the same coarseness as PML -- no year trim needed either (unlike rain/soil moisture, section 3.iii/4.iii), since min_temp isn't compared pixel-for-pixel against the others.
-  tar_terra_rast(min_temp_raster_coarse, resample_to_grid(min_temp_raster, pml_gpp_rast), gdal = covariate_gdal_options),
+  # iv. Coarsen and realign to the standard covariate grid (section 1's own covariate_grid_template) -------------------------------------------------------
+  # Just needs realigned grid, since it's already the same coarseness as the standard grid -- no year trim needed either (unlike rain/soil moisture, section 3.iii/4.iii), since min_temp isn't compared pixel-for-pixel against the others.
+  tar_terra_rast(min_temp_raster_coarse, resample_to_grid(min_temp_raster, covariate_grid_template), gdal = covariate_gdal_options),
 
 
   # iv. Seasonal average ------------------------------------------------------------------------------------------------------------------------------------
@@ -885,7 +999,10 @@ tar_plan(
   # explanations -- tar_quarto() auto-detects each qmd's own tar_load() calls
   # as that target's dependencies, no need to list them here. gpp_processing_html renders
   # earlier, in section 2, right after the GPP record it documents is ready.
-  tar_quarto(covariate_summary_html, path = "quarto_reports/covariate_summary.qmd", quiet = TRUE),
+  tar_quarto(covariate_summary_html,
+             path       = "quarto_reports/covariate_summary.qmd",
+             quiet      = TRUE,
+             deployment = "main"),
 
 
   # C) BUILD SEASONAL MODELLING DATASET ---------------------------------------------------------------------------------------------------------------------
@@ -923,72 +1040,174 @@ tar_plan(
   # One row per paddock x season, both survey types' streams side by side.
   survey_state_wide = build_survey_state_wide(survey_model_data_traps, survey_model_data_rapid),
 
-  # Source data for the plague-state anchor below (state x year flags, ae_zone x season ratings).
+  # State x year plague-occurrence source -- no longer anchor_plague_state()'s own input (2026-09, see
+  # r/c_anchor_plague_state.R's header), kept as a target since plague_model_summary.qmd still tar_load()s
+  # it for a separate external onset-skill benchmark. regional_mouse_activity_ratings (its own former
+  # condition (b) partner) is fully removed (2026-09) -- superseded by recent_plague_maps below, and
+  # nothing else in the pipeline reads it.
   tar_file(yearly_plague_occurrence_file, "raw_data/plague_occurrence/yearly_plague_occurrence.csv"),
   yearly_plague_occurrence = read_csv(yearly_plague_occurrence_file, show_col_types = FALSE),
 
-  tar_file(regional_mouse_activity_ratings_file, "raw_data/plague_occurrence/regional_mouse_activity_ratings.csv"),
-  regional_mouse_activity_ratings = read_csv(regional_mouse_activity_ratings_file, show_col_types = FALSE,
-    col_types = cols(rating = col_factor(
-      levels  = c("Nil", "Very Low", "Low", "Low-Moderate", "Moderate", "Moderate-High", "High"),
-      ordered = TRUE
-    ))
-  ),
+  # Hand-digitised plague-extent polygons, one gpkg per season -- anchor_plague_state()'s own input (below).
+  # Pattern-restricted to *.gpkg (not every file in the folder): recent_plague_maps_map (below) writes its own
+  # PNG into this same folder, so an unfiltered list.files() would self-invalidate every tar_make() call.
+  # cue = "always" re-lists the folder every run, so a newly added season's gpkg is picked up (missed Summer_2021/Autumn_2022/Winter_2022 without it).
+  tar_file(recent_plague_maps_files,
+           list.files("raw_data/plague_occurrence/recent_plague_maps", pattern = "\\.gpkg$", full.names = TRUE, recursive = TRUE, ignore.case = TRUE),
+           cue = tar_cue(mode = "always")),
+  recent_plague_maps = read_recent_plague_maps(recent_plague_maps_files),
 
-  # Semi-supervised HMM state anchor, with multi-season plague persistence and direct non-plague anchoring.
-  plague_state_anchors = anchor_plague_state(survey_state_wide, yearly_plague_occurrence, regional_mouse_activity_ratings),
+  # Flags a single unmapped season sandwiched between two overlapping mapped seasons (e.g. Summer 2018) as new folders get added -- see r/c_warn_recent_plague_maps_gaps.R.
+  recent_plague_maps_gap_check = warn_recent_plague_maps_gaps(recent_plague_maps),
+
+  # Faceted severity map, one panel per mapped season in chronological order, saved for visual review alongside the gap check above -- see r/c_plot_recent_plague_maps.R.
+  tar_file(recent_plague_maps_map, plot_recent_plague_maps(
+    recent_plague_maps, aus_shp, "raw_data/plague_occurrence/recent_plague_maps/recent_plague_maps_faceted_map.png"
+  )),
+
+  # Semi-supervised HMM state anchor -- paddock-scale point-in-polygon match against recent_plague_maps, see r/c_anchor_plague_state.R.
+  # Every paddock-season from census_start to the latest mapped season is non-plague unless inside a polygon mapped that season.
+  plague_state_anchors = anchor_plague_state(survey_state_wide, recent_plague_maps, census_start = "Summer 2013"),
 
 
-  # D) FIT AND PREDICT PLAGUE FORECAST MODEL ----------------------------------------------------------------------------------------------------------------
+  # D) OBSERVATION-STREAM EXPLORATORY ANALYSIS -------------------------------------------------------------------------------------------------------------------
+  # Model-agnostic exploration of each observation stream's distribution and covariates, independent of Section E's HMM.
+  # One self-contained Quarto report per data type -- see each report for methods and findings.
+
+  # 1) chewcard_count -----------------------------------------------------------------------------------------------------------------------------------------
+  tar_quarto(chewcard_count_exploration_html,
+             path       = "quarto_reports/chewcard_count_exploration.qmd",
+             quiet      = TRUE,
+             deployment = "main"),
+
+
+  # 2) burrow_count -------------------------------------------------------------------------------------------------------------------------------------------
+  tar_quarto(burrow_count_exploration_html,
+             path       = "quarto_reports/burrow_count_exploration.qmd",
+             quiet      = TRUE,
+             deployment = "main"),
+
+
+  # 3) trap_count ---------------------------------------------------------------------------------------------------------------------------------------------
+  tar_quarto(trap_count_exploration_html,
+             path       = "quarto_reports/trap_count_exploration.qmd",
+             quiet      = TRUE,
+             deployment = "main"),
+
+
+  # E) FIT AND PREDICT PLAGUE FORECAST MODEL ----------------------------------------------------------------------------------------------------------------
 
   # 1) Build model data ---------------------------------------------------------------------------------------------------------------------------------------
-  # Every eastern state with regular structured survey data -- a single-zone fit was tried and found non-viable (see r/d_fit_plague_hmm.R); pooling gives the
-  # model real temporal variation in anchor timing. Filters by Australian state, not ae_zone -- matches the grain plague_state is anchored at
-  # (r/c_anchor_plague_state.R), see r/d_build_hmm_data.R's header for why that match matters even though the paddock set itself is unchanged.
-  eastern_states = c("NSW", "VIC", "SA", "QLD"),
 
-  # Reshapes to hmmTMB's ID/state format. Transition covariates: rain
-  # whiplash, 6-month rolling GPP, current-season soil moisture, season-mean min temp -- all
-  # contemporaneous (non-_lag1), matching rain_whiplash's own convention. exclude_zones drops
-  # "Qld Central" -- zero plague anchors and zero real observations since 2008.
+  # Reshapes to hmmTMB's ID/state format.
   hmm_data = build_hmm_data(plague_state_anchors,
-    state_filter   = eastern_states,
+    state_filter   = c("NSW", "VIC", "SA", "QLD", "WA"),
     covariates     = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp"),
     exclude_zones  = "Qld Central"
   ),
 
-
   # 2) Fit the plague HMM --------------------------------------------------------------------------------------------------------------------------------------
-  # Fits the 2-state HMM (trap + burrow + chewcard streams, chewcard split into 4 tied binom(10) blocks by transect, covariate-driven transitions, seasonal
+  # Fits the 2-state HMM (trap + burrow + chewcard streams, chewcard split into 4 tied beta-binomial(10) blocks by transect, covariate-driven transitions, seasonal
   # detection tied across states as a shared detection effect, ae_zone/shape left free per state as real density/dispersion effects, trap/burrow search-effort
-  # offsets).
-  plague_hmm = fit_plague_hmm(hmm_data,
-    transition_formula = ~ rain_whiplash_trough_to_peak + rain_whiplash_trough_to_peak:ae_zone + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re")
+  # offsets). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, s(ae_zone, by = ..., bs = "re") -- not a fixed
+  # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/d_fit_plague_hmm.R's header for why.
+  # Detection covariates on the burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/d_fit_plague_hmm.R.
+  # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/d_fit_plague_hmm_subprocess.R.
+  hmm_detection_terms = list(burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det"),
+                             chewcard     = c("crop_group_det", "crop_stage_det", "soil_type_det")),
+
+  plague_hmm = fit_plague_hmm_subprocess(hmm_data,
+    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re"),
+    detection_terms    = hmm_detection_terms
   ),
 
   # Fully unsupervised comparison fit -- identical spec, but every state anchor wiped to NA, so the HMM discovers its own 2-state split purely from the
   # observation/transition data. Quantifies how much the anchors themselves are actually doing vs. structure already in the data -- see
   # quarto_reports/plague_model_summary.qmd's fig-anchor-vs-model, where its own state_probs() is plotted alongside the anchored model's.
-  plague_hmm_unsupervised = fit_plague_hmm(dplyr::mutate(hmm_data, state = NA_integer_),
-    transition_formula = ~ rain_whiplash_trough_to_peak + rain_whiplash_trough_to_peak:ae_zone + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re")
+  plague_hmm_unsupervised = fit_plague_hmm_subprocess(dplyr::mutate(hmm_data, state = NA_integer_),
+    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re"),
+    detection_terms    = hmm_detection_terms
   ),
+
+  # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/d_fit_plague_hmm.R's own header documents ~18 formula/
+  # family variants tried against that unresolved miscalibration with no fix): simulates 100 replicate datasets from plague_hmm itself (hmmTMB's own HMM$check(),
+  # a purpose-built parametric-bootstrap mechanism) and compares real vs. simulated summary statistics. Supervised model only, matching Pseudo-residuals/
+  # Distribution family review's own scope. A real fresh-worker tar_make() run took 8m50s for this target (confirmed live, 2026-09) -- an interactive-session
+  # timing test looked like ~9s and was misleadingly fast, an artifact of hmmTMB's own machinery already being warm; too slow for a live report render either
+  # way, hence its own cached target. See r/d_check_plague_hmm_fit.R for the full method (including a real NA-matching pitfall found and fixed before this
+  # was usable at all).
+  plague_hmm_ppc = check_plague_hmm_fit(plague_hmm, nsims = 100),
+
+  # Randomised pseudo-residuals per stream (hmmTMB's own pseudores() is biased for count data) -- see r/d_randomised_pseudores.R.
+  plague_hmm_pseudores = randomised_pseudores(plague_hmm, seed = 1),
 
 
   # 3) Grid prediction ------------------------------------------------------------------------------------------------------------------------------------------
   # Pr(not-plague -> plague) at every 0.1 degree grid cell within the AE zones the model was actually fit to (derived live from hmm_data, so this automatically
   # tracks exclude_zones above rather than needing its own separate exclusion list), for the four rasters' own latest shared period -- a continuous risk map
   # including un-monitored paddocks, but not extrapolated to non-agricultural parts of these states (deserts, alps, cities) a raw state-outline mask would
-  # include. min_temp_raster_coarse (not min_temp_seasonal_raster) supplies min_temp.
+  # include. min_temp_raster_coarse (not min_temp_seasonal_raster) supplies min_temp. Also masks (default on) any cell that extrapolates a zone-varying
+  # covariate term beyond that zone's own evidence-bearing training range (2026-09) -- see predict_plague_risk()'s own header for the SA Vic Mallee case this fixes.
   fit_zones_sf = dplyr::filter(aez_adj, ae_zone %in% unique(hmm_data$ae_zone)),
-  tar_terra_rast(plague_risk_map, predict_plague_risk(plague_hmm,
-    rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf
-  )),
+
+  # Both the semi-supervised (anchored) and unsupervised models get their own risk/uncertainty maps -- a standing comparison, not a one-off, via tar_map() over model variant.
+  # Same "same computation, several variants" pattern as gpp_rolling_attach_map/rain_rolling_attach_map above -- a third model variant later is one more tibble row, not a hand-copied target pair.
+  tarchetypes::tar_map(
+    values = tibble::tibble(
+      model_variant = c("supervised", "unsupervised"),
+      model_sym     = rlang::syms(c("plague_hmm", "plague_hmm_unsupervised"))
+    ),
+    names = "model_variant",
+    tar_terra_rast(plague_risk_map, predict_plague_risk(model_sym,
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf
+    )),
+    # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/d_predict_plague_risk.R's header for why this is a separate cached target rather than computed live in the report.
+    tar_terra_rast(plague_risk_map_uncertainty, predict_plague_risk(model_sym,
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf,
+      n_post = 500
+    )),
+
+    # "Nowcast" variant -- same prediction, but using gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast (2.xii-b/4.iii-b above) in place of
+    # their season-end-trimmed counterparts, so predict_plague_risk()'s own shared-period auto-detection can land on the latest complete calendar month
+    # (whatever it is) instead of being held back to the last Feb/May/Aug/Nov boundary. rain_whiplash_trough_to_peak/min_temp_raster_coarse are unchanged --
+    # already full monthly grain, never season-end-trimmed to begin with (see rain_whiplash_source_raster's own comment above). Real, complete-month data
+    # only, no extrapolation -- kept as a separate target rather than changing plague_risk_map itself, so the primary map's own definition never silently
+    # shifts. Point estimate only, no uncertainty variant yet (2026-09) -- deliberately deferred, not an oversight, see the TO-DO note at the top of this
+    # file. See r/d_predict_plague_risk.R's header.
+    tar_terra_rast(plague_risk_map_nowcast, predict_plague_risk(model_sym,
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6_nowcast, soil_moisture_raster_coarse_nowcast, min_temp_raster_coarse, fit_zones_sf
+    ))
+  ),
 
 
-  # 4) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
+  # 4) Hindcast against recorded plague years --------------------------------------------------------------------------------------------------------------------
+  # Mutze (1989) digitised SA plague extents, 1904-1984 (only 1984 falls within the covariate record).
+  tar_file(mutze_plague_maps_file, "raw_data/plague_occurrence/mutze_1989_sa_plagues/mutze_1989_sa_plagues.gpkg"),
+  mutze_plague_maps = sf::read_sf(mutze_plague_maps_file),
+
+  # Grid hindcast of onset risk and propagated occupancy from Summer 1983, scored against yearly_plague_occurrence by state-year -- see r/d_hindcast_plague_occurrence.R.
+  tarchetypes::tar_map(
+    values = tibble::tibble(
+      model_variant = c("supervised", "unsupervised"),
+      model_sym     = rlang::syms(c("plague_hmm", "plague_hmm_unsupervised"))
+    ),
+    names = "model_variant",
+    tar_target(plague_hindcast, hindcast_plague_occurrence(model_sym,
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf
+    )),
+    # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/d_score_plague_hindcast.R.
+    tar_target(plague_hindcast_scores, score_plague_hindcast(plague_hindcast, aus_shp, yearly_plague_occurrence))
+  ),
+
+
+  # 5) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
   # Model fit diagnostics (convergence, coefficients, Viterbi-vs-known-history validation, pseudo-residuals) and the risk map together, generated live from
   # this section's own targets -- tar_quarto() auto-detects the qmd's own tar_load() calls as dependencies, no need to list them here.
-  tar_quarto(plague_model_summary_html, path = "quarto_reports/plague_model_summary.qmd", quiet = TRUE)
+  # deployment = "main": quarto renders run one at a time in the main process, since concurrent renders in quarto_reports/ on crew workers clash.
+  tar_quarto(plague_model_summary_html,
+             path       = "quarto_reports/plague_model_summary.qmd",
+             quiet      = TRUE,
+             deployment = "main")
 
 )
 

@@ -55,3 +55,8 @@ cache/
 
 # temp
 .DS_Store
+# knitr caches for Quarto reports
+quarto_reports/*_cache/
+
+# Rendered figure folders left beside self-contained Quarto reports
+quarto_reports/*_files/

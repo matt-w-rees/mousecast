@@ -2089,46 +2089,6 @@
       "Maintainer": "William Michael Landau <will.landau.oss@gmail.com>",
       "Repository": "CRAN"
     },
-    "crew.cluster": {
-      "Package": "crew.cluster",
-      "Version": "0.4.0",
-      "Source": "Repository",
-      "Title": "Crew Launcher Plugins for Traditional High-Performance Computing Clusters",
-      "Description": "In computationally demanding analysis projects, statisticians and data scientists asynchronously deploy long-running tasks to distributed systems, ranging from traditional clusters to cloud services. The 'crew.cluster' package extends the 'mirai'-powered 'crew' package with worker launcher plugins for traditional high-performance computing systems. Inspiration also comes from packages 'mirai' by Gao (2023) <https://github.com/r-lib/mirai>, 'future' by Bengtsson (2021) <doi:10.32614/RJ-2021-048>, 'rrq' by FitzJohn and Ashton (2023) <https://github.com/mrc-ide/rrq>, 'clustermq' by Schubert (2019) <doi:10.1093/bioinformatics/btz284>), and 'batchtools' by Lang, Bischl, and Surmann (2017). <doi:10.21105/joss.00135>.",
-      "License": "MIT + file LICENSE",
-      "URL": "https://wlandau.github.io/crew.cluster/, https://github.com/wlandau/crew.cluster",
-      "BugReports": "https://github.com/wlandau/crew.cluster/issues",
-      "Authors@R": "c( person( given = c(\"William\", \"Michael\"), family = \"Landau\", role = c(\"aut\", \"cre\"), email = \"will.landau.oss@gmail.com\", comment = c(ORCID = \"0000-0003-1878-3253\") ), person( given = c(\"Michael\", \"Gilbert\"), family = \"Levin\", role = \"aut\", email = \"mglev1n@gmail.com\", comment = c(ORCID = \"0000-0002-9937-9932\") ), person( given = \"Brendan\", family = \"Furneaux\", role = \"aut\", email = \"brendan.furneaux@gmail.com\", comment = c(ORCID = \"0000-0003-3522-7363\") ), person( family = \"Eli Lilly and Company\", role = c(\"cph\", \"fnd\") ))",
-      "Depends": [
-        "R (>= 4.0.0)"
-      ],
-      "Imports": [
-        "crew (>= 1.3.0)",
-        "lifecycle",
-        "nanonext",
-        "ps",
-        "R6",
-        "rlang",
-        "utils",
-        "vctrs",
-        "xml2",
-        "yaml"
-      ],
-      "Suggests": [
-        "knitr (>= 1.30)",
-        "markdown (>= 1.1)",
-        "rmarkdown (>= 2.4)",
-        "testthat (>= 3.0.0)"
-      ],
-      "Encoding": "UTF-8",
-      "Language": "en-US",
-      "Config/testthat/edition": "3",
-      "RoxygenNote": "7.3.3",
-      "NeedsCompilation": "no",
-      "Author": "William Michael Landau [aut, cre] (ORCID: <https://orcid.org/0000-0003-1878-3253>), Michael Gilbert Levin [aut] (ORCID: <https://orcid.org/0000-0002-9937-9932>), Brendan Furneaux [aut] (ORCID: <https://orcid.org/0000-0003-3522-7363>), Eli Lilly and Company [cph, fnd]",
-      "Maintainer": "William Michael Landau <will.landau.oss@gmail.com>",
-      "Repository": "CRAN"
-    },
     "crosstalk": {
       "Package": "crosstalk",
       "Version": "1.2.2",
@@ -2515,6 +2475,46 @@
       "NeedsCompilation": "no",
       "Author": "Mitchell O'Hara-Wild [aut, cre] (ORCID: <https://orcid.org/0000-0001-6729-7695>), Matthew Kay [aut] (ORCID: <https://orcid.org/0000-0001-9446-0419>), Alex Hayes [aut] (ORCID: <https://orcid.org/0000-0002-4985-5160>), Rob Hyndman [aut] (ORCID: <https://orcid.org/0000-0002-2140-5352>), Earo Wang [ctb] (ORCID: <https://orcid.org/0000-0001-6448-5260>), Vencislav Popov [ctb] (ORCID: <https://orcid.org/0000-0002-8073-4199>)",
       "Maintainer": "Mitchell O'Hara-Wild <mail@mitchelloharawild.com>",
+      "Repository": "CRAN"
+    },
+    "distributions3": {
+      "Package": "distributions3",
+      "Version": "0.3.0",
+      "Source": "Repository",
+      "Title": "Probability Distributions as S3 Objects",
+      "Authors@R": "c( person(given = \"Alex\", family = \"Hayes\", email = \"alexpghayes@gmail.com\", role = \"aut\", comment = c(ORCID = \"0000-0002-4985-5160\")), person(given = \"Ralph\", family = \"Moller-Trane\", role = \"aut\", comment = c(ORCID = \"0000-0001-7824-1785\")), person(given = \"Daniel\", family = \"Jordan\", email = \"dandermotj@gmail.com\", role = \"aut\"), person(given = \"Paul\", family = \"Northrop\", email = \"p.northrop@ucl.ac.uk\", role = \"aut\", comment = c(ORCID = \"0000-0002-1992-4882\")), person(given = c(\"Moritz\", \"N.\"), family = \"Lang\", email = \"moritz.n.lang@gmail.com\", role = \"aut\", comment = c(ORCID = \"0000-0002-2533-9903\")), person(given = \"Reto\", family = \"Stauffer\", email = \"reto.stauffer@uibk.ac.at\", role = \"aut\", comment = c(ORCID = \"0000-0002-3798-5507\")), person(given = \"Achim\", family = \"Zeileis\", email = \"Achim.Zeileis@R-project.org\", role = c(\"aut\", \"cre\"), comment = c(ORCID = \"0000-0003-0918-3766\")), person(given = \"Emil\", family = \"Hvitfeldt\", email = \"emilhhvitfeldt@gmail.com\", role = \"ctb\", comment = c(ORCID = \"0000-0002-0679-1945\")), person(given = \"Bruna\", family = \"Wundervald\", email = \"brunadaviesw@gmail.com\", role = \"ctb\", comment = c(ORCID = \"0000-0001-8163-220X\")), person(given = \"Alessandro\", family = \"Gasparini\", email = \"alessandro.gasparini@ki.se\", role = \"ctb\", comment = c(ORCID = \"0000-0002-8319-7624\")) )",
+      "Description": "Tools to create and manipulate probability distributions using S3.  Generics pdf(), cdf(), quantile(), and random() provide replacements for base R's d/p/q/r style functions.  Functions and arguments have been named carefully to minimize confusion for students in intro stats courses. The documentation for each distribution contains detailed mathematical notes.",
+      "License": "MIT + file LICENSE",
+      "URL": "https://github.com/zeileis/distributions3, https://zeileis.github.io/distributions3/",
+      "BugReports": "https://github.com/zeileis/distributions3/issues",
+      "Depends": [
+        "R (>= 3.0.2)"
+      ],
+      "Imports": [
+        "rlang"
+      ],
+      "Suggests": [
+        "cowplot",
+        "crch (>= 1.1-1)",
+        "ggplot2 (>= 3.4.0)",
+        "knitr",
+        "numDeriv",
+        "PoissonBinomial",
+        "revdbayes (>= 1.3.5)",
+        "rmarkdown",
+        "scoringRules",
+        "testthat (>= 3.0.0)",
+        "tibble",
+        "vctrs"
+      ],
+      "VignetteBuilder": "knitr",
+      "Encoding": "UTF-8",
+      "Config/testthat/edition": "3",
+      "Config/testthat/parallel": "true",
+      "Config/roxygen2/version": "8.0.0",
+      "NeedsCompilation": "yes",
+      "Author": "Alex Hayes [aut] (ORCID: <https://orcid.org/0000-0002-4985-5160>), Ralph Moller-Trane [aut] (ORCID: <https://orcid.org/0000-0001-7824-1785>), Daniel Jordan [aut], Paul Northrop [aut] (ORCID: <https://orcid.org/0000-0002-1992-4882>), Moritz N. Lang [aut] (ORCID: <https://orcid.org/0000-0002-2533-9903>), Reto Stauffer [aut] (ORCID: <https://orcid.org/0000-0002-3798-5507>), Achim Zeileis [aut, cre] (ORCID: <https://orcid.org/0000-0003-0918-3766>), Emil Hvitfeldt [ctb] (ORCID: <https://orcid.org/0000-0002-0679-1945>), Bruna Wundervald [ctb] (ORCID: <https://orcid.org/0000-0001-8163-220X>), Alessandro Gasparini [ctb] (ORCID: <https://orcid.org/0000-0002-8319-7624>)",
+      "Maintainer": "Achim Zeileis <Achim.Zeileis@R-project.org>",
       "Repository": "CRAN"
     },
     "dplyr": {
@@ -2985,6 +2985,147 @@
       "Author": "Henrik Bengtsson [aut, cre, cph] (ORCID: <https://orcid.org/0000-0002-7579-5165>), R Core Team [cph, ctb]",
       "Maintainer": "Henrik Bengtsson <henrikb@braju.com>",
       "Repository": "CRAN"
+    },
+    "gamlss": {
+      "Package": "gamlss",
+      "Version": "5.5-0",
+      "Source": "Repository",
+      "Title": "Generalized Additive Models for Location Scale and Shape",
+      "Date": "2025-08-19",
+      "Authors@R": "c(person(\"Mikis\", \"Stasinopoulos\", role = c(\"aut\", \"cre\", \"cph\"),  email = \"d.stasinopoulos@gre.ac.uk\", comment = c(ORCID = \"0000-0003-2407-5704\")), person(\"Robert\", \"Rigby\", role = \"aut\", email = \"r.rigby@gre.ac.uk\", comment = c(ORCID = \"0000-0003-3853-1707\")), person(\"Vlasios\", \"Voudouris\", role = \"ctb\"), person(\"Calliope\", \"Akantziliotou\", role = \"ctb\"), person(\"Marco\", \"Enea\", role = \"ctb\"), person(\"Daniil\", \"Kiose\", role = \"ctb\", comment = c(ORCID = \"0000-0002-3596-5748\")), person(\"Achim\", \"Zeileis\", role = \"ctb\", email = \"Achim.Zeileis@R-project.org\", comment = c(ORCID = \"0000-0003-0918-3766\")) )",
+      "Description": "Functions for fitting the Generalized Additive Models for Location Scale and Shape introduced by Rigby and Stasinopoulos (2005), <doi:10.1111/j.1467-9876.2005.00510.x>. The models use a distributional regression approach where all the parameters of the conditional distribution of the response variable are modelled using explanatory variables.",
+      "License": "GPL-2 | GPL-3",
+      "URL": "https://www.gamlss.com/",
+      "BugReports": "https://github.com/gamlss-dev/gamlss/issues",
+      "Depends": [
+        "R (>= 4.1.0)",
+        "graphics",
+        "stats",
+        "splines",
+        "utils",
+        "grDevices",
+        "gamlss.data (>= 5.0-0)",
+        "gamlss.dist (>= 4.3.1)",
+        "nlme",
+        "parallel"
+      ],
+      "Imports": [
+        "MASS",
+        "survival",
+        "methods"
+      ],
+      "Suggests": [
+        "distributions3 (>= 0.2.1)"
+      ],
+      "LazyLoad": "yes",
+      "NeedsCompilation": "yes",
+      "Author": "Mikis Stasinopoulos [aut, cre, cph] (ORCID: <https://orcid.org/0000-0003-2407-5704>), Robert Rigby [aut] (ORCID: <https://orcid.org/0000-0003-3853-1707>), Vlasios Voudouris [ctb], Calliope Akantziliotou [ctb], Marco Enea [ctb], Daniil Kiose [ctb] (ORCID: <https://orcid.org/0000-0002-3596-5748>), Achim Zeileis [ctb] (ORCID: <https://orcid.org/0000-0003-0918-3766>)",
+      "Maintainer": "Mikis Stasinopoulos <d.stasinopoulos@gre.ac.uk>",
+      "Repository": "CRAN",
+      "Encoding": "UTF-8"
+    },
+    "gamlss.data": {
+      "Package": "gamlss.data",
+      "Version": "6.0-7",
+      "Source": "Repository",
+      "Title": "Data for Generalized Additive Models for Location Scale and Shape",
+      "Date": "2025-09-04",
+      "Authors@R": "c(person(\"Mikis\", \"Stasinopoulos\", role = c(\"aut\", \"cre\"),  email = \"d.stasinopoulos@gre.ac.uk\", comment = c(ORCID = \"0000-0003-2407-5704\")), person(\"Robert\", \"Rigby\", role = \"aut\", email = \"r.rigby@gre.ac.uk\", comment = c(ORCID = \"0000-0003-3853-1707\")), person(\"Fernanda\", \"De Bastiani\", role = \"ctb\", comment = c(ORCID = \"0000-0001-8532-639X\")) )",
+      "Description": "Data used as examples in the books on Generalized Additive Models for Location Scale and Shape: Stasinopoulos, Rigby, Heller, Voudouris, De Bastiani (2017). Flexible Regression and Smoothing: Using GAMLSS in R, <doi:10.1201/b21973>. Rigby, Stasinopoulos, Heller, De Bastiani (2019). Distributions for Modeling Location, Scale, and Shape Using GAMLSS in R, <doi:10.1201/9780429298547>. Stasinopoulos, Kneib, Klein, Mayr, Heller (2024). Generalized Additive Models for Location, Scale and Shape: A Distributional Regression Approach, with Applications, <doi:10.1017/9781009410076>.",
+      "License": "GPL-2 | GPL-3",
+      "URL": "https://www.gamlss.com/",
+      "BugReports": "https://github.com/gamlss-dev/gamlss.data/issues",
+      "Depends": [
+        "R (>= 3.5.0)"
+      ],
+      "LazyData": "yes",
+      "NeedsCompilation": "no",
+      "Author": "Mikis Stasinopoulos [aut, cre] (ORCID: <https://orcid.org/0000-0003-2407-5704>), Robert Rigby [aut] (ORCID: <https://orcid.org/0000-0003-3853-1707>), Fernanda De Bastiani [ctb] (ORCID: <https://orcid.org/0000-0001-8532-639X>)",
+      "Maintainer": "Mikis Stasinopoulos <d.stasinopoulos@gre.ac.uk>",
+      "Repository": "CRAN",
+      "Encoding": "UTF-8"
+    },
+    "gamlss.dist": {
+      "Package": "gamlss.dist",
+      "Version": "6.1-9",
+      "Source": "Repository",
+      "Title": "Distributions for Generalized Additive Models for Location Scale and Shape",
+      "Date": "2026-08-10",
+      "Authors@R": "c(person(\"Mikis\", \"Stasinopoulos\", role = c(\"aut\", \"cre\", \"cph\"),  email = \"d.stasinopoulos@gre.ac.uk\", comment = c(ORCID = \"0000-0003-2407-5704\")), person(\"Robert\", \"Rigby\", role = \"aut\", email = \"r.rigby@gre.ac.uk\", comment = c(ORCID = \"0000-0003-3853-1707\")), person(\"Calliope\", \"Akantziliotou\", role = \"ctb\"), person(\"Vlasios\", \"Voudouris\", role = \"ctb\"), person(\"Gillian\", \"Heller\", role = \"ctb\", comment = c(ORCID = \"0000-0003-1270-1499\")), person(\"Fernanda\", \"De Bastiani\", role = \"ctb\", comment = c(ORCID = \"0000-0001-8532-639X\")), person(\"Raydonal\", \"Ospina\", role = \"ctb\", email = \"rospina@ime.usp.br\", comment = c(ORCID = \"0000-0002-9884-9090\")), person(\"Nicoletta\", \"Motpan\", role = \"ctb\"), person(\"Fiona\", \"McElduff\", role = \"ctb\"), person(\"Majid\", \"Djennad\", role = \"ctb\"), person(\"Marco\", \"Enea\", role = \"ctb\"), person(\"Alexios\", \"Ghalanos\", role = \"ctb\"), person(\"Christos\", \"Argyropoulos\", role = \"ctb\"), person(\"Almond\", \"Stöcker\", role = \"ctb\", comment = c(ORCID = \"0000-0001-9160-2397\")), person(\"Jens\", \"Lichter\", role = \"ctb\"), person(\"Stanislaus\", \"Stadlmann\", role = \"ctb\", comment = c(ORCID = \"0000-0001-6542-6342\")), person(\"Achim\", \"Zeileis\", role = \"ctb\", email = \"Achim.Zeileis@R-project.org\", comment = c(ORCID = \"0000-0003-0918-3766\")) )",
+      "Description": "A set of distributions which can be used for modelling the response variables in Generalized Additive Models for Location Scale and Shape, Rigby and Stasinopoulos (2005), <doi:10.1111/j.1467-9876.2005.00510.x>. The distributions can be continuous, discrete or mixed distributions. Extra distributions can be created, by transforming, any continuous distribution defined on the real line, to a distribution defined on ranges 0 to infinity or 0 to 1, by using a 'log' or a 'logit' transformation respectively.",
+      "License": "GPL-2 | GPL-3",
+      "URL": "https://www.gamlss.com/",
+      "BugReports": "https://github.com/gamlss-dev/gamlss.dist/issues",
+      "Depends": [
+        "R (>= 3.5.0)"
+      ],
+      "Imports": [
+        "MASS",
+        "graphics",
+        "stats",
+        "methods",
+        "grDevices"
+      ],
+      "Suggests": [
+        "distributions3 (>= 0.2.1)"
+      ],
+      "Encoding": "UTF-8",
+      "Repository": "https://gamlss-dev.r-universe.dev",
+      "NeedsCompilation": "yes",
+      "Author": "Mikis Stasinopoulos [aut, cre, cph] (ORCID: <https://orcid.org/0000-0003-2407-5704>), Robert Rigby [aut] (ORCID: <https://orcid.org/0000-0003-3853-1707>), Calliope Akantziliotou [ctb], Vlasios Voudouris [ctb], Gillian Heller [ctb] (ORCID: <https://orcid.org/0000-0003-1270-1499>), Fernanda De Bastiani [ctb] (ORCID: <https://orcid.org/0000-0001-8532-639X>), Raydonal Ospina [ctb] (ORCID: <https://orcid.org/0000-0002-9884-9090>), Nicoletta Motpan [ctb], Fiona McElduff [ctb], Majid Djennad [ctb], Marco Enea [ctb], Alexios Ghalanos [ctb], Christos Argyropoulos [ctb], Almond Stöcker [ctb] (ORCID: <https://orcid.org/0000-0001-9160-2397>), Jens Lichter [ctb], Stanislaus Stadlmann [ctb] (ORCID: <https://orcid.org/0000-0001-6542-6342>), Achim Zeileis [ctb] (ORCID: <https://orcid.org/0000-0003-0918-3766>)",
+      "Maintainer": "Mikis Stasinopoulos <d.stasinopoulos@gre.ac.uk>",
+      "RemoteType": "repository",
+      "RemoteUrl": "https://github.com/gamlss-dev/gamlss.dist",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "a6b3de52f5ffead99e4d68533eaf8252cefb515b"
+    },
+    "gamlss2": {
+      "Package": "gamlss2",
+      "Version": "0.1-0",
+      "Source": "Repository",
+      "Title": "GAMLSS Infrastructure for Flexible Distributional Regression",
+      "Authors@R": "c(person(\"Nikolaus\", \"Umlauf\", role = c(\"aut\", \"cre\"), email = \"Nikolaus.Umlauf@uibk.ac.at\", comment = c(ORCID = \"0000-0003-2160-9803\")), person(\"Mikis\", \"Stasinopoulos\", role = \"aut\", email = \"d.stasinopoulos@gre.ac.uk\", comment = c(ORCID = \"0000-0003-2407-5704\")), person(\"Robert\", \"Rigby\", role = \"aut\", email = \"r.rigby@gre.ac.uk\", comment = c(ORCID = \"0000-0003-3853-1707\")), person(\"Achim\", \"Zeileis\", role = \"aut\", email = \"Achim.Zeileis@R-project.org\", comment = c(ORCID = \"0000-0003-0918-3766\")), person(\"Reto\", \"Stauffer\", role = \"aut\", email = \"Reto.Stauffer@uibk.ac.at\", comment = c(ORCID = \"0000-0002-3798-5507\")), person(\"Gillian\", \"Heller\", role = \"aut\", email = \"gillian.heller@sydney.edu.au\", comment = c(ORCID = \"0000-0003-1270-1499\")), person(\"Fernanda\", \"de Bastiani\", role = \"aut\", email = \"fernanda.bastiani@ufpe.br\", comment = c(ORCID = \"0000-0001-8532-639X\")), person(\"Andreas\", \"Mayr\", role = \"aut\", email = \"andreas.mayr@uni-marburg.de\", comment = c(ORCID = \"0000-0001-7106-9732\")))",
+      "Description": "Next generation infrastructure for generalized additive models for location, scale, and shape (GAMLSS) and distributional regression more generally. The package provides a fresh reimplementation of the classic 'gamlss' package while being more modular and facilitating the creation of advanced terms and models.",
+      "License": "GPL-2 | GPL-3",
+      "URL": "https://gamlss-dev.github.io/gamlss2/",
+      "BugReports": "https://github.com/gamlss-dev/gamlss2/issues",
+      "Depends": [
+        "R (>= 4.1.0)",
+        "gamlss.dist",
+        "mgcv",
+        "distributions3 (>= 0.3.0)"
+      ],
+      "Imports": [
+        "parallel",
+        "Formula",
+        "mvtnorm"
+      ],
+      "Suggests": [
+        "colorspace",
+        "future.apply",
+        "gamlss",
+        "glmnet",
+        "lattice",
+        "Matrix",
+        "MASS",
+        "nlme",
+        "nnet",
+        "partykit",
+        "quarto",
+        "rpart",
+        "scoringRules",
+        "sf"
+      ],
+      "VignetteBuilder": "quarto",
+      "Config/roxygen2/version": "8.0.0",
+      "Repository": "https://gamlss-dev.r-universe.dev",
+      "NeedsCompilation": "yes",
+      "Author": "Nikolaus Umlauf [aut, cre] (ORCID: <https://orcid.org/0000-0003-2160-9803>), Mikis Stasinopoulos [aut] (ORCID: <https://orcid.org/0000-0003-2407-5704>), Robert Rigby [aut] (ORCID: <https://orcid.org/0000-0003-3853-1707>), Achim Zeileis [aut] (ORCID: <https://orcid.org/0000-0003-0918-3766>), Reto Stauffer [aut] (ORCID: <https://orcid.org/0000-0002-3798-5507>), Gillian Heller [aut] (ORCID: <https://orcid.org/0000-0003-1270-1499>), Fernanda de Bastiani [aut] (ORCID: <https://orcid.org/0000-0001-8532-639X>), Andreas Mayr [aut] (ORCID: <https://orcid.org/0000-0001-7106-9732>)",
+      "Maintainer": "Nikolaus Umlauf <Nikolaus.Umlauf@uibk.ac.at>",
+      "RemoteType": "repository",
+      "RemoteUrl": "https://github.com/gamlss-dev/gamlss2",
+      "RemoteRef": "HEAD",
+      "RemoteSha": "132e5de264b69ef89a2756378fe2dcca216ca694"
     },
     "gargle": {
       "Package": "gargle",
@@ -4114,8 +4255,8 @@
     },
     "hmmTMB": {
       "Package": "hmmTMB",
-      "Version": "1.1.2",
-      "Source": "Repository",
+      "Version": "1.1.2.9000",
+      "Source": "GitHub",
       "Type": "Package",
       "Title": "Fit Hidden Markov Models using Template Model Builder",
       "Authors@R": "c( person(given = \"Theo\", family = \"Michelot\", role = c(\"aut\", \"cre\"), email = \"theo.michelot@dal.ca\"), person(given = \"Richard\", family = \"Glennie\", role = c(\"aut\", \"ctb\")))",
@@ -4151,11 +4292,16 @@
         "unmarked"
       ],
       "Encoding": "UTF-8",
+      "LazyData": "true",
       "RoxygenNote": "7.3.2",
       "VignetteBuilder": "knitr",
-      "NeedsCompilation": "yes",
       "Author": "Theo Michelot [aut, cre], Richard Glennie [aut, ctb]",
-      "Repository": "CRAN"
+      "RemoteType": "github",
+      "RemoteHost": "api.github.com",
+      "RemoteUsername": "matt-w-rees",
+      "RemoteRepo": "hmmTMB",
+      "RemoteRef": "betabinom-dev",
+      "RemoteSha": "ad28e2252343def00b6d8fb90d85463d038ebdc3"
     },
     "hms": {
       "Package": "hms",
@@ -5501,6 +5647,44 @@
       "Collate": "'Dates.r' 'POSIXt.r' 'util.r' 'parse.r' 'timespans.r' 'intervals.r' 'difftimes.r' 'durations.r' 'periods.r' 'accessors-date.R' 'accessors-day.r' 'accessors-dst.r' 'accessors-hour.r' 'accessors-minute.r' 'accessors-month.r' 'accessors-quarter.r' 'accessors-second.r' 'accessors-tz.r' 'accessors-week.r' 'accessors-year.r' 'am-pm.r' 'time-zones.r' 'numeric.r' 'coercion.r' 'constants.r' 'cyclic_encoding.r' 'data.r' 'decimal-dates.r' 'deprecated.r' 'format_ISO8601.r' 'guess.r' 'hidden.r' 'instants.r' 'leap-years.r' 'ops-addition.r' 'ops-compare.r' 'ops-division.r' 'ops-integer-division.r' 'ops-m+.r' 'ops-modulo.r' 'ops-multiplication.r' 'ops-subtraction.r' 'package.r' 'pretty.r' 'round.r' 'stamp.r' 'tzdir.R' 'update.r' 'vctrs.R' 'zzz.R'",
       "NeedsCompilation": "yes",
       "Author": "Vitalie Spinu [aut, cre], Garrett Grolemund [aut], Hadley Wickham [aut], Davis Vaughan [ctb], Ian Lyttle [ctb], Imanuel Costigan [ctb], Jason Law [ctb], Doug Mitarotonda [ctb], Joseph Larmarange [ctb], Jonathan Boiser [ctb], Chel Hee Lee [ctb]",
+      "Repository": "CRAN"
+    },
+    "lwgeom": {
+      "Package": "lwgeom",
+      "Version": "0.2-17",
+      "Source": "Repository",
+      "Title": "Bindings to Selected 'liblwgeom' Functions for Simple Features",
+      "Description": "Access to selected functions found in 'liblwgeom' <https://github.com/postgis/postgis/tree/master/liblwgeom>, the light-weight geometry library used by 'PostGIS' <http://postgis.net/>.",
+      "Authors@R": "c(person(\"Edzer\", \"Pebesma\", role = c(\"aut\", \"cre\"), email = \"edzer.pebesma@uni-muenster.de\", comment = c(ORCID = \"0000-0001-8049-7069\")), person(\"Colin\", \"Rundel\", role = \"ctb\"), person(\"Andy\", \"Teucher\", role = \"ctb\"), person(\"liblwgeom developers\", role = \"cph\"))",
+      "Depends": [
+        "R (>= 4.1.0)"
+      ],
+      "Imports": [
+        "Rcpp",
+        "units",
+        "sf (>= 1.0-15)"
+      ],
+      "Suggests": [
+        "covr",
+        "sp",
+        "geosphere",
+        "testthat"
+      ],
+      "LinkingTo": [
+        "Rcpp",
+        "sf (>= 1.0-15)"
+      ],
+      "SystemRequirements": "GEOS (>= 3.5.0), PROJ (>= 4.8.0), sqlite3",
+      "License": "GPL-2",
+      "Copyright": "file COPYRIGHTS",
+      "Encoding": "UTF-8",
+      "URL": "https://r-spatial.github.io/lwgeom/, https://github.com/r-spatial/lwgeom",
+      "BugReports": "https://github.com/r-spatial/lwgeom/issues",
+      "Collate": "init.R RcppExports.R geohash.R split.R subdivide.R valid.R transform.R bounding_circle.R bearing.R snap_to_grid.R startpoint.R twkb.R perimeter.R clockwise.R geod.R wkt.R wrap_x.R",
+      "Config/roxygen2/version": "8.0.0",
+      "NeedsCompilation": "yes",
+      "Author": "Edzer Pebesma [aut, cre] (ORCID: <https://orcid.org/0000-0001-8049-7069>), Colin Rundel [ctb], Andy Teucher [ctb], liblwgeom developers [cph]",
+      "Maintainer": "Edzer Pebesma <edzer.pebesma@uni-muenster.de>",
       "Repository": "CRAN"
     },
     "magrittr": {
@@ -8601,6 +8785,36 @@
       "NeedsCompilation": "no",
       "Author": "Hadley Wickham [aut, cre, cph], Posit Software, PBC [cph, fnd]",
       "Maintainer": "Hadley Wickham <hadley@posit.co>",
+      "Repository": "CRAN"
+    },
+    "survival": {
+      "Package": "survival",
+      "Version": "3.8-6",
+      "Source": "Repository",
+      "Title": "Survival Analysis",
+      "Priority": "recommended",
+      "Date": "2026-01-09",
+      "Depends": [
+        "R (>= 3.5.0)"
+      ],
+      "Imports": [
+        "graphics",
+        "Matrix",
+        "methods",
+        "splines",
+        "stats",
+        "utils"
+      ],
+      "LazyData": "Yes",
+      "LazyDataCompression": "xz",
+      "ByteCompile": "Yes",
+      "Authors@R": "c(person(c(\"Terry\", \"M\"), \"Therneau\", email=\"therneau.terry@mayo.edu\", role=c(\"aut\", \"cre\")), person(\"Thomas\", \"Lumley\", role=c(\"ctb\", \"trl\"), comment=\"original S->R port and R maintainer until 2009\"), person(\"Atkinson\", \"Elizabeth\", role=\"ctb\"), person(\"Crowson\", \"Cynthia\", role=\"ctb\"))",
+      "Description": "Contains the core survival analysis routines, including definition of Surv objects,  Kaplan-Meier and Aalen-Johansen (multi-state) curves, Cox models, and parametric accelerated failure time models.",
+      "License": "LGPL (>= 2)",
+      "URL": "https://github.com/therneau/survival",
+      "NeedsCompilation": "yes",
+      "Author": "Terry M Therneau [aut, cre], Thomas Lumley [ctb, trl] (original S->R port and R maintainer until 2009), Atkinson Elizabeth [ctb], Crowson Cynthia [ctb]",
+      "Maintainer": "Terry M Therneau <therneau.terry@mayo.edu>",
       "Repository": "CRAN"
     },
     "svUnit": {

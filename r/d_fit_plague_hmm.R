@@ -1,3 +1,20 @@
+# Appends extra terms (a character vector) to a one-sided formula; returns base unchanged if there are
+# none, so fit_plague_hmm()'s default formulas are exactly the adopted ones.
+append_formula_terms <- function(base, extra) {
+  if (length(extra) == 0) return(base)
+  stats::update(base, stats::as.formula(paste("~ . +", paste(extra, collapse = " + "))))
+}
+
+# Groups one detection term's coefficient rows (coeff_fe() row names) so each factor level can be tied
+# to one shared, estimated value across both states -- and across every stream in `streams` at once,
+# e.g. all four chew-card blocks. Returns a list of row-name vectors, one per level.
+detection_tie_groups <- function(valid_rows, streams, param, term) {
+  prefix <- paste0("^(", paste(streams, collapse = "|"), ")\\.", param, "\\.state[12]\\.")
+  rows <- grep(paste0(prefix, term), valid_rows, value = TRUE)
+  # The level itself (e.g. "crop_group_detcereals"), with stream and state stripped, is the group key.
+  unname(split(rows, sub(prefix, "", rows)))
+}
+
 # Build and fit the two-state (not-plague / plague) hidden Markov model
 # (hmmTMB) described in CLAUDE.md's "Section D" plan: per-paddock time
 # series (hmmTMB's own ID mechanism), semi-supervised via the "state" column
@@ -738,6 +755,110 @@
 # two of the three streams (trap, burrow, chewcard), so this is expected and
 # desired, not a data-quality problem to fix upstream.
 #
+# WA ADDED (2026-09) -- hmm_states (_targets.R) becomes c(eastern_states, "WA"), matching
+# gpp_focal_raster's own WA coverage at the time (since built for every paddock's state, no list). WA brings 169 paddocks across 4 AE zones (WA Central/
+# Eastern/Northern/Sandplain) with real burrow_count/chewcard_count observations in every zone (no
+# live-trapping, same as e.g. "SA Vic Bordertown-Wimmera" already in the fit) and 97%+ covariate
+# coverage -- a substantial, usable addition, not a thin one. Directly including it under the
+# previously-adopted transition spec (rain_whiplash_trough_to_peak:ae_zone, a FIXED interaction --
+# every zone gets its own fully independent slope, no pooling) reproduced the exact "formal/false
+# convergence with one degenerate coefficient" signature CLAUDE.md documents elsewhere (the earlier
+# "Qld Central" blow-up): confirmed live, WA Sandplain's own S2>S1 (leaving-plague) zone slope
+# exploded to -470 (nlminb "false convergence (8)"), everything else in a sane -4 to +1.4 range.
+# Traced to a real identifiability gap, not a numerical fluke: WA Sandplain has 46 raw plague_state
+# = 2 anchor rows (not zero, unlike "Qld Central") but ZERO of them are followed by a plague_state =
+# 1 anchor at that same paddock's very next season -- no direct anchored evidence of ever LEAVING
+# plague specifically for that zone, so a fully independent per-zone slope for that one transition
+# had nothing constraining it. WA Eastern has a related but starker gap (zero plague_state = 2
+# anchors of any kind) and also showed an elevated (though not exploded) S1>S2 zone-slope estimate
+# (-3.76) under the same fixed-interaction spec.
+#
+# HIERARCHICAL ZONE SLOPE, ADOPTED (2026-09) -- following a review of Pedersen et al. (2019, PeerJ
+# 7:e6876, "Hierarchical generalized additive models in ecology: an introduction with mgcv",
+# relevant_papers/statistical_methods/peerj-6876.pdf) at the project owner's own direction. That
+# paper's own G/GS/GI/S/I typology names the fixed rain_whiplash_trough_to_peak:ae_zone interaction
+# just reverted above as "Model I" -- every group (zone) gets a fully independent slope, no pooling
+# toward a shared value, so a thin group's own slope is free to wander arbitrarily far (exactly the
+# WA Sandplain failure). The paper's own recommended fix for exactly this situation is "Model GS": a
+# pooled/global slope plus group-level deviations pulled toward it by a SHARED penalty (mgcv's own
+# `s(<group>, by = <covariate>, bs = "re")`, "a close analogue to a GLMM with varying slopes"). This
+# exact spec (s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re")) was already tried once before
+# in this project (2026-08, see the "third pass" paragraph above) and reverted for genuine
+# instability -- "false convergence" with NaN standard errors -- diagnosed at the time as a mismatch
+# between hmmTMB's own single joint nlminb() optimisation of fixed effects AND log-smoothing-
+# parameters together, and mgcv's own dedicated, more robust REML/GCV outer loop for exactly this
+# estimation problem (the paper's own examples all fit via `method = "REML"`, not a joint nlminb()).
+# Re-tested live (2026-09) on the current, larger, WA-inclusive panel specifically because the
+# motivating problem (WA Sandplain) is exactly the situation partial pooling is designed to fix, not
+# assuming the 2026-08 result still holds under materially more data: CONVERGES CLEANLY this time
+# (code 0, "relative convergence (4)"), no NaN standard errors, positive-definite Hessian, finite
+# smoothing parameters (lambda 0.32-2.23, none of the ~1e300 explosion or exactly-1-untouched-
+# starting-value collapse CLAUDE.md documents for the earlier factor-smooth attempts). Every zone's
+# own slope deviation is a modest, plausible shrinkage toward the pooled estimate (-2.69 to +1.64),
+# WA Sandplain and WA Eastern included -- no blow-up anywhere.
+#
+# This also resolves a SEPARATE, already-documented problem at the source, not just a WA one:
+# "SA Vic Mallee"'s own fixed-interaction coefficient (2.344, by far the steepest of any zone under
+# Model I) was the direct cause of the over-confident far-west-SA-coast risk cluster documented in
+# quarto_reports/plague_model_summary.qmd's own "Known limitations" (estimated with zero supporting
+# evidence at the covariate range actually driving those predictions) -- r/d_predict_plague_risk.R's
+# own mask_zone_extrapolation guard only ever papered over the SYMPTOM (masking the resulting cells),
+# not this cause. Under the hierarchical spec, SA Vic Mallee's own slope shrinks to the pooled
+# estimate (0.487) plus its own now-modest deviation (0.288) = ~0.775 -- a real fix, not just a
+# downstream mask (mask_zone_extrapolation is kept regardless, as a general safety net against any
+# future zone still extrapolating past its own training range, not specifically for this case).
+#
+# ADOPTED for every zone, not scoped to WA alone (confirmed with the project owner) -- this
+# supersedes the fixed rain_whiplash_trough_to_peak:ae_zone interaction as the transition formula's
+# own zone term everywhere it's used (_targets.R's plague_hmm/plague_hmm_unsupervised), not just for
+# the 4 new WA zones. r/d_predict_plague_risk.R's own zone-extrapolation-guard term-detection logic
+# needed updating to match this new term's own label (see that file's header).
+#
+# OBSERVATION-MODEL REWORK FROM THE SECTION D EXPLORATION REPORTS (2026-09, ADOPTED Stages 1-2) -- each
+# change fitted as its own variant against the rebuilt model (corrected historic QLD/ODK trap data)
+# and checked for convergence, coefficient range, pseudo-residuals and decoded-state agreement:
+#   Stage 1, ADOPTED: trap_count is total captures (trap success) rather than unique individuals --
+#     see r/d_build_hmm_data.R's header for why. Converges cleanly; trap pseudo-residuals improve
+#     slightly (mean/SD 0.39/0.67 vs 0.43/0.68).
+#   Stage 2, ADOPTED: crop group, crop stage and soil type (crop_group_det/crop_stage_det/soil_type_det,
+#     missing crop as "not recorded") added to the burrow and chew-card streams as detection terms
+#     via detection_terms, tied across states (and across the four chew-card blocks) like season --
+#     every Section D report keeps these on the mean for burrows and chew cards. AIC 36685 vs 37867
+#     for Stage 1 on identical data; burrow/chew-card pseudo-residual SDs move toward 1 (burrow
+#     0.47 -> 0.57, chew cards 1.32 -> 1.23) but the shared mean miscalibration remains; decoded
+#     states 99.9% unchanged. Traps get no crop/soil terms: the trap report shrinks them out.
+#   Stage 3, REJECTED: chew cards as zibinom (chewcard_dist = "zibinom") hit singular convergence,
+#     with a coefficient stuck at 10 and implausible zero-inflation (~78% not-plague, ~36% plague).
+#     Burrow zinbinom/hnbinom can't carry the effort offset (hmmTMB parameterises them by size/prob,
+#     not a mean), so both streams keep their families. The burrow report's best families (PIG/
+#     Sichel) aren't available in hmmTMB; the chew-card report's (beta-binomial) now is -- Stage 5.
+#   Stage 5, ADOPTED: chew cards as beta-binomial (chewcard_dist = "betabinom"), the chew-card
+#     report's recommended family, via a patched hmmTMB (github.com/matt-w-rees/hmmTMB, branch
+#     betabinom-dev: hmmTMB's development version plus the family, pinned in renv.lock). The
+#     development version also corrects AIC/edf for fixpar-tied coefficients, which CRAN 1.1.2 counted
+#     once per tied copy (~520 vs 355 edf here; likelihoods and estimates identical). Overdispersion
+#     sigma's intercept is tied across the four blocks but free per state. Converges cleanly; AIC 27495
+#     vs 36185 for Stage 2 on identical data (corrected counts). Randomised chew-card residuals become well calibrated (mean/SD 0.02 /
+#     0.98, vs -0.20 / 1.52 under binom), and the posterior-predictive check now reproduces the
+#     share of untouched (Pr(0) 0.77) and fully chewed (Pr(10) 0.022) cards, which binom missed
+#     (simulated ~0.47 and ~0). Decoded states 99.9% unchanged; trap/burrow fit unaffected.
+# Fitting note: run variant fits one at a time -- several fitted at once as parallel R processes
+# stopped at a NaN likelihood while still reporting "relative convergence". Separately, hmmTMB's C++ is
+# intermittently non-deterministic for three-parameter chew-card families even in a fresh process, so
+# the pipeline fits through fit_plague_hmm_subprocess() (r/d_fit_plague_hmm_subprocess.R), which
+# retries invalid fits in a new process.
+#
+# PSEUDO-RESIDUAL "MISCALIBRATION" WAS LARGELY A DIAGNOSTIC ARTEFACT (2026-09): hmmTMB's own
+# HMM$pseudores() evaluates the forecast CDF at the observation itself (qnorm(F(y))), with no
+# randomisation -- biased for count data, where it shifts residuals up and compresses them even under a
+# correct model (mean 0.47 / SD 0.70 on simulated, correctly specified nbinom2 data). The "mean well
+# above 0, SD well below 1 on every stream" pattern investigated through many formula/family variants
+# above is that bias. Randomised quantile residuals (r/d_randomised_pseudores.R, the plague_hmm_pseudores
+# target) show trap_count (0.02 / 0.99) and burrow_count (-0.03 / 1.02) are well calibrated; only the
+# chew-card streams genuinely misfit (SD ~1.5-1.7, too spread out), consistent with the posterior-
+# predictive check and quarto_reports/chewcard_count_exploration.qmd (binomial can't represent chewed
+# cards clustering within a session). Use randomised_pseudores(), not $pseudores(), for any future check.
+#
 # Arguments:
 #   hmm_data           build_hmm_data()'s output (r/d_build_hmm_data.R) --
 #                       must have ID/state/trap_count/burrow_count/
@@ -747,10 +868,28 @@
 #   transition_formula  one-sided formula applied to every transition
 #                       probability (MarkovChain$new()'s single-formula
 #                       form) -- e.g. ~ rain_whiplash_trough_to_peak
+#   detection_terms     optional extra detection covariates per stream, as a
+#                       named list of column-name vectors -- names trap_count,
+#                       burrow_count and/or chewcard (all four chew-card
+#                       blocks). Each is appended to that stream's mean/prob
+#                       formula and tied across both states (and, for
+#                       chewcard, across all four blocks), like season.
+#                       Default: none, i.e. the adopted model.
+#   shape_terms         optional covariates on the nbinom2 shape (dispersion)
+#                       parameter, as a named list of column-name vectors --
+#                       names trap_count and/or burrow_count. Left free per
+#                       state (dispersion is a state-dependent quantity, not a
+#                       detection effect). Default: none (shape intercept-only).
+#   chewcard_dist       hmmTMB family for the four chew-card streams:
+#                       "betabinom" (default, adopted: beta-binomial,
+#                       overdispersion sigma's intercept tied across blocks --
+#                       needs the patched hmmTMB pinned in renv.lock, not CRAN
+#                       1.1.2), "binom", or "zibinom" (zero-inflated binomial,
+#                       zero-inflation intercept tied across blocks).
 #
 # Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed).
 
-fit_plague_hmm <- function(hmm_data, transition_formula) {
+fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(), shape_terms = list(), chewcard_dist = "betabinom") {
 
   hid <- hmmTMB::MarkovChain$new(
     data          = hmm_data,
@@ -774,25 +913,36 @@ fit_plague_hmm <- function(hmm_data, transition_formula) {
   # case study) -- each row contributes to whichever blocks it actually deployed enough cards for
   # (NA elsewhere, r/d_build_hmm_data.R), so a paddock-season's full card count is used instead of
   # truncating everyone to the first transect's own 10 cards.
+  # Each stream's formula, plus any optional detection_terms for it.
+  chewcard_prob <- append_formula_terms(~season + ae_zone, detection_terms$chewcard)
+  # Starting values for one chew-card stream: zibinom adds a zero-inflation probability z, betabinom
+  # an overdispersion sigma.
+  chewcard_par <- switch(chewcard_dist,
+    zibinom   = list(size = c(10, 10), prob = c(0.05, 0.4), z = c(0.1, 0.1)),
+    betabinom = list(size = c(10, 10), prob = c(0.05, 0.4), sigma = c(0.5, 0.5)),
+    list(size = c(10, 10), prob = c(0.05, 0.4)))
   obs <- hmmTMB::Observation$new(
     data     = hmm_data,
-    dists    = list(trap_count = "nbinom2", burrow_count = "nbinom2", chewcard_count = "binom",
-                     chewcard_block2 = "binom", chewcard_block3 = "binom", chewcard_block4 = "binom"),
+    dists    = list(trap_count = "nbinom2", burrow_count = "nbinom2", chewcard_count = chewcard_dist,
+                     chewcard_block2 = chewcard_dist, chewcard_block3 = chewcard_dist, chewcard_block4 = chewcard_dist),
     formulas = list(
-      trap_count      = list(mean = ~season + log_trap_effort),
-      burrow_count    = list(mean = ~season + log_burrow_metres_searched + ae_zone + season:summer_zone_ne + gpp_finescale),
-      chewcard_count  = list(prob = ~season + ae_zone),
-      chewcard_block2 = list(prob = ~season + ae_zone),
-      chewcard_block3 = list(prob = ~season + ae_zone),
-      chewcard_block4 = list(prob = ~season + ae_zone)
+      trap_count      = list(mean = append_formula_terms(~season + log_trap_effort, detection_terms$trap_count),
+                             shape = append_formula_terms(~1, shape_terms$trap_count)),
+      burrow_count    = list(mean = append_formula_terms(~season + log_burrow_metres_searched + ae_zone + season:summer_zone_ne + gpp_finescale,
+                                                         detection_terms$burrow_count),
+                             shape = append_formula_terms(~1, shape_terms$burrow_count)),
+      chewcard_count  = list(prob = chewcard_prob),
+      chewcard_block2 = list(prob = chewcard_prob),
+      chewcard_block3 = list(prob = chewcard_prob),
+      chewcard_block4 = list(prob = chewcard_prob)
     ),
     par      = list(
       trap_count      = list(mean = c(8, 30), shape = c(1, 1)),
       burrow_count    = list(mean = c(0.5, 8), shape = c(1, 1)),
-      chewcard_count  = list(size = c(10, 10), prob = c(0.05, 0.4)),
-      chewcard_block2 = list(size = c(10, 10), prob = c(0.05, 0.4)),
-      chewcard_block3 = list(size = c(10, 10), prob = c(0.05, 0.4)),
-      chewcard_block4 = list(size = c(10, 10), prob = c(0.05, 0.4))
+      chewcard_count  = chewcard_par,
+      chewcard_block2 = chewcard_par,
+      chewcard_block3 = chewcard_par,
+      chewcard_block4 = chewcard_par
     )
   )
 
@@ -880,7 +1030,8 @@ fit_plague_hmm <- function(hmm_data, transition_formula) {
     # state-dependent regional outbreak-magnitude effect, not a detection one).
     do.call(c, lapply(
       c("NSW NE Qld SE", "NSW NW Qld SW", "NSW Vic Slopes",
-        "SA Midnorth-Lower Yorke Eyre", "SA Vic Bordertown-Wimmera", "SA Vic Mallee"),
+        "SA Midnorth-Lower Yorke Eyre", "SA Vic Bordertown-Wimmera", "SA Vic Mallee",
+        "WA Central", "WA Eastern", "WA Northern", "WA Sandplain"),
       function(zone) {
         c(tie(paste0(chewcard_streams, ".prob.state1.ae_zone", zone)),
           tie(paste0(chewcard_streams, ".prob.state2.ae_zone", zone)))
@@ -894,6 +1045,35 @@ fit_plague_hmm <- function(hmm_data, transition_formula) {
     # sparsity problem burrow_count's own fixed factor hit), and it failed anyway on genuine data
     # sparsity, not a specification problem -- see header.
   )
+
+  # Optional detection_terms: every level of every extra term tied across both states (and, for the
+  # chew-card streams, across all four blocks), the same detection-invariance treatment as season.
+  stream_sets <- list(trap_count = list(streams = "trap_count", param = "mean"),
+                      burrow_count = list(streams = "burrow_count", param = "mean"),
+                      chewcard = list(streams = chewcard_streams, param = "prob"))
+  for (stream in names(detection_terms)) {
+    set <- stream_sets[[stream]]
+    for (term in detection_terms[[stream]]) {
+      groups <- detection_tie_groups(valid_rows, set$streams, set$param, term)
+      fixpar_obs <- c(fixpar_obs, do.call(c, lapply(groups, function(g) tie(g))))
+    }
+  }
+
+  # zibinom only: the zero-inflation probability's intercept tied across blocks (free between states),
+  # the same treatment as the chew-card prob intercept above.
+  if (chewcard_dist == "zibinom") {
+    fixpar_obs <- c(fixpar_obs,
+                    tie(paste0(chewcard_streams, ".z.state1.(Intercept)")),
+                    tie(paste0(chewcard_streams, ".z.state2.(Intercept)")))
+  }
+
+  # betabinom only: the overdispersion's intercept tied across blocks (free between states) -- the four
+  # blocks are replicates of the same card-reading process, so they share one clustering level.
+  if (chewcard_dist == "betabinom") {
+    fixpar_obs <- c(fixpar_obs,
+                    tie(paste0(chewcard_streams, ".sigma.state1.(Intercept)")),
+                    tie(paste0(chewcard_streams, ".sigma.state2.(Intercept)")))
+  }
 
   obs$update_fixpar(list(obs = fixpar_obs))
 

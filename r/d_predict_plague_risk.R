@@ -4,11 +4,12 @@
 # actually fit to -- not the whole national grid. CLAUDE.md's own Section D
 # design describes generalising "to wherever the covariates exist", but that
 # means un-monitored PADDOCKS within a modelled zone, not extrapolating
-# beyond the zones used to fit the transition relationship at all (e.g. to
-# Western Australia, whose climate/cropping calendar differs enough that
-# CLAUDE.md itself calls out separately -- see the project overview). Masked
-# to fit_zones (2026-08) after an initial unmasked version extrapolated into
-# WA and produced values there with no calibration basis whatsoever.
+# beyond the zones used to fit the transition relationship at all. Masked to
+# fit_zones (2026-08) after an initial unmasked version extrapolated into
+# zones the model was never fit to (originally Western Australia specifically,
+# back when hmm_states excluded it -- WA joined the fit itself 2026-09, see
+# r/d_fit_plague_hmm.R's header, so this mask now simply reflects WA's own 4
+# fitted zones like every other state's, no longer a blanket exclusion).
 #
 # Uses hmmTMB's own HMM$predict(what = "tpm", newdata = ...) rather than
 # manually re-deriving the linear predictor/inverse-link -- this is the
@@ -111,6 +112,34 @@
 # without a zone term too (e.g. plague_hmm_first_pass) -- an unused newdata column is harmless,
 # hmmTMB simply never reads it.
 #
+# mask_zone_extrapolation guards against a real, documented failure mode of the zone-varying design
+# just above (2026-09, following a forecasting-literature review -- see quarto_reports/
+# plague_model_summary.qmd's own "Known limitations": the far-west SA coast cluster's own extreme
+# risk this season traces to rain_whiplash_trough_to_peak:ae_zoneSA Vic Mallee, by far the steepest
+# zone slope in the model, estimated with ZERO real training data -- anchored or even raw
+# observation -- at the covariate range (rain_whiplash_trough_to_peak > 2) actually driving those
+# predictions there; the fitted slope is a linear extrapolation with nothing behind it at that
+# range, not a genuinely well-supported high-risk read). Standard practice for a group-varying
+# (mixed-model/species-distribution) prediction is to flag or mask a prediction once it extrapolates
+# beyond the SPECIFIC group's own training covariate range, rather than trust a fitted slope's
+# linear extension arbitrarily far past it -- this is that guard, generalised (not hardcoded to
+# rain_whiplash_trough_to_peak) by introspecting the fitted model's own transition formula for
+# whichever covariate(s) actually get a ":ae_zone" interaction term, so it keeps working if that
+# changes. "That zone's own training range" means rows with real evidence specifically (a known
+# anchor state, or at least one non-NA trap/burrow/chewcard observation) -- confirmed live this
+# distinction is what actually catches the documented case: SA Vic Mallee's own covariate range
+# across EVERY row (including pure covariate-driven placeholders with no anchor or observation
+# behind them at all) already reaches past rain_whiplash_trough_to_peak > 2, so an unrestricted
+# range check would silently let this exact cluster straight through unmasked. A pooled
+# (non-zone-interacted) covariate isn't checked this way -- its one shared
+# coefficient was already fit across the full national range, so there's no analogous
+# single-zone-specific extrapolation risk to guard against, only the same generic "is this
+# covariate NA at all" check has_covariates already does. Defaults to TRUE (masks by default) --
+# the one place this changes existing behaviour, on purpose: this specific over-confidence finding
+# is exactly the kind of thing that should be fixed pipeline-wide, not opt-in per caller. Set FALSE
+# to recover the old, unguarded behaviour (e.g. to reproduce the specific cluster documented above
+# for a side-by-side comparison).
+#
 # The mapped quantity is specifically Pr(state 1 -> state 2), i.e. the
 # probability a currently-not-plague paddock enters the plague state next
 # season given this season's covariates -- the direct "early warning" signal
@@ -139,13 +168,68 @@
 #   period                 which layer to predict for, e.g. "5_2026"; NULL
 #                          (default) uses the chronologically latest period
 #                          common to all four rasters, for a "current risk"
-#                          snapshot
+#                          snapshot -- see gpp_raster/soil_moisture_raster's
+#                          own "nowcast" note just below for how this
+#                          auto-detection is used to reach the true latest
+#                          complete month, not just the latest season-end one
+#   gpp_raster/            (2026-09) plague_risk_map_nowcast (_targets.R)
+#   soil_moisture_raster   passes gpp_rolling_raster_6_nowcast/
+#                          soil_moisture_raster_coarse_nowcast here instead of
+#                          their season-end-trimmed namesakes -- same
+#                          underlying computation, just without the trim to
+#                          Feb/May/Aug/Nov, so the "latest shared period"
+#                          logic above can land on whichever calendar month
+#                          is actually most recently complete (e.g. July, in
+#                          the middle of Spring) instead of being held back to
+#                          the last season boundary. This is still real,
+#                          complete-month data -- no partial-month averaging,
+#                          no trend extrapolation -- just a relaxed alignment
+#                          requirement, applied at the SAME point (this
+#                          function's own period argument/auto-detection)
+#                          regardless of which covariate needed it, rather
+#                          than a GPP-specific patch: rain_whiplash_raster/
+#                          min_temp_raster already never had a season-end
+#                          trim to begin with (confirmed at their own
+#                          construction, _targets.R), so they're passed
+#                          unchanged either way. plague_risk_map keeps using
+#                          the season-end-trimmed rasters unchanged -- this
+#                          nowcast path is a separate, clearly-labelled target
+#                          (plague_risk_map_nowcast), not a redefinition of
+#                          the primary map
+#   mask_zone_extrapolation TRUE (default) -- see header above -- masks a cell (NA, same treatment
+#                          as a missing covariate) whenever a zone-interacted transition covariate's
+#                          value there falls outside that specific ae_zone's own training range
+#   n_post                 NULL (default) returns the single-layer MLE-only
+#                          raster as before (the plague_risk_map target's own
+#                          usage, unchanged). A number (e.g. 500) additionally
+#                          draws that many posterior samples of the fitted
+#                          model's fixed+random-effect coefficients (hmmTMB's
+#                          own $predict(n_post = ...) mechanism, the same one
+#                          quarto_reports/plague_model_summary.qmd's own
+#                          covariate-effects-by-zone figures already use) and
+#                          returns a 3-layer stack (mle/lcl/ucl) instead --
+#                          confirmed live ~53s over the full ~8420-cell grid
+#                          at n_post = 500, too slow to compute inside a
+#                          report render, hence a separate cached target
+#                          (plague_risk_map_uncertainty, _targets.R) rather
+#                          than always computing it here.
+#   level                  confidence level for lcl/ucl when n_post is set
+#                          (ignored otherwise); default 0.95
+#   seed                   RNG seed set immediately before posterior sampling
+#                          when n_post is set (ignored otherwise) -- without
+#                          this, re-running tar_make() would redraw different
+#                          posterior samples each time and the target would
+#                          never stabilise across pipeline re-runs.
 #
-# Returns a single-layer SpatRaster of Pr(state 1 -> state 2), NA wherever
-# any input covariate is NA or the cell falls outside fit_zones_sf.
+# Returns a single-layer SpatRaster of Pr(state 1 -> state 2) when n_post is
+# NULL, or a 3-layer (mle, lcl, ucl) SpatRaster when n_post is set. NA
+# wherever any input covariate is NA, the cell falls outside fit_zones_sf, or
+# (mask_zone_extrapolation, default TRUE) a zone-interacted covariate value
+# there falls outside that zone's own training range.
 
 predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
-                                 min_temp_raster, fit_zones_sf, period = NULL) {
+                                 min_temp_raster, fit_zones_sf, period = NULL,
+                                 mask_zone_extrapolation = TRUE, n_post = NULL, level = 0.95, seed = 20260807) {
 
   if (is.null(period)) {
     shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster), names(soil_moisture_raster), names(min_temp_raster)))
@@ -154,83 +238,38 @@ predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, so
     period <- shared_periods[order(period_year, period_month)][length(shared_periods)]
   }
 
-  covariate_stack <- c(
-    rain_whiplash_raster[[period]],
-    gpp_raster[[period]],
-    soil_moisture_raster[[period]],
-    min_temp_raster[[period]]
-  )
-  names(covariate_stack) <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp")
-  covariate_stack <- terra::mask(covariate_stack, terra::vect(fit_zones_sf))
+  # Per-cell covariate table for this period (r/d_build_risk_grid_newdata.R) -- see header above for
+  # what each step does and why.
+  grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+                                  min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation)
+  cell_df <- grid$cell_df
+  has_covariates <- grid$has_covariates
+  newdata <- grid$newdata
 
-  # one row per grid cell, in stable cell order, for rast(..., type = "xyz") below
-  cell_df <- terra::as.data.frame(covariate_stack, xy = TRUE, na.rm = FALSE)
+  if (is.null(n_post)) {
+    plague_risk <- rep(NA_real_, nrow(cell_df))
+    tpm_pred <- plague_hmm$predict(what = "tpm", newdata = newdata)
+    plague_risk[has_covariates] <- tpm_pred["state 1", "state 2", ]
 
-  # period is "<month>_<year>" (e.g. "5_2026") -- the 15th is an arbitrary but
-  # safe within-month anchor, same convention raster_layer_dates() uses elsewhere
-  period_month <- as.integer(sub("_.*", "", period))
-  period_year  <- as.integer(sub(".*_", "", period))
-  period_season <- season_info(as.Date(paste(period_year, period_month, "15", sep = "-")))$season
-  cell_df$season <- factor(period_season, levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
-
-  # per-cell ae_zone, see header -- rasterized onto covariate_stack's own template so its
-  # as.data.frame() row order matches cell_df's exactly, then set to the model's own training levels.
-  zone_rast <- terra::rasterize(
-    terra::vect(sf::st_transform(fit_zones_sf, terra::crs(covariate_stack))),
-    covariate_stack[[1]],
-    field = "ae_zone"
-  )
-  cell_df$ae_zone <- terra::as.data.frame(zone_rast, xy = TRUE, na.rm = FALSE)[[3]]
-  cell_df$ae_zone <- factor(cell_df$ae_zone, levels = sort(unique(fit_zones_sf$ae_zone)))
-
-  # summer_zone_ne: real, not a placeholder -- identical derivation to r/d_build_hmm_data.R's own,
-  # cheap given ae_zone is already in hand (see header).
-  training_data <- plague_hmm$obs()$data()
-  cell_df$summer_zone_ne <- factor(
-    ifelse(cell_df$ae_zone == "NSW NE Qld SE", "summer", "winter_only"),
-    levels = levels(training_data$summer_zone_ne)
-  )
-
-  # Every remaining observation-formula covariate (see header -- introspected from the fitted model
-  # itself, not hand-maintained): each one's own training mean (numeric) or reference factor level
-  # (factor), for whatever the fitted model's own formulas reference that isn't already a real
-  # per-cell column above.
-  obs_vars <- unique(unlist(lapply(plague_hmm$obs()$formulas(), function(param_list) {
-    unlist(lapply(param_list, function(state_list) unlist(lapply(state_list, all.vars))))
-  })))
-  for (v in setdiff(obs_vars, names(cell_df))) {
-    cell_df[[v]] <- if (is.factor(training_data[[v]])) {
-      factor(levels(training_data[[v]])[1], levels = levels(training_data[[v]]))
-    } else {
-      mean(training_data[[v]], na.rm = TRUE)
-    }
+    return(terra::rast(
+      cbind(cell_df[c("x", "y")], plague_risk = plague_risk),
+      type = "xyz",
+      crs  = grid$crs
+    ))
   }
 
-  # Fail loudly and specifically here if a TRANSITION covariate is genuinely missing (its own raster
-  # argument never supplied) -- unlike the observation-side covariates above, these DO need real
-  # per-cell values, so a placeholder can't safely paper over a missing one (see header).
-  transition_terms <- unique(as.vector(plague_hmm$hid()$formula()))
-  transition_formula <- stats::as.formula(transition_terms[transition_terms != "."][1])
-  missing_transition_vars <- setdiff(all.vars(transition_formula), names(cell_df))
-  if (length(missing_transition_vars) > 0) {
-    stop("predict_plague_risk(): missing required transition covariate(s), no raster supplied: ",
-         paste(missing_transition_vars, collapse = ", "))
-  }
+  # Uncertainty version -- see header. Same fixed seed every call so this target's own posterior
+  # draws (and therefore lcl/ucl) don't silently drift on a re-run with no real covariate change.
+  set.seed(seed)
+  tpm_pred <- plague_hmm$predict(what = "tpm", newdata = newdata, n_post = n_post, level = level)
 
-  # ae_zone included alongside the three real transition covariates -- a cell that fell inside
-  # covariate_stack's mask but outside every zone polygon (a rare boundary/rounding case, mask and
-  # rasterize aren't guaranteed pixel-identical) has no valid zone for the random effect either, so
-  # it's excluded here the same way a missing rain_whiplash/gpp/soil_moisture value would be.
-  covariate_cols <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp", "ae_zone")
-  has_covariates <- stats::complete.cases(cell_df[covariate_cols])
-
-  plague_risk <- rep(NA_real_, nrow(cell_df))
-  tpm_pred <- plague_hmm$predict(what = "tpm", newdata = cell_df[has_covariates, , drop = FALSE])
-  plague_risk[has_covariates] <- tpm_pred["state 1", "state 2", ]
+  mle <- rep(NA_real_, nrow(cell_df)); mle[has_covariates] <- tpm_pred$mle["state 1", "state 2", ]
+  lcl <- rep(NA_real_, nrow(cell_df)); lcl[has_covariates] <- tpm_pred$lcl["state 1", "state 2", ]
+  ucl <- rep(NA_real_, nrow(cell_df)); ucl[has_covariates] <- tpm_pred$ucl["state 1", "state 2", ]
 
   terra::rast(
-    cbind(cell_df[c("x", "y")], plague_risk = plague_risk),
+    cbind(cell_df[c("x", "y")], mle = mle, lcl = lcl, ucl = ucl),
     type = "xyz",
-    crs  = terra::crs(covariate_stack)
+    crs  = grid$crs
   )
 }
