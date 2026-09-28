@@ -1,0 +1,1024 @@
+---
+title: "Chew card data exploration"
+subtitle: "Distributional quirks, detection covariates and candidate families for chewcard_count -- independent of any one downstream model"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fig-width: 8
+    fig-asp: 0.5
+toc: true
+toc-depth: 2
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+editor_options:
+  chunk_output_type: inline
+---
+
+
+## Overview
+- This report explores raw chew card data and fits preliminary models (via `gamlss2`).
+- GAMLSS allows a comprehensive exploration of different distribution families, and shape / scale of effects in addition to the mean.
+- Insights from this report will help to fit more computationally expensive and integrated models.
+
+#### Structure
+- The first section details key predictor variables and plots the raw data against these variables.
+- The second section fits every candidate distribution family to the same full model -- every covariate on every parameter, with shrinkage -- choosing the family and the key covariates together, then compares the best-ranked models in detail.
+- The raw data plots revealed a strong relationship with "biomass", a field-collected variable which has many missing values. The importance of biomass and ground cover on the reduced dataset for which these variables were recorded, and whether any other predictor variables could substitute for them (particularly crop and GPP), is explored in `ground_cover_exploration.qmd`.
+
+
+#### Chew cards
+- A cheap, scalable sign-based survey method to detect mice. They are suitable year-round, but with seemingly low and noisy detection rates for mice.
+- 10 -- 40 chew cards are generally deployed per paddock, the percentage of card chewed by mice is recorded for each card.
+- Chew cards are spaced 10 metres apart, with lines of 10 cards in furrows. Usually paired with active burrow searches.
+- A core model assumption of independence is therefore not met, as one mouse can readily chew multiple cards deployed per night.
+- Zero inflation and overdispersion are highly likely present in this data.
+
+
+```{r}
+#| label: load_packages
+#| include: false
+
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(mgcv)
+library(gt)
+library(sf)
+library(gamlss)
+library(gamlss2)
+
+```
+
+```{r}
+#| label: load_data
+#| include: false
+
+# load targets
+store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+tar_load(c(survey_model_data_rapid, aus_shp, data_list_clean_paddocks), store = store_path)
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+# set seed for reproducibility
+set.seed(20260907)
+
+# universal ggplot theme
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+)
+
+## Collapses deparse()'s own multi-line formula output into one clean, single-spaced string for
+## inline display.
+deparse1_clean <- function(expr) gsub("\\s+", " ", paste(deparse(expr), collapse = " "))
+```
+
+
+```{r}
+#| label: modify_data
+#| include: false
+
+## National population, every deployed card with a real session. visit == 1 keeps each paddock-season's
+## first visit only (visit is numbered chronologically upstream), dropping repeat within-season visits
+## that would otherwise contribute multiple non-independent rows for the same paddock-season.
+## chewcards_deployed > 0 drops sessions with no real detection opportunity, and avoids a
+## divide-by-zero in `rate` below. The single dataset every other chunk in this report builds on --
+## any model-specific version (chew_data_model, below) is just this, filtered further.
+chew_data <- survey_model_data_rapid |>
+  filter(visit == 1, chewcards_deployed > 0) |>
+  ## Manipulate: derive new values from the raw columns.
+  mutate(
+    ## Number of cards deployed but NOT chewed -- only exists to feed `y` below.
+    fail = chewcards_deployed - chewcards_detected,
+    ## `rate` is used for every raw-data plot below.
+    rate = chewcards_detected / chewcards_deployed,
+    month_num = as.integer(format(survey_date, "%m")),
+    chewcard_any = as.integer(chewcards_detected > 0),
+    summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only")),
+    year_adj = as.integer(sub(".*-", "", as.character(season_year_adj))),
+    ## The two-column cbind(successes, failures) response every binomial-type model in this report
+    ## fits against (y ~ ...), not `rate` -- preserves each session's own trial size
+    ## (chewcards_deployed), which a bare proportion would throw away.
+    y = cbind(chewcards_detected, fail)) |>
+  ## Transform: change an existing column's representation (factor) without deriving new information.
+  ## crop_group/crop_stage/soil_type/ae_zone factored here (crop_stage with its own agronomic ordering)
+  ## since none of the four depends on downstream filtering -- avoids re-doing factor() in every
+  ## consumer.
+  mutate(
+    crop_group = factor(crop_group),
+    ## Ordered by crop_stage's own agronomic/phenological sequence (sown through to stubble).
+    crop_stage = factor(crop_stage, levels = c("sown", "seedling", "vegetative", "flowering", "ripening", "stubble")),
+    soil_type = factor(soil_type),
+    ae_zone = factor(ae_zone))
+```
+
+
+
+```{r}
+#| label: format-data-models
+#| include: false
+
+## chew_data_model: chew_data restricted to complete cases for the systematic search's own predictor
+## set, so every candidate covariate is compared on an identical population -- just a filter, no
+## re-mutating or re-selecting (chew_data already has everything in the right shape). crop_group
+## excludes cotton/unknown (too thin to model, see the covariate reference table); droplevels() removes those
+## now-empty levels.
+chew_data_model <- chew_data |>
+  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type),
+         !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(rain_rolling6_lag1), !is.na(gpp_rolling6_lag1),
+         !is.na(gpp_finescale), !is.na(soil_moisture), !is.na(min_temp_lag1),
+         !crop_group %in% c("cotton", "unknown")) |>
+  mutate(crop_group = droplevels(crop_group),
+    ## crop_group x crop_stage combination, for the Full model's interaction random effect.
+    crop_cell = interaction(crop_group, crop_stage, drop = TRUE, sep = ":"))
+```
+
+```{r}
+#| label: ground-cover-prep
+#| include: false
+
+## Kept ahead of Correlation, since d_cover is used there and in the raw biomass/ground cover plots.
+
+## ground_cover_biomass_raw builds biomass_level as an ordered low/moderate/high scale from the raw
+## biomass field, alongside the field-recorded ground_cover_percent.
+ground_cover_biomass_raw <- data_list_clean_paddocks$rapid |>
+  dplyr::mutate(
+    ground_cover_percent = ifelse(ground_cover_percent == -99, NA, ground_cover_percent),
+    biomass_level = dplyr::case_when(
+      biomass %in% c("low", "low moderate")  ~ "low",
+      biomass %in% c("moderate", "medium")   ~ "moderate",
+      biomass %in% c("moderate high", "high") ~ "high",
+      TRUE ~ NA_character_
+    ),
+    biomass_level = factor(biomass_level, levels = c("low", "moderate", "high"), ordered = TRUE)
+  ) |>
+  dplyr::select(paddock_id, survey_date, ground_cover_percent, biomass_level) |>
+  dplyr::distinct(paddock_id, survey_date, .keep_all = TRUE)
+
+## d_cover: every chew card session joined against ground_cover_biomass_raw. No further filtering --
+## each correlation involving biomass_level/ground_cover_percent uses that pair's own non-NA overlap.
+d_cover <- chew_data |>
+  dplyr::left_join(ground_cover_biomass_raw, by = c("paddock_id", "survey_date"))
+```
+
+## 1) Predictor variables
+
+```{r}
+#| label: tbl-covariate-reference
+#| tbl-cap: "Every covariate considered in this report, with its ecological hypothesis and analysis considerations. Covariates 1-11 are the candidate set for every model in section 2; 12-13 are only recorded for a subset of sessions, so are shown in the raw data plots and correlations here and modelled in ground_cover_exploration.qmd. `season` and `grdc_subregion` appear in [Correlation] only: `season` is covered by `month`, and `grdc_subregion` is largely redundant with `ae_zone` while having many more levels."
+
+covariate_reference_table <- tibble::tribble(
+  ~Number, ~Variable, ~Type, ~Hypothesis, ~Considerations,
+  1, "`month` (of survey)", "Continuous",
+    "Mice population cycles throughout the year due to weather + cropping patterns (food + shelter) -- may not be enough data to fit at this resolution.",
+    "The only variable tied to the specific survey date, not the seasonal time step -- so repeat surveys at a site within one season need considering. Fit with a cyclical spline (matching January to December).",
+  2, "`min_temp_lag1` (average)", "Continuous",
+    "Cold weather may suppress breeding (so actual temperature is used, rather than an anomaly).",
+    "May weaken `month` effects -- should test with and without it in the model. Previous season's value.",
+  3, "`crop_group`", "Categorical",
+    "Different crops provide different food and shelter resources for mice.",
+    "`unknown`/`cotton` don't have enough sample size -- excluded from modelling.",
+  4, "`crop_stage`", "Categorical",
+    "The growth stage of the crop directly regulates the food and shelter resources available to mice.",
+    "Ordered factor with levels: sown, seedling, vegetative, flowering, ripening, stubble.",
+  5, "`soil_type`", "Categorical",
+    "Affects how water is absorbed, crop yields, and mouse burrowing ability.",
+    "Potential mediator variable for things like rainfall/soil moisture. Preliminary modelling shows surprisingly weak effects -- may need to consider other soil type classification data sources (this one is from TERN).",
+  6, "`ae_zone`", "Categorical",
+    "GRDC's broad-scale classification of broadacre cropping system -- should explain spatial variation in mouse abundance.",
+    "Considers agricultural + ecological + climatic factors, but at a very coarse scale. Not included in the models in this report -- shown in the raw data plots and correlations only.",
+  7, "`rain_whiplash_trough_to_peak_lag1`", "Continuous",
+    "Mouse plagues are expected to be driven by drought-breaking rains.",
+    "Likely a different relationship across regions (e.g. due to soil type). Previous season's value.",
+  8, "`rain_rolling6_lag1`", "Continuous",
+    "Rainfall affects crop yield and food availability.",
+    "Doesn't account for the timing of rainfall within the window, only the total amount. Previous season's value.",
+  9, "`gpp_rolling6_lag1`", "Continuous",
+    "Proxy for crop yield potential, at the shared 0.1 degree covariate grid (~11km) -- a broader seasonal signal than `gpp_finescale`'s paddock-scale resolution below.",
+    "Correlates only weakly with `gpp_finescale` -- different information, not a duplicate at two resolutions. Previous season's value. Also enters an interaction with rainfall (`rain_rolling6_lag1`).",
+  10, "`gpp_finescale`", "Continuous",
+    "Native ~463m-resolution, focal-smoothed GPP around each paddock -- crop growth and ground cover around the time of survey.",
+    "Current season's value (not lagged) -- reflects crop growth and ground cover around the time of survey.",
+  11, "`soil_moisture`", "Continuous",
+    "Affects crop yields, burrowing ability, and potentially below-ground food sources.",
+    "Not a rolling average -- it is already an accumulated value. Current season's value (not lagged).",
+  12, "`biomass_level`", "Categorical (ordered)",
+    "Crop biomass reflects the food and shelter resources available to mice, and denser biomass may affect how easily mice/their sign are detected.",
+    "Only recorded for a subset of sessions.",
+  13, "`ground_cover_percent`", "Continuous",
+    "Ground cover provides mice with shelter.",
+    "Only recorded for a subset of sessions."
+)
+covariate_reference_table |> gt::gt() |>
+  gt::fmt_markdown(columns = c(Variable, Hypothesis, Considerations)) |>
+  gt::cols_align(align = "center", columns = Number) |>
+  gt::cols_width(Number ~ gt::px(35), Variable ~ gt::px(150), Type ~ gt::px(80), Hypothesis ~ gt::px(260), Considerations ~ gt::px(320)) |>
+  gt::opt_row_striping() |>
+  gt::tab_options(table.font.size = "0.75em")
+```
+
+### Correlation
+
+```{r}
+#| label: collinearity-categorical
+#| include: false
+
+## Collinearity between categorical covariates: Cramer's V (continuous covariates get their own
+## Pearson correlation matrix below). droplevels() after NA-filtering avoids chisq.test() failing on
+## an all-zero row/column, which happens when a factor level has no rows left once intersected with
+## the other variable's non-NA rows (e.g. some ae_zone levels have no biomass_level recorded).
+cramers_v <- function(x, y) {
+  keep <- !is.na(x) & !is.na(y)
+  tab <- table(droplevels(factor(x[keep])), droplevels(factor(y[keep])))
+  chi <- suppressWarnings(stats::chisq.test(tab, correct = FALSE)$statistic)
+  k <- min(nrow(tab) - 1, ncol(tab) - 1)
+  as.numeric(sqrt(chi / (sum(tab) * k)))
+}
+collinearity_vars <- c("crop_stage", "season", "ae_zone", "grdc_subregion", "soil_type", "crop_group")
+collinearity_pairs <- utils::combn(collinearity_vars, 2)
+collinearity_table <- purrr::map_dfr(seq_len(ncol(collinearity_pairs)), function(i) {
+  v1 <- collinearity_pairs[1, i]; v2 <- collinearity_pairs[2, i]
+  tibble::tibble(var1 = v1, var2 = v2, `Cramer's V` = cramers_v(chew_data_model[[v1]], chew_data_model[[v2]]))
+})
+## Reshaped into a symmetric matrix (diagonal = 1) for display, alongside the long pair-list table
+## prose reads specific values from.
+collinearity_matrix <- matrix(1, nrow = length(collinearity_vars), ncol = length(collinearity_vars),
+                               dimnames = list(collinearity_vars, collinearity_vars))
+for (i in seq_len(nrow(collinearity_table))) {
+  v1 <- collinearity_table$var1[i]; v2 <- collinearity_table$var2[i]; v <- collinearity_table$`Cramer's V`[i]
+  collinearity_matrix[v1, v2] <- v
+  collinearity_matrix[v2, v1] <- v
+}
+```
+
+```{r}
+#| label: collinearity-continuous
+#| include: false
+
+## Continuous covariate correlations -- rain_whiplash_trough_to_peak_lag1, rain_rolling6_lag1, gpp_rolling6_lag1,
+## gpp_finescale, soil_moisture, min_temp_lag1 -- whether the environmental covariates carry independent
+## signal or a shared one.
+continuous_vars <- c("rain_whiplash_trough_to_peak_lag1", "rain_rolling6_lag1", "gpp_rolling6_lag1", "gpp_finescale", "soil_moisture", "min_temp_lag1")
+continuous_cor <- cor(chew_data_model[continuous_vars]) |> round(2)
+```
+
+```{r}
+#| label: collinearity-extended-categorical
+#| include: false
+
+## Extends the categorical matrix above with month_num and biomass_level.
+extended_cat_vars <- c(collinearity_vars, "month_num", "biomass_level")
+extended_cat_pairs <- utils::combn(extended_cat_vars, 2)
+extended_collinearity_table <- purrr::map_dfr(seq_len(ncol(extended_cat_pairs)), function(i) {
+  v1 <- extended_cat_pairs[1, i]; v2 <- extended_cat_pairs[2, i]
+  ## biomass_level isn't in chew_data_model, so any pair involving it is computed on d_cover
+  ## instead, using that pair's own non-NA overlap -- a smaller population than the rest of the
+  ## matrix, disclosed in the table captions.
+  src <- if (v1 == "biomass_level" || v2 == "biomass_level") d_cover else chew_data_model
+  tibble::tibble(var1 = v1, var2 = v2, `Cramer's V` = cramers_v(src[[v1]], src[[v2]]))
+})
+extended_collinearity_matrix <- matrix(1, nrow = length(extended_cat_vars), ncol = length(extended_cat_vars),
+                                        dimnames = list(extended_cat_vars, extended_cat_vars))
+for (i in seq_len(nrow(extended_collinearity_table))) {
+  v1 <- extended_collinearity_table$var1[i]; v2 <- extended_collinearity_table$var2[i]; v <- extended_collinearity_table$`Cramer's V`[i]
+  extended_collinearity_matrix[v1, v2] <- v
+  extended_collinearity_matrix[v2, v1] <- v
+}
+
+## Prose values built here, not inline -- Cramer's V's own column name needs a backtick, which
+## breaks pandoc's inline-code-span parsing if embedded directly in an inline `r` expression.
+month_season_v <- max(extended_collinearity_table$`Cramer's V`[
+  (extended_collinearity_table$var1 == "month_num" & extended_collinearity_table$var2 == "season") |
+  (extended_collinearity_table$var1 == "season" & extended_collinearity_table$var2 == "month_num")], na.rm = TRUE)
+biomass_top <- extended_collinearity_table |>
+  dplyr::filter(var1 == "biomass_level" | var2 == "biomass_level") |>
+  dplyr::slice_max(`Cramer's V`, n = 1, with_ties = FALSE)
+biomass_top_v <- biomass_top$`Cramer's V`
+biomass_top_other <- ifelse(biomass_top$var1 == "biomass_level", biomass_top$var2, biomass_top$var1)
+```
+
+```{r}
+#| label: collinearity-extended-continuous
+#| include: false
+
+## Extends the continuous matrix above with ground_cover_percent (also not in chew_data_model, computed
+## on d_cover's own non-NA overlap with each continuous covariate).
+extended_continuous_vars <- c(continuous_vars, "ground_cover_percent")
+gc_percent_cor <- sapply(continuous_vars, function(v) cor(d_cover$ground_cover_percent, d_cover[[v]], use = "pairwise.complete.obs"))
+extended_continuous_cor <- matrix(1, nrow = length(extended_continuous_vars), ncol = length(extended_continuous_vars),
+                                   dimnames = list(extended_continuous_vars, extended_continuous_vars))
+extended_continuous_cor[continuous_vars, continuous_vars] <- continuous_cor
+extended_continuous_cor["ground_cover_percent", continuous_vars] <- gc_percent_cor
+extended_continuous_cor[continuous_vars, "ground_cover_percent"] <- gc_percent_cor
+extended_continuous_cor <- round(extended_continuous_cor, 2)
+```
+
+- `rain_rolling6_lag1` is correlated with `rain_whiplash_trough_to_peak_lag1` (r = `r round(continuous_cor["rain_whiplash_trough_to_peak_lag1","rain_rolling6_lag1"],2)`)
+
+- `gpp_finescale` correlates only weakly with `gpp_rolling6_lag1` (r = `r round(continuous_cor["gpp_rolling6_lag1","gpp_finescale"],2)`) despite both measuring GPP -- genuinely different information at two resolutions, not a duplicate.
+
+- `soil_type` is correlated with both zone-level covariates (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="ae_zone"&collinearity_table$var2=="soil_type"],2)`/`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="grdc_subregion"&collinearity_table$var2=="soil_type"],2)`).
+
+- `crop_stage`/`season` show a moderate association (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="crop_stage"&collinearity_table$var2=="season"],2)`) -- expected, since crop phenology tracks the calendar.
+
+- `biomass_level`'s strongest association is with `r biomass_top_other` (`r round(biomass_top_v,2)`) -- plausible, since both track crop phenology.
+
+- `ae_zone`/`grdc_subregion` are almost entirely redundant with each other (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="ae_zone"&collinearity_table$var2=="grdc_subregion"],2)`) -- expected, since one is a strict spatial refinement of the other.
+
+- `month`/`season` are of course perfectly associated (V = `r round(month_season_v,2)`).
+
+
+```{r}
+#| label: tbl-continuous-cor
+#| tbl-cap: "Pearson correlation between every pair of continuous covariates, including `ground_cover_percent` (@tbl-covariate-reference, #13). Cell shading: blue = positive, red = negative, white = no correlation. `ground_cover_percent`'s own row/column uses a smaller, pairwise-available population (sessions with ground cover recorded) -- every other cell uses the modelling dataset."
+
+extended_continuous_cor |> as.data.frame() |> tibble::rownames_to_column("Variable") |> gt::gt() |>
+  gt::fmt_number(columns = -Variable, decimals = 2) |>
+  gt::data_color(columns = -Variable, palette = c("#b2182b", "white", "#2166ac"), domain = c(-1, 1)) |>
+  gt::tab_options(table.font.size = "0.7em")
+```
+
+
+
+
+```{r}
+#| label: tbl-collinearity
+#| tbl-cap: "Cramer's V between every pair of categorical covariates, including `season`/`grdc_subregion` (not modelled, see @tbl-covariate-reference), `month` (`month_num`, #1) and `biomass_level` (#12), as a matrix (diagonal = 1). `biomass_level`'s own row/column uses a smaller, pairwise-available population (sessions with biomass recorded) -- every other cell uses the modelling dataset."
+
+extended_collinearity_matrix |> as.data.frame() |> tibble::rownames_to_column("Variable") |> gt::gt() |>
+  gt::fmt_number(columns = -Variable, decimals = 2) |>
+  gt::data_color(columns = -Variable, palette = "Blues", domain = c(0, 1)) |>
+  gt::tab_options(table.font.size = "0.72em")
+```
+
+### Raw data plots
+
+```{r}
+#| label: raw-temporal-prep
+#| include: false
+
+## Raw (no-model) summary stats and plot data, shown regardless of whether a covariate survives the
+## formal search below -- so a real raw-data pattern is visible even if it doesn't clear a parsimony
+## penalty.
+raw_by_season <- chew_data |> group_by(season_year_adj, state) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_month <- chew_data |>
+  dplyr::group_by(month_num, state) |>
+  dplyr::summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+```
+
+```{r}
+#| label: raw-categorical-prep
+#| include: false
+
+## Raw predictor-variable plots, one no-model summary per categorical covariate in
+## @tbl-covariate-reference -- a direct mean/SE of the raw rate, not a fitted value, showing what the
+## data looks like before any modelling choice.
+raw_season     <- chew_data |> group_by(season, state) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_soiltype   <- chew_data |> filter(!is.na(soil_type)) |> group_by(soil_type) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_crop_group <- chew_data |> filter(!is.na(crop_group)) |> group_by(crop_group) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_ae_zone    <- chew_data |> group_by(ae_zone) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_grdc       <- chew_data |> filter(!is.na(grdc_subregion)) |> group_by(grdc_subregion) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+
+## Shared plotting helper for a raw categorical mean-rate summary (season/soil_type here,
+## ae_zone/grdc_subregion below).
+point_rate <- function(data, x) {
+  data |> ggplot(aes({{x}}, rate)) +
+    geom_point(colour = "black") +
+    scale_y_continuous(labels = scales::percent) + labs(x = NULL, y = "Card detection rate (%)")
+}
+```
+
+```{r}
+#| label: raw-continuous-prep
+#| include: false
+
+## Continuous covariates: raw mean rate in 6 equal-width bins, no model, computed directly on
+## chew_data$rate. Equal-WIDTH bins (not equal-count), so data density shows in the rug instead.
+## Grouped and coloured by state (ae_zone's ~11 zones on shared axes is unreadable). Bin edges use the
+## full range of each variable across all states, so every state's line sits on the same x positions.
+raw_continuous_bin <- function(data, varname, n_bins = 6) {
+  data |>
+    dplyr::filter(!is.na(.data[[varname]])) |>
+    dplyr::mutate(bin = ggplot2::cut_width(.data[[varname]], width = diff(range(.data[[varname]])) / n_bins, boundary = 0)) |>
+    dplyr::summarise(x_mean = mean(.data[[varname]]), rate = mean(rate), n = dplyr::n(), .by = c(state, bin)) |>
+    dplyr::arrange(state, x_mean)
+}
+raw_min_temp      <- raw_continuous_bin(chew_data, "min_temp_lag1")
+raw_rain_whiplash <- raw_continuous_bin(chew_data, "rain_whiplash_trough_to_peak_lag1")
+raw_rain_rolling6 <- raw_continuous_bin(chew_data, "rain_rolling6_lag1")
+raw_gpp_rolling6  <- raw_continuous_bin(chew_data, "gpp_rolling6_lag1")
+raw_gpp_finescale <- raw_continuous_bin(chew_data, "gpp_finescale")
+raw_soil_moisture <- raw_continuous_bin(chew_data, "soil_moisture")
+```
+
+```{r}
+#| label: fig-raw-temporal
+#| fig-cap: "Mean proportion of cards chewed per season, faceted by state -- each panel is its own single series (no overlay), so shown in black/grey rather than colour."
+#| fig-asp: 1.4
+
+ggplot(raw_by_season, aes(as.integer(season_year_adj), rate)) +
+  geom_line(colour = "black", alpha = 0.6) +
+  geom_point(aes(size = n), colour = "black", alpha = 0.8) +
+  scale_x_continuous(breaks = seq(1, nlevels(chew_data$season_year_adj), by = 4),
+                      labels = levels(chew_data$season_year_adj)[seq(1, nlevels(chew_data$season_year_adj), by = 4)]) +
+  scale_y_continuous(labels = scales::percent) +
+  facet_wrap(~state, ncol = 1) +
+  labs(x = NULL, y = "Card detection rate (%)", size = "Sessions") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-spatial
+#| fig-cap: "Mean proportion of cards chewed in each paddock with >=5 sessions (to visualise consistent spatial variation). Cropped to the eastern-states extent -- only one WA paddock meets the >=5-session threshold."
+#| fig-asp: 0.8
+
+## One row per paddock: mean detection rate, session count, and location (first session's own
+## coordinates/state, which don't change within a paddock).
+raw_by_paddock <- chew_data |>
+  group_by(paddock_id) |>
+  summarise(rate = mean(rate), n = dplyr::n(), longitude = dplyr::first(longitude), latitude = dplyr::first(latitude),
+            state = dplyr::first(state), .groups = "drop") |>
+  ## >=5 sessions keeps only paddocks with enough repeat visits for the mean rate to visualise a real,
+  ## stable spatial pattern rather than noise from one or two sessions.
+  filter(n >= 5)
+
+aus_sf <- sf::st_as_sf(aus_shp) |> sf::st_transform(4326)
+## Map extent is cropped to the eastern states -- only one WA paddock meets the >=5-session threshold,
+## too sparse on its own to usefully set the plot's own axis range.
+east_extent <- raw_by_paddock |> filter(state != "WA")
+ggplot(raw_by_paddock, aes(longitude, latitude, colour = rate)) +
+  geom_sf(data = aus_sf, inherit.aes = FALSE, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_colour_viridis_c(labels = scales::percent, name = "Card detection rate (%)") +
+  coord_sf(xlim = range(east_extent$longitude) + c(-1, 1), ylim = range(east_extent$latitude) + c(-1, 1)) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+#| label: fig-raw-season
+#| fig-cap: "Mean raw rate by season (calendar season: Summer/Autumn/Winter/Spring), faceted by state, one colour per season -- each panel is a single state, so the colour here distinguishes season, not a second overlaid group."
+#| fig-asp: 0.35
+
+ggplot(raw_season, aes(season, rate, fill = season)) +
+  geom_col() +
+  facet_wrap(~state, nrow = 1) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  labs(x = NULL, y = "Card detection rate (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-month
+#| fig-cap: "Raw mean rate by calendar month of survey, one coloured line per state."
+#| fig-asp: 0.4
+
+ggplot(raw_month, aes(month_num, rate, colour = state, group = state)) +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-min-temp
+#| fig-cap: "Mean raw rate by equal-width bin of min_temp_lag1 (the previous season's average daily minimum temperature), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way, so each state's data density is visible."
+#| fig-asp: 0.5
+
+ggplot(raw_min_temp, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(min_temp_lag1)), aes(x = min_temp_lag1, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "min_temp_lag1 (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-cropgroup
+#| fig-cap: "Mean raw rate by crop_group (the type of crop grown in the paddock, e.g. cereals/legumes/oilseeds)."
+#| fig-asp: 0.35
+
+raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-crop-cross
+#| fig-cap: "Mean raw rate across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving cereals, legumes and oilseeds."
+#| fig-asp: 0.5
+
+crop_cross <- chew_data |>
+  ## cotton/unknown excluded -- both have as few as 2-4 sessions in several crop_stage combinations,
+  ## several missing entirely, not enough per-stage coverage for a trend line to be worth reading
+  ## against the three well-sampled crop types (cereals, legumes, oilseeds) on the same shared axis.
+  filter(!is.na(crop_group), !is.na(crop_stage), !crop_group %in% c("cotton", "unknown")) |>
+  mutate(crop_group = droplevels(factor(crop_group))) |>
+  group_by(crop_group, crop_stage) |>
+  summarise(rate = mean(rate), .groups = "drop")
+ggplot(crop_cross, aes(crop_stage, rate, colour = crop_group, group = crop_group)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent, name = "Card detection rate (%)") +
+  scale_colour_brewer(palette = "Dark2", name = "Crop group") +
+  labs(x = NULL) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-soiltype
+#| fig-cap: "Mean raw rate by soil_type (TERN's soil classification for the paddock, affecting water absorption, crop yield and burrowing ability)."
+#| fig-asp: 0.4
+
+raw_soiltype |> point_rate(reorder(soil_type, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-grdc
+#| fig-cap: "Mean raw rate by grdc_subregion (GRDC's fine-scale classification of broadacre cropping system)."
+#| fig-asp: 0.5
+
+raw_grdc |> point_rate(reorder(grdc_subregion, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-aezone
+#| fig-cap: "Mean raw rate by ae_zone (GRDC's broad-scale, agro-ecological classification of broadacre cropping system)."
+#| fig-asp: 0.5
+
+raw_ae_zone |> point_rate(reorder(ae_zone, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-rain-whiplash
+#| fig-cap: "Mean raw rate by equal-width bin of rain_whiplash_trough_to_peak_lag1 (a 12-month measure of rainfall swinging from drought to peak -- the drought-breaking rain thought to trigger plagues), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+ggplot(raw_rain_whiplash, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(rain_whiplash_trough_to_peak_lag1)), aes(x = rain_whiplash_trough_to_peak_lag1, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "rain_whiplash_trough_to_peak_lag1 (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-rain-rolling6
+#| fig-cap: "Mean raw rate by equal-width bin of rain_rolling6_lag1 (6-month rolling total rainfall), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+ggplot(raw_rain_rolling6, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(rain_rolling6_lag1)), aes(x = rain_rolling6_lag1, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "rain_rolling6_lag1 (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-gpp-rolling6
+#| fig-cap: "Mean raw rate by equal-width bin of gpp_rolling6_lag1 (6-month rolling gross primary productivity -- a satellite-derived proxy for crop growth/yield potential), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+ggplot(raw_gpp_rolling6, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(gpp_rolling6_lag1)), aes(x = gpp_rolling6_lag1, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "gpp_rolling6_lag1 (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-gpp-finescale
+#| fig-cap: "Mean raw rate by equal-width bin of gpp_finescale (current season's native ~463m-resolution GPP, focal-smoothed around each paddock -- a much finer-grained productivity signal than gpp_rolling6_lag1's 6-month rolling average at the 0.1 degree grid), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+ggplot(raw_gpp_finescale, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(gpp_finescale)), aes(x = gpp_finescale, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "gpp_finescale (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-soil-moisture
+#| fig-cap: "Mean raw rate by equal-width bin of soil_moisture (current season's AWRA-modelled accumulated soil moisture level), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+ggplot(raw_soil_moisture, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = chew_data |> dplyr::filter(!is.na(soil_moisture)), aes(x = soil_moisture, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "soil_moisture (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+```{r}
+#| label: raw-ground-cover-prep
+#| include: false
+
+## biomass_level/ground_cover_percent's raw plots below reuse d_cover (built in ground-cover-prep).
+## biomass_level is kept in its ordered sequence (low -> moderate -> high), not reordered by rate.
+raw_biomass <- d_cover |>
+  dplyr::filter(!is.na(biomass_level)) |>
+  dplyr::group_by(biomass_level) |>
+  dplyr::summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_ground_cover <- raw_continuous_bin(d_cover, "ground_cover_percent")
+```
+
+```{r}
+#| label: fig-raw-biomass
+#| fig-cap: "Mean raw rate by biomass_level (field-observed crop biomass, collapsed to an ordered low/moderate/high scale -- @tbl-covariate-reference, #12), kept in its ordinal order. Only sessions with biomass recorded (n = `r sum(raw_biomass$n)`) -- explored in depth in ground_cover_exploration.qmd."
+#| fig-asp: 0.35
+
+ggplot(raw_biomass, aes(biomass_level, rate)) +
+  geom_col(fill = "grey50") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "biomass_level", y = "Card detection rate (%)")
+```
+
+```{r}
+#| label: fig-raw-ground-cover
+#| fig-cap: "Mean raw rate by equal-width bin of ground_cover_percent (field-observed ground cover -- @tbl-covariate-reference, #13), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way. Only sessions with ground cover recorded (n = `r sum(raw_ground_cover$n)`) -- explored in depth in ground_cover_exploration.qmd."
+#| fig-asp: 0.5
+
+ggplot(raw_ground_cover, aes(x_mean, rate, colour = state, group = state)) +
+  geom_rug(data = d_cover |> dplyr::filter(!is.na(ground_cover_percent)), aes(x = ground_cover_percent, colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "ground_cover_percent (bin mean)", y = "Card detection rate (%)", colour = "State")
+```
+
+
+## 2) Model comparison
+
+```{r}
+#| label: dist-shape-stats
+#| include: false
+
+## Raw-distribution summary stats for the bullets above.
+pct_zero <- mean(chew_data$rate == 0); pct_full <- mean(chew_data$rate == 1)
+## Largest single 10-point band strictly between 35% and 95% -- quantifies the secondary bump near
+## 100%: pct_full exceeds every individual band in this range even though the combined 30-90% range
+## has more sessions overall.
+pct_mid_band <- max(table(cut(chew_data$rate, breaks = seq(0.35, 0.95, by = 0.1)))) / nrow(chew_data)
+## Occupancy vs. graded intensity: observed card-occupancy against what independent per-card trials
+## would predict.
+real_any_rate <- mean(chew_data$chewcard_any)
+independent_any_rate <- 1 - (1 - mean(chew_data$rate))^10
+## Variance of the per-10-card count relative to a plain binomial's.
+overdispersion_ratio <- var(chew_data$rate * 10) / (10 * mean(chew_data$rate) * (1 - mean(chew_data$rate)))
+```
+
+- Every candidate binomial-type family is fitted to the same full model: every covariate in @tbl-covariate-reference (1-11) on every parameter of the family. Each term has its own penalty and can be shrunk out of the model entirely, so one comparison chooses the family and shows which covariates matter.
+- The key modelling purpose is to predict mouse abundance. Percentage of chew is likely more indicative of mouse behaviour rather than abundance. Therefore, whether a card was chewed by a mouse or not is arguably more relevant than percentage chewed here. This points us to binomial distribution families.
+- Zero inflation is evident: `r scales::percent(pct_zero, accuracy=0.1)` of sessions show zero chewed cards, `r scales::percent(pct_full, accuracy=0.1)` show every card chewed.
+- There is also a bimodal pattern in the raw data that will be difficult to model. Rather than the smooth decline toward zero a plain distribution would predict (see @fig-raw-hist), more sessions have every card chewed (`r scales::percent(pct_full, accuracy=0.1)`) than fall in any single 10-point band between 35% and 95% chewed (each `r scales::percent(pct_mid_band, accuracy=0.1)` or less of sessions).
+- Similarly, the non-independence of cards (spaced 10 m apart) means dispersion parameters are likely to be important to account for non-independence.
+- If each of the 10 cards were an independent trial at the population's own overall per-card rate, `r scales::percent(independent_any_rate,accuracy=0.1)` of sessions would detect at least one chewed card. Real occupancy is far lower, at `r scales::percent(real_any_rate,accuracy=0.1)` -- mouse activity doesn't appear to strike each card as its own separate coin-flip.
+
+```{r}
+#| label: fig-raw-hist
+#| fig-cap: "Distribution of the raw rate. Heavy mass at both 0 and 1 -- a plain binomial has no mechanism to produce this on its own."
+#| fig-asp: 0.4
+
+ggplot(chew_data, aes(rate)) +
+  geom_histogram(breaks = seq(-0.05, 1.05, by = 0.1), fill = "grey50", colour = "white") +
+  scale_x_continuous(breaks = seq(0, 1, 0.2), labels = scales::percent) +
+  labs(x = "Card detection rate (proportion deployed)", y = "Sessions")
+```
+
+### Candidate models
+
+```{r}
+#| label: candidate-terms
+#| echo: true
+
+## full_terms: the covariate set given to EVERY parameter of every candidate family. Every factor is a
+## random-effect smooth (bs = "re"): each is shrunk by its own estimated amount toward the overall mean,
+## rather than toward an arbitrary reference level. Continuous smooths use the default thin plate ("tp")
+## basis, month a cyclic one. select = TRUE (in the gamlss2() call below) adds a penalty on each
+## smooth's null space, so a whole term with no real signal can be shrunk out of the model entirely.
+## No random paddock intercept: gamlss's re() is a no-op inside gamlss2(), and mgcv's own
+## s(paddock_id, bs = "re") badly under-regularises on these models.
+full_terms <- ~
+  ## month is a cyclic smooth by summer_zone_ne (zone-varying seasonal curve) -- gamlss's own cy()/
+  ## pbc() have no working by= argument, which is why this report uses gamlss2 at all. The by-factor
+  ## curves are centred, so summer_zone_ne also needs its own (random-effect) main effect.
+  s(month_num, bs = "cc", by = summer_zone_ne, k = 7) + s(summer_zone_ne, bs = "re") +
+  ## Crop and soil factors. crop_cell (crop_group x crop_stage) is the interaction, as its own random
+  ## effect, so thin combinations are shrunk toward what their crop group and stage predict.
+  s(crop_group, bs = "re") + s(crop_stage, bs = "re") + s(crop_cell, bs = "re") + s(soil_type, bs = "re") +
+  ## Every continuous main effect is its own smooth, s(x, k = 5).
+  s(min_temp_lag1, k = 5) + s(rain_whiplash_trough_to_peak_lag1, k = 5) + s(rain_rolling6_lag1, k = 5) + s(gpp_rolling6_lag1, k = 5) +
+  s(gpp_finescale, k = 5) + s(soil_moisture, k = 5) +
+  ## rain_rolling6_lag1:gpp_rolling6_lag1 is a ti() pure interaction (not te(), which would double-count
+  ## the main effects) -- 6-month rainfall and 6-month rolling GPP, both regional and over the same
+  ## window, are expected to jointly shape crop growth and food supply.
+  ti(rain_rolling6_lag1, gpp_rolling6_lag1, k = 5)
+
+## Every candidate binomial-type family -- constructors passed as functions, not strings, since
+## gamlss2's own available_families() string-matching doesn't resolve these names. DBI (double
+## binomial) is left out: its fitted log-likelihood is positive, which is impossible for a count, so
+## its likelihood can't be trusted.
+binom_families <- list(BI = BI, BB = BB, ZABI = ZABI, ZABB = ZABB, ZIBI = ZIBI, ZIBB = ZIBB)
+
+## Builds a family's full model: one copy of full_terms for mu and for every other parameter of the
+## family.
+full_formula <- function(fam) {
+  n_shape <- length(names(fam()$parameters)) - 1
+  as.formula(paste("y ~", deparse1_clean(full_terms[[2]]),
+                   paste(rep(paste("|", deparse1_clean(full_terms[[2]])), n_shape), collapse = " ")))
+}
+```
+
+```{r}
+#| label: candidate-fits
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(chew_data_model, deparse1_clean(full_terms), names(binom_families)))
+
+## Cached: fitting every family is the slowest part of this report. knitr's cache only notices changes
+## to this chunk's own code, so cache.extra fingerprints what the fits depend on from earlier chunks --
+## the model data, the terms and the family list -- and a change to any of them re-runs the fits.
+## A family whose fit errors is kept as its error message, so it shows up in the table below.
+candidate_fits <- lapply(binom_families, function(fam) {
+  tryCatch(suppressWarnings(gamlss2::gamlss2(full_formula(fam), data = chew_data_model, family = fam,
+                                             maxit = 100, select = TRUE, trace = FALSE)),
+           error = function(e) conditionMessage(e))
+})
+```
+
+```{r}
+#| label: candidate-table
+#| include: false
+
+## BIC penalty (K = log(n)).
+k_bic <- log(nrow(chew_data_model))
+
+## One row per family. A fit counts as valid only if it converged within 100 iterations, has a
+## log-likelihood of at most 0 (every probability of a count is at most 1, so anything above 0 means a
+## broken density), and doesn't pin fitted mu at the boundary for more than 1% of sessions.
+candidate_table <- purrr::imap_dfr(candidate_fits, function(m, fam_name) {
+  n_params <- length(names(binom_families[[fam_name]]()$parameters))
+  if (is.character(m)) {
+    return(tibble::tibble(Family = fam_name, Parameters = n_params, Status = "fit failed", AIC = NA_real_, BIC = NA_real_, edf = NA_real_))
+  }
+  par <- predict(m, type = "parameter")
+  ## One-parameter families return a plain vector of mu rather than a table of parameters.
+  if (!is.list(par)) par <- list(mu = par)
+  status <- dplyr::case_when(
+    m$iterations >= 100 ~ "not converged",
+    as.numeric(logLik(m)) > 0 ~ "invalid likelihood",
+    mean(par$mu < 1e-6) > 0.01 ~ "degenerate",
+    TRUE ~ "valid")
+  tibble::tibble(Family = fam_name, Parameters = n_params, Status = status,
+                 AIC = AIC(m), BIC = AIC(m, k = k_bic), edf = attr(logLik(m), "df"))
+})
+
+## Best models among valid fits, by each criterion.
+valid_table <- dplyr::filter(candidate_table, Status == "valid")
+best_aic <- valid_table$Family[which.min(valid_table$AIC)]
+best_bic <- valid_table$Family[which.min(valid_table$BIC)]
+## Simpler models (fewer effective df than the AIC-best) within 2 AIC of it.
+aic_best_row <- dplyr::filter(valid_table, Family == best_aic)
+simpler_close <- valid_table$Family[valid_table$edf < aic_best_row$edf & valid_table$AIC - aic_best_row$AIC <= 2]
+## The models compared in detail below: the AIC-best, the BIC-best, and any simpler model close to the
+## AIC-best. A single model means a clear winner.
+comparison_set <- unique(c(best_bic, best_aic, simpler_close))
+clear_winner <- length(comparison_set) == 1
+## The model carried into the effect plots and Summary: the BIC-best, the report's parsimony standard.
+model_family_name <- best_bic
+m_best <- candidate_fits[[best_bic]]
+not_valid <- dplyr::filter(candidate_table, Status != "valid")
+```
+
+- `r if (clear_winner) paste0("**AIC and BIC both select \x60", best_bic, "\x60**, and no simpler model is within 2 AIC of it -- a clear winner.") else paste0("**AIC selects \x60", best_aic, "\x60 and BIC selects \x60", best_bic, "\x60**", if (length(simpler_close) > 0) paste0(" (with ", paste0("\x60", simpler_close, "\x60", collapse = ", "), " simpler and within 2 AIC)") else "", " -- these models are compared below.")`
+- `` `r model_family_name` `` (the BIC-best) is carried into the effect plots and Summary, keeping BIC as this report's parsimony standard.
+- `r if (nrow(not_valid) > 0) paste0("Not valid: ", paste0("\x60", not_valid$Family, "\x60 (", not_valid$Status, ")", collapse = ", "), ".") else "Every family fitted validly."`
+
+```{r}
+#| label: tbl-candidates
+#| tbl-cap: "Every candidate binomial-type family, fitted to the same full model (every covariate on every parameter, with shrinkage). BI/BB have no/with overdispersion, and the ZA and ZI variants add zero-adjustment (hurdle) or zero-inflation on top. ΔAIC/ΔBIC are relative to the best valid model; models in bold are compared in detail below. Only valid fits are ranked."
+
+candidate_table |>
+  dplyr::mutate(
+    Name = dplyr::case_match(Family,
+      "BI"   ~ "Binomial",
+      "BB"   ~ "Beta-binomial",
+      "ZABI" ~ "Zero-adjusted binomial",
+      "ZABB" ~ "Zero-adjusted beta-binomial",
+      "ZIBI" ~ "Zero-inflated binomial",
+      "ZIBB" ~ "Zero-inflated beta-binomial"),
+    ## Deltas only for valid fits, so an invalid fit can't look like the best one.
+    `ΔAIC` = dplyr::if_else(Status == "valid", AIC - min(valid_table$AIC), NA_real_),
+    `ΔBIC` = dplyr::if_else(Status == "valid", BIC - min(valid_table$BIC), NA_real_)) |>
+  dplyr::relocate(Name, .after = Family) |>
+  dplyr::arrange(is.na(`ΔBIC`), `ΔBIC`) |>
+  gt::gt() |>
+  gt::fmt_number(columns = c(AIC, BIC, edf, `ΔAIC`, `ΔBIC`), decimals = 1) |>
+  gt::sub_missing(columns = everything(), missing_text = "--") |>
+  gt::tab_style(style = gt::cell_text(weight = "bold"), locations = gt::cells_body(rows = Family %in% comparison_set)) |>
+  gt::data_color(columns = c(`ΔAIC`, `ΔBIC`), palette = "RdYlGn", reverse = TRUE, na_color = "white") |>
+  gt::tab_options(table.font.size = "0.78em")
+```
+
+### Comparing the top models
+
+```{r}
+#| label: comparison-prep
+#| include: false
+
+## Each compared model's fitted parameters.
+comparison_pars <- lapply(comparison_set, function(fam_name) {
+  par <- predict(candidate_fits[[fam_name]], type = "parameter")
+  if (!is.list(par)) par <- list(mu = par)
+  par
+})
+names(comparison_pars) <- comparison_set
+y_count <- chew_data_model$chewcards_detected
+bd <- chew_data_model$chewcards_deployed
+
+## Randomised quantile residuals, built by hand from the fitted parameters and each family's
+## gamlss.dist CDF -- gamlss2's own residual functions fail for these families, due to a gamlss2
+## scoping bug in how the binomial denominator (bd) reaches their residual code. For a discrete
+## response, the CDF just below y to the CDF at y brackets the probability mass at y; a uniform draw
+## from that bracket, mapped through qnorm(), is standard normal if the model is right.
+rq_resid <- function(y, bd, par, pfun) {
+  is_zero <- y == 0
+  lo <- do.call(pfun, c(list(q = y - 1, bd = bd), as.list(par)))
+  lo[is_zero] <- 0
+  hi <- do.call(pfun, c(list(q = y, bd = bd), as.list(par)))
+  qnorm(runif(length(y), lo, hi))
+}
+residuals_df <- purrr::imap_dfr(comparison_pars, function(par, fam_name) {
+  pfun <- get(paste0("p", fam_name), envir = asNamespace("gamlss.dist"))
+  tibble::tibble(Family = fam_name, resid = rq_resid(y_count, bd, par, pfun))
+})
+
+## Observed vs expected number of sessions with each count of chewed cards (0-10, then 11+). Expected =
+## the sum over sessions of each model's own probability of that count; a count above a session's
+## number of deployed cards has probability 0.
+count_levels <- 0:10
+frequency_df <- purrr::imap_dfr(comparison_pars, function(par, fam_name) {
+  dfun <- get(paste0("d", fam_name), envir = asNamespace("gamlss.dist"))
+  expected <- sapply(count_levels, function(k) sum(do.call(dfun, c(list(x = pmin(k, bd), bd = bd), as.list(par))) * (k <= bd)))
+  tibble::tibble(Family = fam_name, count = c(count_levels, 11), expected = c(expected, nrow(chew_data_model) - sum(expected)))
+})
+observed_df <- tibble::tibble(count = c(count_levels, 11),
+                              observed = c(sapply(count_levels, function(k) sum(y_count == k)), sum(y_count > 10)))
+
+## Effective df of every term, for every parameter, in each compared model (0 = shrunk out entirely).
+edf_df <- purrr::imap_dfr(comparison_set, function(fam_name, i) {
+  m <- candidate_fits[[fam_name]]
+  purrr::imap_dfr(m$fitted.specials, function(sp, param) {
+    tibble::tibble(Family = fam_name, Parameter = param, Term = names(sp), edf = sapply(sp, function(z) z$edf))
+  })
+})
+```
+
+```{r}
+#| label: fig-comparison-residuals
+#| fig-cap: "Randomised quantile residuals for each compared model. A well-specified model falls on the reference line."
+#| fig-asp: 0.45
+
+ggplot(residuals_df, aes(sample = resid)) +
+  stat_qq() + stat_qq_line() +
+  facet_wrap(~Family) +
+  labs(x = "Theoretical quantiles", y = "Quantile residuals")
+```
+
+```{r}
+#| label: fig-comparison-frequencies
+#| fig-cap: "Observed (grey bars) vs expected (lines) number of sessions with each count of chewed cards, for each compared model, on a square-root scale so the zeros don't swamp the rest. Counts above 10 (possible only when more than 10 cards were deployed) are grouped (11+)."
+#| fig-asp: 0.5
+
+ggplot() +
+  geom_col(data = observed_df, aes(count, observed), fill = "grey80") +
+  geom_line(data = frequency_df, aes(count, expected, colour = Family)) +
+  geom_point(data = frequency_df, aes(count, expected, colour = Family), size = 1.2) +
+  scale_y_sqrt() +
+  scale_x_continuous(breaks = 0:11, labels = c(0:10, "11+")) +
+  labs(x = "Chewed cards", y = "Sessions (square-root scale)", colour = "Family")
+```
+
+```{r}
+#| label: tbl-term-edf
+#| tbl-cap: "Effective degrees of freedom of every term, for every parameter, in each compared model. 0 means the term was shrunk out entirely."
+
+edf_df |>
+  dplyr::mutate(Column = paste(Family, Parameter)) |>
+  dplyr::select(Term, Column, edf) |>
+  tidyr::pivot_wider(names_from = Column, values_from = edf) |>
+  gt::gt() |>
+  gt::fmt_number(columns = -Term, decimals = 2) |>
+  gt::sub_missing(columns = everything(), missing_text = "--") |>
+  gt::data_color(columns = -Term, palette = "Blues", domain = c(0, max(edf_df$edf)), na_color = "white") |>
+  gt::tab_options(table.font.size = "0.72em")
+```
+
+```{r}
+#| label: model-effects
+#| results: asis
+
+## Full names for each family, for the headings below.
+family_names <- c(BI = "Binomial", BB = "Beta-binomial", ZABI = "Zero-adjusted binomial",
+                  ZABB = "Zero-adjusted beta-binomial", ZIBI = "Zero-inflated binomial", ZIBB = "Zero-inflated beta-binomial")
+
+## One heading and one effects figure per compared model (BIC-best first), each as its own knitted
+## child chunk so every figure gets its own caption and cross-reference label.
+for (fam_name in comparison_set) {
+  child <- c(
+    paste0("### ", family_names[[fam_name]], " (", fam_name, ")", if (fam_name == model_family_name) " -- BIC-best" else ""),
+    "",
+    "```{r}",
+    paste0("#| label: fig-model-effects-", tolower(fam_name)),
+    paste0("#| fig-cap: \"Effects of every term, for every parameter, in the ", fam_name, " model (gamlss2::plot.gamlss2(which = 'effects', scale = FALSE)). Logit scale for mu, shaded-gradient uncertainty band (gamlss2's own convention). month's by-factor smooth gets two panels, one per summer_zone_ne level (summer/winter_only).\""),
+    "#| fig-asp: 1.8",
+    "#| fig-width: 11",
+    "",
+    paste0("gamlss2:::plot.gamlss2(candidate_fits[[\"", fam_name, "\"]], which = \"effects\", scale = FALSE)"),
+    "```",
+    "")
+  cat(knitr::knit_child(text = child, envir = environment(), quiet = TRUE), sep = "\n")
+}
+```
+
+```{r}
+#| label: zero-inflation-check
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(chew_data_model, deparse1_clean(full_terms), model_family_name))
+
+## Zero-inflation check, run only when the BIC-selected family is zero-inflated. zi_param names that
+## family's zero-inflation parameter (ZIBB's nu, ZIBI's sigma).
+zi_param <- c(ZIBB = "nu", ZIBI = "sigma")[model_family_name]
+zi_check <- NULL
+if (!is.na(zi_param)) {
+  zi_family <- binom_families[[model_family_name]]
+  zi_par <- predict(m_best, type = "parameter")
+  zi_prob <- zi_par[[zi_param]]
+  ## Probability of zero from the count part alone (the beta-binomial or binomial the zeros are added to).
+  count_zero <- if (model_family_name == "ZIBB") {
+    gamlss.dist::dBB(0, bd = bd, mu = zi_par$mu, sigma = zi_par$sigma)
+  } else {
+    gamlss.dist::dBI(0, bd = bd, mu = zi_par$mu)
+  }
+  ## The same model with the zero-inflation parameter held constant (every other parameter unchanged),
+  ## to separate "is zero-inflation needed" from "do covariates on it help".
+  param_names <- names(zi_family()$parameters)
+  parts <- rep(deparse1_clean(full_terms[[2]]), length(param_names))
+  parts[param_names == zi_param] <- "1"
+  m_zi_const <- gamlss2::gamlss2(as.formula(paste("y ~", paste(parts, collapse = " | "))), data = chew_data_model,
+                                 family = zi_family, maxit = 100, select = TRUE, trace = FALSE)
+  ## The best valid family without zero-inflation, as the comparison for "is zero-inflation needed".
+  no_zi <- dplyr::filter(valid_table, Family %in% c("BI", "BB"))
+  no_zi <- no_zi[which.min(no_zi$BIC), ]
+  zi_edf <- sapply(m_best$fitted.specials[[zi_param]], function(z) z$edf)
+  zi_check <- list(
+    lo = min(zi_prob), hi = max(zi_prob), median = median(zi_prob),
+    ## Share of sessions whose zero comes from the zero-inflation vs. from the count part.
+    structural = mean(zi_prob), count_part = mean((1 - zi_prob) * count_zero), observed = mean(y_count == 0),
+    const_aic = AIC(m_zi_const), const_bic = AIC(m_zi_const, k = k_bic),
+    best_aic = AIC(m_best), best_bic = AIC(m_best, k = k_bic),
+    no_zi_family = no_zi$Family, no_zi_bic = no_zi$BIC,
+    terms = names(zi_edf)[zi_edf >= 0.5])
+}
+```
+
+```{r}
+#| label: summary-values
+#| include: false
+
+## Terms kept (>= 0.5 effective df) or shrunk out (< 0.05) in the BIC-selected model, for inline use.
+best_edf <- dplyr::filter(edf_df, Family == model_family_name)
+terms_kept <- function(param) paste0("\x60", best_edf$Term[best_edf$Parameter == param & best_edf$edf >= 0.5], "\x60", collapse = ", ")
+terms_dropped <- function(param) paste0("\x60", best_edf$Term[best_edf$Parameter == param & best_edf$edf < 0.05], "\x60", collapse = ", ")
+shape_params <- setdiff(unique(best_edf$Parameter), "mu")
+## Among compared models, the share of mu terms kept (>= 0.5 edf) in every model or dropped in every model.
+mu_agreement <- edf_df |>
+  dplyr::filter(Parameter == "mu") |>
+  dplyr::group_by(Term) |>
+  dplyr::summarise(consistent = all(edf >= 0.5) || all(edf < 0.5), .groups = "drop")
+```
+
+
+## Summary of findings and recommended future directions
+
+- **Family:** chew card counts are mostly zeros and heavily overdispersed (~`r round(overdispersion_ratio, 0)`x a plain binomial). `r if (clear_winner) paste0("\x60", best_bic, "\x60 is a clear winner on both AIC and BIC.") else paste0("AIC prefers \x60", best_aic, "\x60 and BIC \x60", best_bic, "\x60; \x60", best_bic, "\x60 is used here.")`
+- **Covariates on the mean (`mu`):** kept -- `r terms_kept("mu")`; shrunk out -- `r if (nchar(terms_dropped("mu")) > 2) terms_dropped("mu") else "none"`.
+- **Covariates on `r paste(shape_params, collapse = " and ")`:** `r paste0(sapply(shape_params, function(p) paste0(p, " keeps ", if (nchar(terms_kept(p)) > 2) terms_kept(p) else "no terms")), collapse = "; ")` -- every other term is shrunk out or close to it.
+- `r if (!clear_winner) paste0("**The compared models largely agree on the mean:** ", sum(mu_agreement$consistent), " of ", nrow(mu_agreement), " mu terms are kept in every compared model or dropped in every one (@tbl-term-edf).") else "**Only one model was carried forward**, so no between-model comparison was needed."`
+- `r if (!is.null(zi_check)) paste0("**Zero-inflation is well supported, but its covariates are weak:** the fitted zero-inflation probability ranges from ", scales::percent(zi_check$lo, accuracy = 0.1), " to ", scales::percent(zi_check$hi, accuracy = 1), " across sessions (median ", scales::percent(zi_check$median, accuracy = 1), "). Of the ", scales::percent(zi_check$observed, accuracy = 1), " of sessions with no chewed cards, about ", round(100 * zi_check$structural), " percentage points come from the zero-inflation and ", round(100 * zi_check$count_part), " from the count distribution's own overdispersion. Holding the zero-inflation constant still beats the best family without it (\x60", zi_check$no_zi_family, "\x60) by ", round(zi_check$no_zi_bic - zi_check$const_bic), " BIC, but its covariates (", if (length(zi_check$terms) > 0) paste0("\x60", zi_check$terms, "\x60", collapse = ", ") else "none kept", ") only change AIC by ", sprintf("%+.1f", zi_check$best_aic - zi_check$const_aic), " and BIC by ", sprintf("%+.1f", zi_check$best_bic - zi_check$const_bic), " (negative = better) -- treat them as a hypothesis to test, not a finding.") else "**The selected family has no zero-inflation parameter**, so no zero-inflation check applies."`
+- **Future -- biomass:** plumb `biomass_level` through the pipeline and impute it from crop group/stage where missing -- it showed a strong raw relationship (see `ground_cover_exploration.qmd`).
+- **Future -- checking the model:** check residuals against month and each covariate, validate out-of-sample, and test whether the model holds separately by state (WA has a different cropping calendar).
+- **Future -- detection:** consider an occupancy-detection model treating each card as a repeat sampling occasion, so detectability can be estimated directly.

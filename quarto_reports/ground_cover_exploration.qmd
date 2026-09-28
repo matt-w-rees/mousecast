@@ -1,0 +1,274 @@
+---
+title: "Ground cover and biomass exploration"
+subtitle: "Split out from chewcard_count_exploration.qmd (2026-09) for a standalone overhaul -- temporary, intended to be merged back once reworked"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fig-width: 8
+    fig-asp: 0.5
+toc: true
+toc-depth: 2
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+editor_options:
+  chunk_output_type: inline
+---
+
+## Overview
+Split out from `chewcard_count_exploration.qmd`'s own "4) Ground cover and biomass" section while that report's Sections 1-3 are finalised first. Setup/data-prep chunks below are copied verbatim from that report, so this document renders independently.
+
+```{r}
+#| label: load_packages
+#| include: false
+
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(mgcv)
+library(gt)
+library(sf)
+library(gamlss)
+library(gamlss2)
+
+```
+
+```{r}
+#| label: load_data
+#| include: false
+
+# load targets
+store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+tar_load(c(survey_model_data_rapid, aus_shp, data_list_clean_paddocks), store = store_path)
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+# set seed for reproducibility
+set.seed(20260907)
+
+# universal ggplot theme
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+)
+
+## Colour convention throughout this report: reserved for plots overlaying multiple groups on shared
+## axes; a single series is always black/grey. bw_range() is the shared point+linerange layer for a
+## single-series effect/raw plot with "lo"/"hi" columns.
+bw_range <- function() list(geom_linerange(aes(ymin = lo, ymax = hi), colour = "grey50"), geom_point(colour = "black"))
+
+## Collapses deparse()'s own multi-line formula output into one clean, single-spaced string for
+## inline display.
+deparse1_clean <- function(expr) gsub("\\s+", " ", paste(deparse(expr), collapse = " "))
+
+## This project's quarto/pandoc pipeline mis-renders a bare inline numeric >= 10000 (e.g. 14147 as "1.4147^{4}").
+fmt_num <- function(x) format(round(x), big.mark = ",", scientific = FALSE, trim = TRUE)
+## Same pipeline mis-renders small p-values too (e.g. 5e-05 as "10^{-4}").
+fmt_p <- function(p) if (is.na(p)) "n/a" else if (p < 0.0001) "< 0.0001" else paste("=", format(round(p, 4), scientific = FALSE, trim = TRUE))
+
+## Shared fitting helper for every beta-binomial model in this report (data defaults to chew_data_model,
+## built below -- safe here since it's only evaluated when fit_bb() is actually called, by which point
+## chew_data_model already exists).
+fit_bb <- function(f, data = chew_data_model) gamlss2::gamlss2(f, data = data, family = BB)
+```
+
+
+```{r}
+#| label: modify_data
+#| include: false
+
+## National population.
+chew_data <- survey_model_data_rapid |>
+  ## visit == 1 keeps each paddock-season's first visit only (visit is numbered chronologically
+  ## upstream), dropping repeat within-season visits that would otherwise contribute multiple
+  ## non-independent rows for the same paddock-season. !is.na(chewcards_detected) drops sessions with
+  ## no recorded response. chewcards_deployed > 0 drops sessions with no real detection opportunity,
+  ## and avoids a divide-by-zero in `rate` below.
+  filter(visit == 1, chewcards_deployed > 0) |>
+  ## Manipulate: derive new values from the raw columns.
+  mutate(
+    ## Number of cards deployed but NOT chewed -- only exists to feed `y` below.
+    fail = chewcards_deployed - chewcards_detected,
+    ## `rate` is used for every raw-data plot below.
+    rate = chewcards_detected / chewcards_deployed,
+    month_num = as.integer(format(survey_date, "%m")),
+    chewcard_any = as.integer(chewcards_detected > 0),
+    summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only")),
+    year_adj = as.integer(sub(".*-", "", as.character(season_year_adj))),
+    ## The two-column cbind(successes, failures) response every binomial-type model in this report
+    ## fits against (y ~ ...), not `rate` -- preserves each session's own trial size
+    ## (chewcards_deployed), which a bare proportion would throw away.
+    y = cbind(chewcards_detected, fail)) |>
+  ## Transform: change an existing column's representation (factor) without deriving new information.
+  ## crop_group/crop_stage/soil_type/ae_zone factored here (crop_stage with its own agronomic ordering)
+  ## since none of the four depends on downstream filtering -- avoids re-doing factor() in every
+  ## consumer.
+  mutate(
+    crop_group = factor(crop_group),
+    ## Ordered by crop_stage's own agronomic/phenological sequence (sown through to stubble).
+    crop_stage = factor(crop_stage, levels = c("sown", "seedling", "vegetative", "flowering", "ripening", "stubble")),
+    soil_type = factor(soil_type),
+    ae_zone = factor(ae_zone))
+```
+
+
+
+```{r}
+#| label: format-data-models
+#| include: false
+
+## chew_data_model: chew_data restricted to complete cases for the systematic search's own predictor
+## set, so every candidate covariate is compared on an identical population -- just a filter, no
+## re-mutating or re-selecting (chew_data already has everything in the right shape). crop_group
+## excludes cotton/unknown (too thin to model, Table 2); droplevels() removes those now-empty levels.
+chew_data_model <- chew_data |>
+  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type),
+         !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(rain_rolling6_lag1), !is.na(gpp_rolling6_lag1),
+         !is.na(gpp_finescale_lag1), !is.na(soil_moisture_lag1), !is.na(min_temp_lag1),
+         !crop_group %in% c("cotton", "unknown")) |>
+  mutate(crop_group = droplevels(crop_group))
+```
+
+```{r}
+#| label: ground-cover-prep
+#| include: false
+
+## ground_cover_biomass_raw builds biomass_level as an ordered low/moderate/high scale from the raw
+## biomass field, one candidate ground-cover measure against the working formula (alongside crop_stage
+## and ground_cover_percent -- gpp_finescale_lag1 is a core covariate now, tested in the main search instead).
+ground_cover_biomass_raw <- data_list_clean_paddocks$rapid |>
+  dplyr::mutate(
+    ground_cover_percent = ifelse(ground_cover_percent == -99, NA, ground_cover_percent),
+    biomass_level = dplyr::case_when(
+      biomass %in% c("low", "low moderate")  ~ "low",
+      biomass %in% c("moderate", "medium")   ~ "moderate",
+      biomass %in% c("moderate high", "high") ~ "high",
+      TRUE ~ NA_character_
+    ),
+    biomass_level = factor(biomass_level, levels = c("low", "moderate", "high"), ordered = TRUE)
+  ) |>
+  dplyr::select(paddock_id, survey_date, ground_cover_percent, biomass_level) |>
+  dplyr::distinct(paddock_id, survey_date, .keep_all = TRUE)
+
+## d_cover: chew_data joined against ground_cover_biomass_raw, restricted to the working formula's
+## own required covariates (so every ground-cover measure is compared on an identical population).
+d_cover <- chew_data |>
+  dplyr::filter(!is.na(crop_stage), !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(gpp_rolling6_lag1), !is.na(soil_moisture_lag1)) |>
+  dplyr::left_join(ground_cover_biomass_raw, by = c("paddock_id", "survey_date"))
+```
+
+## Ground cover and biomass
+
+Two further questions, both using covariates outside the main systematic search's own scope entirely (`biomass_level`/`ground_cover_percent`) -- limited by missing data, so not part of the main search population -- evaluated on top of a base formula (month/rain/gpp/soil_moisture): which of three candidate ground-cover measures adds anything, and whether `biomass_level` could be inferred for the sessions where it wasn't recorded.
+
+### Ground cover: three measures compared
+
+```{r}
+#| label: ground-cover-test
+#| include: false
+
+## Shared helper: fits a base (month/rain/gpp/soil_moisture_lag1) model and a base+measure model for one
+## candidate ground-cover measure, on the subset of d_cover where that measure is non-missing.
+test_ground_cover_measure <- function(data, measure_var) {
+  dat <- data |> dplyr::filter(!is.na(.data[[measure_var]])) |>
+    select(y, month_num, rain_whiplash_trough_to_peak_lag1, gpp_rolling6_lag1, soil_moisture_lag1, dplyr::all_of(measure_var))
+  base_formula <- y ~ s(month_num, bs = "cc", k = 7) + rain_whiplash_trough_to_peak_lag1 + gpp_rolling6_lag1 + soil_moisture_lag1
+  full_formula <- stats::update(base_formula, paste("~ . +", measure_var))
+  list(data = dat, n = nrow(dat), base = fit_bb(base_formula, dat), full = fit_bb(full_formula, dat))
+}
+gc_bio <- test_ground_cover_measure(d_cover, "biomass_level")
+gc_gc  <- test_ground_cover_measure(d_cover, "ground_cover_percent")
+gc_cs  <- test_ground_cover_measure(d_cover, "crop_stage")
+d_bio <- gc_bio$data; n_bio <- gc_bio$n; m_bio_base <- gc_bio$base; m_bio <- gc_bio$full
+d_gc  <- gc_gc$data;  n_gc  <- gc_gc$n;  m_gc_base  <- gc_gc$base;  m_gc  <- gc_gc$full
+d_gcs <- gc_cs$data;  n_gcs <- gc_cs$n;  m_gcs_base <- gc_cs$base;  m_gcs <- gc_cs$full
+
+ground_cover_table <- tibble::tribble(
+  ~Measure, ~n, ~`AIC gain`, ~`BIC gain`, ~Note,
+  "crop_stage (categorical, field-observed)", n_gcs, AIC(m_gcs_base)-AIC(m_gcs), AIC(m_gcs_base,k=log(n_gcs))-AIC(m_gcs,k=log(n_gcs)), "See own subsection for the AIC/BIC/LRT disagreement",
+  "biomass_level (categorical, field-observed)", n_bio, AIC(m_bio_base)-AIC(m_bio), AIC(m_bio_base,k=log(n_bio))-AIC(m_bio,k=log(n_bio)), "Strongest -- adopt",
+  "ground_cover_percent (continuous, field-observed)", n_gc, AIC(m_gc_base)-AIC(m_gc), AIC(m_gc_base,k=log(n_gc))-AIC(m_gc,k=log(n_gc)), "Does not survive on top of the working formula"
+)
+```
+
+Compares three candidate ground-cover measures against a base formula (month/rain/gpp/soil_moisture).
+
+```{r}
+#| label: tbl-ground-cover
+#| tbl-cap: "Each measure added to the base formula, on its own available population."
+
+ground_cover_table |> gt::gt() |>
+  gt::fmt_number(columns = c(`AIC gain`, `BIC gain`), decimals = 1) |>
+  gt::tab_options(table.font.size = "0.78em")
+```
+
+`biomass_level` (collapsed to an ordered low/moderate/high scale from six inconsistently-labelled raw categories) is the only measure that clearly survives on top of the base formula under BIC -- a real, substantial, independent effect. `crop_stage` shows the same AIC-favours/BIC-against pattern seen elsewhere. `ground_cover_percent` adds nothing. **Recommendation unchanged: `biomass_level` is the strongest ground-cover measure** -- its own real cost is coverage (only `r n_bio` of `r nrow(chew_data)` sessions have it recorded).
+
+### Can crop stage and crop group infer biomass, for the sessions where it wasn't recorded?
+
+```{r}
+#| label: biomass-inference
+#| include: false
+
+## Can crop_group/crop_stage INFER biomass_level, independent of the covariate-selection question
+## above -- a standalone question about biomass_level's own coverage. bio_ord is biomass_level's own
+## ordered low/moderate/high scale, recoded to an integer for mgcv's ocat() family.
+d_bio_crop <- d_cover |> dplyr::filter(!is.na(biomass_level), !is.na(crop_group)) |>
+  dplyr::mutate(crop_group = factor(crop_group), bio_ord = as.integer(biomass_level))
+n_bio_crop <- nrow(d_bio_crop)
+
+## Ordinal model (mgcv ocat, 3 categories): intercept-only, then crop_stage/crop_group added alone and
+## together, to see which phenology signal best predicts biomass_level.
+m_bioinfer_null  <- gam(bio_ord ~ 1, family = ocat(R = 3), data = d_bio_crop, method = "REML")
+m_bioinfer_stage <- gam(bio_ord ~ crop_stage, family = ocat(R = 3), data = d_bio_crop, method = "REML")
+m_bioinfer_group <- gam(bio_ord ~ crop_group, family = ocat(R = 3), data = d_bio_crop, method = "REML")
+m_bioinfer_both  <- gam(bio_ord ~ crop_stage + crop_group, family = ocat(R = 3), data = d_bio_crop, method = "REML")
+
+## Classification accuracy of the full (crop_stage + crop_group) model against a naive
+## always-predict-the-most-common-category baseline.
+pred_probs <- predict(m_bioinfer_both, type = "response")
+pred_class <- apply(pred_probs, 1, which.max)
+bioinfer_accuracy <- mean(pred_class == d_bio_crop$bio_ord)
+bioinfer_baseline_accuracy <- max(table(d_bio_crop$bio_ord)) / n_bio_crop
+
+## Raw biomass_level composition by crop_stage, for the crosstab plot below.
+bioinfer_crosstab <- d_bio_crop |>
+  dplyr::count(crop_stage, biomass_level) |>
+  dplyr::group_by(crop_stage) |>
+  dplyr::mutate(prop = n / sum(n), n_stage = sum(n)) |>
+  dplyr::ungroup()
+```
+
+```{r}
+#| label: fig-biomass-crosstab
+#| fig-cap: "biomass_level composition by crop_stage. A clear, agronomically sensible gradient -- seedling/sown skew low, flowering/ripening skew high, stubble and vegetative sit in between."
+#| fig-asp: 0.45
+
+ggplot(bioinfer_crosstab, aes(reorder(crop_stage, prop * (as.integer(biomass_level)-2)), prop, fill = biomass_level)) +
+  geom_col() +
+  scale_fill_manual(values = c(low = "#c8722f", moderate = "grey70", high = "#2166ac"), name = "biomass_level") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = NULL, y = "Share of sessions")
+```
+
+```{r}
+#| label: tbl-biomass-infer
+#| tbl-cap: "Ordinal model (mgcv ocat, 3 categories) predicting biomass_level from crop phenology."
+
+tibble::tribble(
+  ~Model, ~AIC, ~BIC,
+  "Intercept only",            AIC(m_bioinfer_null),  BIC(m_bioinfer_null),
+  "+ crop_stage",              AIC(m_bioinfer_stage), BIC(m_bioinfer_stage),
+  "+ crop_group",              AIC(m_bioinfer_group), BIC(m_bioinfer_group),
+  "+ crop_stage + crop_group", AIC(m_bioinfer_both),  BIC(m_bioinfer_both)
+) |> gt::gt() |> gt::fmt_number(columns = c(AIC, BIC), decimals = 1) |> gt::tab_options(table.font.size = "0.85em")
+```
+
+**Yes -- crop phenology infers `biomass_level` substantially better than chance.** Predicting each session's most likely category from `crop_stage` + `crop_group` gets it right `r scales::percent(bioinfer_accuracy, accuracy=0.1)` of the time, against a `r scales::percent(bioinfer_baseline_accuracy, accuracy=0.1)` baseline, with errors concentrated on the *adjacent* category rather than confusing low with high -- a genuine ordinal signal. **Recommended future direction**: build this into a real imputation, extending `biomass_level`'s reach from `r n_bio` sessions to most of the panel.

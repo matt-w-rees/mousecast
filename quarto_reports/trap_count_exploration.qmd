@@ -1,0 +1,1080 @@
+---
+title: "Live-trap data exploration"
+subtitle: "Distributional quirks, predictor covariates and candidate families for trap_count -- independent of any one downstream model"
+format:
+  html:
+    self-contained: true
+    theme: cosmo
+    fig-width: 8
+    fig-asp: 0.5
+toc: true
+toc-depth: 2
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: source
+editor_options:
+  chunk_output_type: inline
+---
+
+
+## Overview
+- This report explores raw live-trap data and fits preliminary models (via `gamlss2`).
+- GAMLSS allows a comprehensive exploration of different distribution families, and shape / scale of effects in addition to the mean.
+- Insights from this report will help to fit more computationally expensive and integrated models.
+
+#### Structure
+- The first section details key predictor variables and plots the raw data against these variables.
+- The second and third sections each fit every candidate distribution family to the same full model -- every covariate on every parameter, with shrinkage -- choosing the family and the key covariates together, then compare the best-ranked models in detail. Section 2 models trap success, section 3 unique individuals.
+- The fourth section compares what the two responses say.
+
+#### Live traps
+- Grids of traps are set in the paddock, usually for 3 or more nights -- mostly Longworth or Elliott live traps, plus snap-back (kill) traps in the historic Queensland data.
+- Search effort is the number of functional trap-nights in the session, which varies about 200-fold (from 4 to over 800).
+- Two responses are modelled, each with log trap-nights as an offset:
+  - **trap success**: total captures (recaptures included) per trap-night -- available for every session;
+  - **unique individuals**: distinct mice caught per trap-night -- closer to abundance, but unknown for unmarked live-trap sessions that only recorded nightly totals.
+- Unique individuals should level off as trap-nights increase (later nights mostly recapture the same animals), so a proportional effort offset may fit it less well than trap success.
+- A few long-term paddocks contribute many sessions each.
+
+
+```{r}
+#| label: load_packages
+#| include: false
+
+library(targets)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(mgcv)
+library(gt)
+library(sf)
+library(gamlss)
+library(gamlss2)
+
+```
+
+```{r}
+#| label: load_data
+#| include: false
+
+# load targets
+store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
+tar_load(c(survey_model_data_traps, aus_shp), store = store_path)
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+# set seed for reproducibility
+set.seed(20260924)
+
+# universal ggplot theme
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(panel.grid.minor = element_blank(), legend.position = "bottom")
+)
+
+## Collapses deparse()'s own multi-line formula output into one clean, single-spaced string for
+## inline display.
+deparse1_clean <- function(expr) gsub("\\s+", " ", paste(deparse(expr), collapse = " "))
+
+## gamlss2's default of 20 outer iterations isn't always enough once several parameters have
+## covariates, so every model fit in this report allows up to 100.
+max_iter <- 100
+```
+
+
+```{r}
+#| label: modify_data
+#| include: false
+
+## National population, every trap session with functional trap-nights. visit == 1 keeps each
+## paddock-season's first visit only (visit is numbered chronologically upstream), dropping repeat
+## within-season visits that would otherwise contribute multiple non-independent rows for the same
+## paddock-season. The single dataset every other chunk in this report builds on.
+trap_data <- survey_model_data_traps |>
+  filter(visit == 1, number_functional_traps_session > 0) |>
+  ## Manipulate: derive new values from the raw columns.
+  mutate(
+    ## The two responses: total captures (recaptures included) and distinct individuals per session.
+    y_success = number_mice_caught_session,
+    y_unique = number_unique_individuals_session,
+    ## Search effort -- log functional trap-nights enters every model as an offset.
+    log_trapnights = log(number_functional_traps_session),
+    ## Trap success per 100 trap-nights -- used for every raw-data plot below, so sessions with very
+    ## different effort are comparable.
+    rate = 100 * number_mice_caught_session / number_functional_traps_session,
+    month_num = as.integer(format(survey_date, "%m")),
+    summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only")),
+    year_adj = as.integer(sub(".*-", "", as.character(season_year_adj))),
+    ## Crop is missing for many (mostly historic) sessions, so missing values -- and a recorded
+    ## "unknown" -- become their own "not recorded" level rather than dropping those sessions.
+    crop_group = ifelse(is.na(crop_group) | crop_group == "unknown", "not recorded", crop_group),
+    crop_stage = ifelse(is.na(crop_stage), "not recorded", crop_stage)) |>
+  ## Transform: change an existing column's representation (factor) without deriving new information.
+  mutate(
+    crop_group = factor(crop_group),
+    ## Ordered by crop_stage's own agronomic/phenological sequence (sown through to stubble), then "not recorded".
+    crop_stage = factor(crop_stage, levels = c("sown", "seedling", "vegetative", "flowering", "ripening", "stubble", "not recorded")),
+    soil_type = factor(soil_type),
+    ae_zone = factor(ae_zone))
+```
+
+
+```{r}
+#| label: format-data-models
+#| include: false
+
+## trap_data_model: trap_data restricted to complete cases for the environmental and soil covariates,
+## so every candidate covariate is compared on an identical population. Crop never removes a session
+## (missing crop is its own "not recorded" level). Each response's own model data then also drops
+## sessions where that response is missing.
+trap_data_model <- trap_data |>
+  filter(!is.na(soil_type),
+         !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(rain_rolling6_lag1), !is.na(gpp_rolling6_lag1),
+         !is.na(gpp_finescale), !is.na(soil_moisture), !is.na(min_temp_lag1)) |>
+  mutate(crop_group = droplevels(crop_group), crop_stage = droplevels(crop_stage),
+    ## crop_group x crop_stage combination, for the full model's interaction random effect.
+    crop_cell = interaction(crop_group, crop_stage, drop = TRUE, sep = ":"))
+success_data <- dplyr::filter(trap_data_model, !is.na(y_success))
+unique_data <- dplyr::filter(trap_data_model, !is.na(y_unique))
+```
+
+## 1) Predictor variables
+
+```{r}
+#| label: tbl-covariate-reference
+#| tbl-cap: "Every covariate considered in this report, with its ecological hypothesis and analysis considerations. All are candidates for every model in sections 2 and 3, except `ae_zone`. `season` and `grdc_subregion` appear in [Correlation] only: `season` is covered by `month`, and `grdc_subregion` is largely redundant with `ae_zone` while having many more levels. Ground cover and biomass are rarely recorded on trap surveys, so aren't considered here."
+
+covariate_reference_table <- tibble::tribble(
+  ~Number, ~Variable, ~Type, ~Hypothesis, ~Considerations,
+  1, "`month` (of survey)", "Continuous",
+    "Mice population cycles throughout the year due to weather + cropping patterns (food + shelter), and trappability may change with season.",
+    "The only variable tied to the specific survey date, not the seasonal time step. Fit with a cyclical spline (matching January to December).",
+  2, "`min_temp_lag1` (average)", "Continuous",
+    "Cold weather may suppress breeding (so actual temperature is used, rather than an anomaly).",
+    "May weaken `month` effects -- should test with and without it in the model. Previous season's value.",
+  3, "`crop_group`", "Categorical",
+    "Different crops provide different food and shelter resources for mice.",
+    "Missing or \"unknown\" crop is its own \"not recorded\" level, so no session is dropped -- but that level mostly marks older surveys, so its effect partly reflects era rather than crop.",
+  4, "`crop_stage`", "Categorical",
+    "The growth stage of the crop regulates food and shelter for mice.",
+    "Ordered factor with levels: sown, seedling, vegetative, flowering, ripening, stubble, plus \"not recorded\".",
+  5, "`soil_type`", "Categorical",
+    "Affects burrowing ability, crop yields and water absorption.",
+    "Potential mediator variable for things like rainfall/soil moisture. From TERN's soil classification.",
+  6, "`ae_zone`", "Categorical",
+    "GRDC's broad-scale classification of broadacre cropping system -- should explain spatial variation in mouse abundance.",
+    "Not included in the models in this report -- shown in the raw data plots and correlations only.",
+  7, "`rain_whiplash_trough_to_peak_lag1`", "Continuous",
+    "Mouse plagues are expected to be driven by drought-breaking rains.",
+    "Likely a different relationship across regions (e.g. due to soil type). Previous season's value.",
+  8, "`rain_rolling6_lag1`", "Continuous",
+    "Rainfall affects crop yield and food availability.",
+    "Doesn't account for the timing of rainfall within the window, only the total amount. Previous season's value.",
+  9, "`gpp_rolling6_lag1`", "Continuous",
+    "Proxy for crop yield potential, at the shared 0.1 degree covariate grid (~11km) -- a broader seasonal signal than `gpp_finescale`'s paddock-scale resolution below.",
+    "Correlates only weakly with `gpp_finescale` -- different information, not a duplicate at two resolutions. Previous season's value. Also enters an interaction with rainfall (`rain_rolling6_lag1`).",
+  10, "`gpp_finescale`", "Continuous",
+    "Native ~463m-resolution, focal-smoothed GPP around each paddock -- crop growth and cover around the time of survey.",
+    "Current season's value (not lagged); only available from 2000, so earlier sessions drop out of the models.",
+  11, "`soil_moisture`", "Continuous",
+    "Affects crop yields and burrowing ability.",
+    "Not a rolling average -- it is already an accumulated value. Current season's value (not lagged)."
+)
+covariate_reference_table |> gt::gt() |>
+  gt::fmt_markdown(columns = c(Variable, Hypothesis, Considerations)) |>
+  gt::cols_align(align = "center", columns = Number) |>
+  gt::cols_width(Number ~ gt::px(35), Variable ~ gt::px(150), Type ~ gt::px(80), Hypothesis ~ gt::px(260), Considerations ~ gt::px(320)) |>
+  gt::opt_row_striping() |>
+  gt::tab_options(table.font.size = "0.75em")
+```
+
+### Search effort
+
+```{r}
+#| label: effort-summary
+#| include: false
+
+## Raw trap success and unique individuals by effort band (functional trap-nights). If effort were the
+## only difference between sessions, the per-trap-night rates would be roughly constant across rows;
+## the dominant state and median year show whether effort is instead tied to region, era or protocol.
+effort_summary <- trap_data |>
+  group_by(`Trap-nights` = cut(number_functional_traps_session, c(0, 15, 25, 100, 300, Inf),
+                               labels = c("<=15", "16-25", "26-100", "101-300", ">300"))) |>
+  summarise(Sessions = dplyr::n(),
+            `Captures per 100 trap-nights` = mean(rate, na.rm = TRUE),
+            `Unique per 100 trap-nights` = mean(100 * y_unique / number_functional_traps_session, na.rm = TRUE),
+            `% zero captures` = 100 * mean(y_success == 0, na.rm = TRUE),
+            `Most common state` = names(which.max(table(state))),
+            `Median year` = median(year_adj),
+            .groups = "drop")
+share_typical_effort <- mean(trap_data$number_functional_traps_session > 15 & trap_data$number_functional_traps_session <= 25)
+```
+
+- Effort varies about 200-fold: `r scales::percent(share_typical_effort, accuracy = 1)` of sessions have 16-25 trap-nights, and the rest range from 4 to over 800.
+- If effort were the only difference between sessions, the per-trap-night rates would be roughly constant across the rows of @tbl-effort. Instead, effort is tied to region and era (e.g. which state dominates each row), so the offset assumes a proportional effort effect the raw data can't cleanly confirm.
+
+```{r}
+#| label: tbl-effort
+#| tbl-cap: "Live-trap captures and unique individuals by number of functional trap-nights."
+
+effort_summary |> gt::gt() |>
+  gt::fmt_number(columns = c(`Captures per 100 trap-nights`, `Unique per 100 trap-nights`), decimals = 2) |>
+  gt::fmt_number(columns = `% zero captures`, decimals = 0) |>
+  gt::fmt_number(columns = `Median year`, decimals = 0, use_seps = FALSE) |>
+  gt::tab_options(table.font.size = "0.78em")
+```
+
+### Correlation
+
+```{r}
+#| label: collinearity-categorical
+#| include: false
+
+## Collinearity between categorical covariates: Cramer's V (continuous covariates get their own
+## Pearson correlation matrix below). droplevels() after NA-filtering avoids chisq.test() failing on
+## an all-zero row/column, which happens when a factor level has no rows left once intersected with
+## the other variable's non-NA rows.
+cramers_v <- function(x, y) {
+  keep <- !is.na(x) & !is.na(y)
+  tab <- table(droplevels(factor(x[keep])), droplevels(factor(y[keep])))
+  chi <- suppressWarnings(stats::chisq.test(tab, correct = FALSE)$statistic)
+  k <- min(nrow(tab) - 1, ncol(tab) - 1)
+  as.numeric(sqrt(chi / (sum(tab) * k)))
+}
+collinearity_vars <- c("crop_stage", "season", "ae_zone", "grdc_subregion", "soil_type", "crop_group")
+collinearity_pairs <- utils::combn(collinearity_vars, 2)
+collinearity_table <- purrr::map_dfr(seq_len(ncol(collinearity_pairs)), function(i) {
+  v1 <- collinearity_pairs[1, i]; v2 <- collinearity_pairs[2, i]
+  tibble::tibble(var1 = v1, var2 = v2, `Cramer's V` = cramers_v(trap_data_model[[v1]], trap_data_model[[v2]]))
+})
+```
+
+```{r}
+#| label: collinearity-continuous
+#| include: false
+
+## Continuous covariate correlations -- rain_whiplash_trough_to_peak_lag1, rain_rolling6_lag1,
+## gpp_rolling6_lag1, gpp_finescale, soil_moisture, min_temp_lag1 -- whether the environmental
+## covariates carry independent signal or a shared one.
+continuous_vars <- c("rain_whiplash_trough_to_peak_lag1", "rain_rolling6_lag1", "gpp_rolling6_lag1", "gpp_finescale", "soil_moisture", "min_temp_lag1")
+continuous_cor <- cor(trap_data_model[continuous_vars]) |> round(2)
+```
+
+```{r}
+#| label: collinearity-extended-categorical
+#| include: false
+
+## Extends the categorical matrix above with month_num.
+extended_cat_vars <- c(collinearity_vars, "month_num")
+extended_cat_pairs <- utils::combn(extended_cat_vars, 2)
+extended_collinearity_table <- purrr::map_dfr(seq_len(ncol(extended_cat_pairs)), function(i) {
+  v1 <- extended_cat_pairs[1, i]; v2 <- extended_cat_pairs[2, i]
+  tibble::tibble(var1 = v1, var2 = v2, `Cramer's V` = cramers_v(trap_data_model[[v1]], trap_data_model[[v2]]))
+})
+extended_collinearity_matrix <- matrix(1, nrow = length(extended_cat_vars), ncol = length(extended_cat_vars),
+                                        dimnames = list(extended_cat_vars, extended_cat_vars))
+for (i in seq_len(nrow(extended_collinearity_table))) {
+  v1 <- extended_collinearity_table$var1[i]; v2 <- extended_collinearity_table$var2[i]; v <- extended_collinearity_table$`Cramer's V`[i]
+  extended_collinearity_matrix[v1, v2] <- v
+  extended_collinearity_matrix[v2, v1] <- v
+}
+
+## Prose value built here, not inline -- Cramer's V's own column name needs a backtick, which
+## breaks pandoc's inline-code-span parsing if embedded directly in an inline `r` expression.
+month_season_v <- max(extended_collinearity_table$`Cramer's V`[
+  (extended_collinearity_table$var1 == "month_num" & extended_collinearity_table$var2 == "season") |
+  (extended_collinearity_table$var1 == "season" & extended_collinearity_table$var2 == "month_num")], na.rm = TRUE)
+```
+
+- `rain_rolling6_lag1` is correlated with `rain_whiplash_trough_to_peak_lag1` (r = `r round(continuous_cor["rain_whiplash_trough_to_peak_lag1","rain_rolling6_lag1"],2)`).
+
+- `gpp_finescale` correlates only weakly with `gpp_rolling6_lag1` (r = `r round(continuous_cor["gpp_rolling6_lag1","gpp_finescale"],2)`) despite both measuring GPP -- different information at two resolutions, not a duplicate.
+
+- `soil_type` is correlated with both zone-level covariates (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="ae_zone"&collinearity_table$var2=="soil_type"],2)`/`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="grdc_subregion"&collinearity_table$var2=="soil_type"],2)`).
+
+- `crop_stage`/`season` show a moderate association (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="crop_stage"&collinearity_table$var2=="season"],2)`) -- expected, since crop phenology tracks the calendar.
+
+- `ae_zone`/`grdc_subregion` are almost entirely redundant with each other (`r round(collinearity_table$"Cramer's V"[collinearity_table$var1=="ae_zone"&collinearity_table$var2=="grdc_subregion"],2)`) -- expected, since one is a strict spatial refinement of the other.
+
+- `month`/`season` are of course perfectly associated (V = `r round(month_season_v,2)`).
+
+
+```{r}
+#| label: tbl-continuous-cor
+#| tbl-cap: "Pearson correlation between every pair of continuous covariates, on the modelling dataset. Cell shading: blue = positive, red = negative, white = no correlation."
+
+continuous_cor |> as.data.frame() |> tibble::rownames_to_column("Variable") |> gt::gt() |>
+  gt::fmt_number(columns = -Variable, decimals = 2) |>
+  gt::data_color(columns = -Variable, palette = c("#b2182b", "white", "#2166ac"), domain = c(-1, 1)) |>
+  gt::tab_options(table.font.size = "0.7em")
+```
+
+```{r}
+#| label: tbl-collinearity
+#| tbl-cap: "Cramer's V between every pair of categorical covariates, including `season`/`grdc_subregion` (not modelled, see @tbl-covariate-reference) and `month` (`month_num`, #1), as a matrix (diagonal = 1), on the modelling dataset."
+
+extended_collinearity_matrix |> as.data.frame() |> tibble::rownames_to_column("Variable") |> gt::gt() |>
+  gt::fmt_number(columns = -Variable, decimals = 2) |>
+  gt::data_color(columns = -Variable, palette = "Blues", domain = c(0, 1)) |>
+  gt::tab_options(table.font.size = "0.72em")
+```
+
+### Raw data plots
+
+```{r}
+#| label: raw-temporal-prep
+#| include: false
+
+## Raw (no-model) summary stats and plot data, shown regardless of whether a covariate survives the
+## formal search below -- so a real raw-data pattern is visible even if it doesn't clear a parsimony
+## penalty. `rate` is trap success (captures per 100 trap-nights) throughout.
+raw_by_season <- trap_data |> group_by(season_year_adj, state) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_month <- trap_data |>
+  dplyr::group_by(month_num, state) |>
+  dplyr::summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+```
+
+```{r}
+#| label: raw-categorical-prep
+#| include: false
+
+## Raw predictor-variable plots, one no-model summary per categorical covariate in
+## @tbl-covariate-reference -- a direct mean of the raw rate, not a fitted value, showing what the
+## data looks like before any modelling choice.
+raw_season     <- trap_data |> group_by(season, state) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_soiltype   <- trap_data |> filter(!is.na(soil_type)) |> group_by(soil_type) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_crop_group <- trap_data |> filter(!is.na(crop_group)) |> group_by(crop_group) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_ae_zone    <- trap_data |> group_by(ae_zone) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_grdc       <- trap_data |> filter(!is.na(grdc_subregion)) |> group_by(grdc_subregion) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+
+## Shared plotting helper for a raw categorical mean-rate summary (soil_type/crop_group here,
+## ae_zone/grdc_subregion below).
+point_rate <- function(data, x) {
+  data |> ggplot(aes({{x}}, rate)) +
+    geom_point(colour = "black") +
+    labs(x = NULL, y = "Captures per 100 trap-nights")
+}
+```
+
+```{r}
+#| label: raw-continuous-prep
+#| include: false
+
+## Continuous covariates: raw mean rate in 6 equal-width bins, no model, computed directly on
+## trap_data$rate (trap success). Equal-WIDTH bins (not equal-count), so data density shows in the rug instead.
+## Grouped and coloured by state (ae_zone's ~11 zones on shared axes is unreadable). Bin edges use the
+## full range of each variable across all states, so every state's line sits on the same x positions.
+raw_continuous_bin <- function(data, varname, n_bins = 6) {
+  data |>
+    dplyr::filter(!is.na(.data[[varname]])) |>
+    dplyr::mutate(bin = ggplot2::cut_width(.data[[varname]], width = diff(range(.data[[varname]])) / n_bins, boundary = 0)) |>
+    dplyr::summarise(x_mean = mean(.data[[varname]]), rate = mean(rate), n = dplyr::n(), .by = c(state, bin)) |>
+    dplyr::arrange(state, x_mean)
+}
+raw_min_temp      <- raw_continuous_bin(trap_data, "min_temp_lag1")
+raw_rain_whiplash <- raw_continuous_bin(trap_data, "rain_whiplash_trough_to_peak_lag1")
+raw_rain_rolling6 <- raw_continuous_bin(trap_data, "rain_rolling6_lag1")
+raw_gpp_rolling6  <- raw_continuous_bin(trap_data, "gpp_rolling6_lag1")
+raw_gpp_finescale <- raw_continuous_bin(trap_data, "gpp_finescale")
+raw_soil_moisture <- raw_continuous_bin(trap_data, "soil_moisture")
+
+## Shared plotting helper for the continuous raw plots: one line per state, plus a rug of every
+## session's own raw value so each state's data density is visible.
+line_rate <- function(binned, varname) {
+  ggplot(binned, aes(x_mean, rate, colour = state, group = state)) +
+    geom_rug(data = trap_data |> dplyr::filter(!is.na(.data[[varname]])), aes(x = .data[[varname]], colour = state), inherit.aes = FALSE, alpha = 0.15, sides = "b") +
+    geom_line(alpha = 0.8) +
+    geom_point() +
+    labs(x = paste(varname, "(bin mean)"), y = "Captures per 100 trap-nights", colour = "State")
+}
+```
+
+```{r}
+#| label: fig-raw-temporal
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) per season, faceted by state."
+#| fig-asp: 1.4
+
+ggplot(raw_by_season, aes(as.integer(season_year_adj), rate)) +
+  geom_line(colour = "black", alpha = 0.6) +
+  geom_point(aes(size = n), colour = "black", alpha = 0.8) +
+  scale_x_continuous(breaks = seq(1, nlevels(trap_data$season_year_adj), by = 4),
+                      labels = levels(trap_data$season_year_adj)[seq(1, nlevels(trap_data$season_year_adj), by = 4)]) +
+  facet_wrap(~state, ncol = 1) +
+  labs(x = NULL, y = "Captures per 100 trap-nights", size = "Sessions") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-spatial
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) in each paddock with >=5 sessions (to visualise consistent spatial variation)."
+#| fig-asp: 0.8
+
+## One row per paddock: mean rate, session count, and location (first session's own
+## coordinates/state, which don't change within a paddock).
+raw_by_paddock <- trap_data |>
+  group_by(paddock_id) |>
+  summarise(rate = mean(rate), n = dplyr::n(), longitude = dplyr::first(longitude), latitude = dplyr::first(latitude),
+            state = dplyr::first(state), .groups = "drop") |>
+  ## >=5 sessions keeps only paddocks with enough repeat visits for the mean rate to show a stable
+  ## spatial pattern rather than noise from one or two sessions.
+  filter(n >= 5)
+
+aus_sf <- sf::st_as_sf(aus_shp) |> sf::st_transform(4326)
+ggplot(raw_by_paddock, aes(longitude, latitude, colour = rate)) +
+  geom_sf(data = aus_sf, inherit.aes = FALSE, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_colour_viridis_c(name = "Captures per 100 trap-nights") +
+  coord_sf(xlim = range(raw_by_paddock$longitude) + c(-1, 1), ylim = range(raw_by_paddock$latitude) + c(-1, 1)) +
+  labs(x = NULL, y = NULL)
+```
+
+```{r}
+#| label: fig-raw-season
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by season (calendar season: Summer/Autumn/Winter/Spring), faceted by state."
+#| fig-asp: 0.35
+
+ggplot(raw_season, aes(season, rate, fill = season)) +
+  geom_col() +
+  facet_wrap(~state, nrow = 1) +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  labs(x = NULL, y = "Captures per 100 trap-nights") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-month
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by calendar month of survey, one coloured line per state."
+#| fig-asp: 0.4
+
+ggplot(raw_month, aes(month_num, rate, colour = state, group = state)) +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  labs(x = NULL, y = "Captures per 100 trap-nights", colour = "State")
+```
+
+```{r}
+#| label: fig-raw-min-temp
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of min_temp_lag1 (the previous season's average daily minimum temperature), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_min_temp, "min_temp_lag1")
+```
+
+```{r}
+#| label: fig-raw-cropgroup
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by crop_group (the type of crop grown in the paddock, e.g. cereals/legumes/oilseeds)."
+#| fig-asp: 0.35
+
+raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-crop-cross
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving cereals, legumes and oilseeds."
+#| fig-asp: 0.5
+
+crop_cross <- trap_data |>
+  ## cotton/unknown excluded -- too few sessions per crop_stage for a trend line to be worth reading.
+  filter(!is.na(crop_group), !is.na(crop_stage), !crop_group %in% c("cotton", "unknown")) |>
+  mutate(crop_group = droplevels(factor(crop_group))) |>
+  group_by(crop_group, crop_stage) |>
+  summarise(rate = mean(rate), .groups = "drop")
+ggplot(crop_cross, aes(crop_stage, rate, colour = crop_group, group = crop_group)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  scale_colour_brewer(palette = "Dark2", name = "Crop group") +
+  labs(x = NULL, y = "Captures per 100 trap-nights") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: fig-raw-soiltype
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by soil_type (TERN's soil classification for the paddock)."
+#| fig-asp: 0.4
+
+raw_soiltype |> point_rate(reorder(soil_type, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-grdc
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by grdc_subregion (GRDC's fine-scale classification of broadacre cropping system)."
+#| fig-asp: 0.5
+
+raw_grdc |> point_rate(reorder(grdc_subregion, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-aezone
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by ae_zone (GRDC's broad-scale, agro-ecological classification of broadacre cropping system)."
+#| fig-asp: 0.5
+
+raw_ae_zone |> point_rate(reorder(ae_zone, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-rain-whiplash
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of rain_whiplash_trough_to_peak_lag1 (a 12-month measure of rainfall swinging from drought to peak -- the drought-breaking rain thought to trigger plagues), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_rain_whiplash, "rain_whiplash_trough_to_peak_lag1")
+```
+
+```{r}
+#| label: fig-raw-rain-rolling6
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of rain_rolling6_lag1 (6-month rolling total rainfall), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_rain_rolling6, "rain_rolling6_lag1")
+```
+
+```{r}
+#| label: fig-raw-gpp-rolling6
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of gpp_rolling6_lag1 (6-month rolling gross primary productivity -- a satellite-derived proxy for crop growth/yield potential), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_gpp_rolling6, "gpp_rolling6_lag1")
+```
+
+```{r}
+#| label: fig-raw-gpp-finescale
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of gpp_finescale (current season's native ~463m-resolution GPP, focal-smoothed around each paddock), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_gpp_finescale, "gpp_finescale")
+```
+
+```{r}
+#| label: fig-raw-soil-moisture
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by equal-width bin of soil_moisture (current season's AWRA-modelled accumulated soil moisture level), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_soil_moisture, "soil_moisture")
+```
+
+## 2) Trap success
+
+```{r}
+#| label: model-helpers
+#| include: false
+
+## Raw-distribution summary stats for one response. Overdispersion is measured among sessions with
+## typical effort (16-25 trap-nights) only, so the ratio isn't inflated by differences in effort. A
+## Poisson count has a ratio of 1.
+distribution_stats <- function(y, effort) {
+  typical <- y[effort > 15 & effort <= 25]
+  list(zero = mean(y == 0), q95 = round(unname(quantile(y, 0.95))), max = max(y),
+       overdispersion = var(typical) / mean(typical))
+}
+
+## Builds a family's full model for one response: mu adds the search-effort offset (log trap-nights,
+## so mu is per trap-night), then one copy of full_terms per parameter of the family beyond mu.
+full_formula <- function(fam, response) {
+  n_shape <- length(names(fam()$parameters)) - 1
+  as.formula(paste(response, "~ offset(log_trapnights) +", deparse1_clean(full_terms[[2]]),
+                   paste(rep(paste("|", deparse1_clean(full_terms[[2]])), n_shape), collapse = " ")))
+}
+
+## Fits every candidate family to one response. A family whose fit errors is kept as its error
+## message, so it shows up in the candidate table.
+fit_candidates <- function(response, data) {
+  lapply(count_families, function(fam) {
+    tryCatch(suppressWarnings(gamlss2::gamlss2(full_formula(fam, response), data = data, family = fam,
+                                               maxit = max_iter, select = TRUE, trace = FALSE)),
+             error = function(e) conditionMessage(e))
+  })
+}
+
+## One row per family, plus the comparison set. A fit counts as valid only if it converged within
+## max_iter iterations, has a log-likelihood of at most 0 (every probability of a count is at most 1, so
+## anything above 0 means a broken density), and doesn't pin fitted mu at the boundary for more than 1%
+## of sessions. The comparison set is the AIC-best, the BIC-best, and any simpler model (fewer effective
+## df) within 2 AIC of the AIC-best; the BIC-best is the model carried forward.
+summarise_candidates <- function(fits, n_rows) {
+  k_bic <- log(n_rows)
+  table <- purrr::imap_dfr(fits, function(m, fam_name) {
+    n_params <- length(names(count_families[[fam_name]]()$parameters))
+    if (is.character(m)) {
+      return(tibble::tibble(Family = fam_name, Parameters = n_params, Status = "fit failed", AIC = NA_real_, BIC = NA_real_, edf = NA_real_))
+    }
+    par <- predict(m, type = "parameter")
+    ## One-parameter families return a plain vector of mu rather than a table of parameters.
+    if (!is.list(par)) par <- list(mu = par)
+    status <- dplyr::case_when(
+      m$iterations >= max_iter ~ "not converged",
+      as.numeric(logLik(m)) > 0 ~ "invalid likelihood",
+      mean(par$mu < 1e-6) > 0.01 ~ "degenerate",
+      TRUE ~ "valid")
+    tibble::tibble(Family = fam_name, Parameters = n_params, Status = status,
+                   AIC = AIC(m), BIC = AIC(m, k = k_bic), edf = attr(logLik(m), "df"))
+  })
+  valid <- dplyr::filter(table, Status == "valid")
+  best_aic <- valid$Family[which.min(valid$AIC)]
+  best_bic <- valid$Family[which.min(valid$BIC)]
+  aic_row <- dplyr::filter(valid, Family == best_aic)
+  simpler_close <- valid$Family[valid$edf < aic_row$edf & valid$AIC - aic_row$AIC <= 2]
+  comparison_set <- unique(c(best_bic, best_aic, simpler_close))
+  list(table = table, valid = valid, best_aic = best_aic, best_bic = best_bic, simpler_close = simpler_close,
+       comparison_set = comparison_set, clear_winner = length(comparison_set) == 1,
+       model = fits[[best_bic]], not_valid = dplyr::filter(table, Status != "valid"))
+}
+
+## One-sentence verdict on the comparison, for inline use.
+verdict_text <- function(sel) {
+  if (sel$clear_winner) {
+    paste0("**AIC and BIC both select \x60", sel$best_bic, "\x60**, and no simpler model is within 2 AIC of it -- a clear winner.")
+  } else {
+    paste0("**AIC selects \x60", sel$best_aic, "\x60 and BIC selects \x60", sel$best_bic, "\x60**",
+           if (length(sel$simpler_close) > 0) paste0(" (with ", paste0("\x60", sel$simpler_close, "\x60", collapse = ", "), " simpler and within 2 AIC)") else "",
+           " -- these models are compared below, and the BIC-best is carried forward.")
+  }
+}
+not_valid_text <- function(sel) {
+  if (nrow(sel$not_valid) > 0) paste0("Not valid: ", paste0("\x60", sel$not_valid$Family, "\x60 (", sel$not_valid$Status, ")", collapse = ", "), ".") else "Every family fitted validly."
+}
+
+## Candidate table, ranked by BIC among valid fits, with the comparison set in bold.
+candidate_gt <- function(sel) {
+  sel$table |>
+    dplyr::mutate(
+      Name = dplyr::case_match(Family,
+        "PO" ~ "Poisson", "NBI" ~ "Negative binomial (type I)", "NBII" ~ "Negative binomial (type II)",
+        "PIG" ~ "Poisson-inverse Gaussian", "DEL" ~ "Delaporte", "SICHEL" ~ "Sichel",
+        "ZIP" ~ "Zero-inflated Poisson", "ZAP" ~ "Zero-adjusted Poisson", "ZANBI" ~ "Zero-adjusted negative binomial"),
+      ## Deltas only for valid fits, so an invalid fit can't look like the best one.
+      `ΔAIC` = dplyr::if_else(Status == "valid", AIC - min(sel$valid$AIC), NA_real_),
+      `ΔBIC` = dplyr::if_else(Status == "valid", BIC - min(sel$valid$BIC), NA_real_)) |>
+    dplyr::relocate(Name, .after = Family) |>
+    dplyr::arrange(is.na(`ΔBIC`), `ΔBIC`) |>
+    gt::gt() |>
+    gt::fmt_number(columns = c(AIC, BIC, edf, `ΔAIC`, `ΔBIC`), decimals = 1) |>
+    gt::sub_missing(columns = everything(), missing_text = "--") |>
+    gt::tab_style(style = gt::cell_text(weight = "bold"), locations = gt::cells_body(rows = Family %in% sel$comparison_set)) |>
+    gt::data_color(columns = c(`ΔAIC`, `ΔBIC`), palette = "RdYlGn", reverse = TRUE, na_color = "white") |>
+    gt::tab_options(table.font.size = "0.78em")
+}
+
+## Randomised quantile residuals, built by hand from the fitted parameters and each family's
+## gamlss.dist CDF (gamlss2's own residual functions fail for several of these families). For a discrete
+## response, the CDF just below y to the CDF at y brackets the probability mass at y; a uniform draw from
+## that bracket, mapped through qnorm(), is standard normal if the model is right.
+rq_resid <- function(y, par, pfun) {
+  is_zero <- y == 0
+  lo <- do.call(pfun, c(list(q = y - 1), as.list(par)))
+  lo[is_zero] <- 0
+  hi <- do.call(pfun, c(list(q = y), as.list(par)))
+  qnorm(runif(length(y), lo, hi))
+}
+
+## Diagnostics for every model in the comparison set: residuals, observed vs expected count
+## frequencies (0 to max_count, then everything above as one group), and each term's effective df.
+comparison_diagnostics <- function(sel, fits, y, effort, max_count = 40) {
+  pars <- lapply(sel$comparison_set, function(fam_name) {
+    par <- predict(fits[[fam_name]], type = "parameter")
+    if (!is.list(par)) par <- list(mu = par)
+    ## mu is per trap-night (predict() leaves the offset out), so scale up to each session's expected count.
+    par$mu <- par$mu * effort
+    par
+  })
+  names(pars) <- sel$comparison_set
+  residuals <- purrr::imap_dfr(pars, function(par, fam_name) {
+    tibble::tibble(Family = fam_name, resid = rq_resid(y, par, get(paste0("p", fam_name), envir = asNamespace("gamlss.dist"))))
+  })
+  levels <- 0:max_count
+  expected <- purrr::imap_dfr(pars, function(par, fam_name) {
+    dfun <- get(paste0("d", fam_name), envir = asNamespace("gamlss.dist"))
+    ## x is repeated to one value per session: dPIG() returns wrong values for a single x against vector parameters.
+    e <- sapply(levels, function(k) sum(do.call(dfun, c(list(x = rep(k, length(y))), as.list(par)))))
+    tibble::tibble(Family = fam_name, count = c(levels, max_count + 1), expected = c(e, length(y) - sum(e)))
+  })
+  observed <- tibble::tibble(count = c(levels, max_count + 1),
+                             observed = c(sapply(levels, function(k) sum(y == k)), sum(y > max_count)))
+  edf <- purrr::map_dfr(sel$comparison_set, function(fam_name) {
+    purrr::imap_dfr(fits[[fam_name]]$fitted.specials, function(sp, param) {
+      tibble::tibble(Family = fam_name, Parameter = param, Term = names(sp), edf = sapply(sp, function(z) z$edf))
+    })
+  })
+  list(residuals = residuals, expected = expected, observed = observed, edf = edf, max_count = max_count)
+}
+
+## Residual QQ plots, one panel per compared model.
+residual_plot <- function(diag) {
+  ggplot(diag$residuals, aes(sample = resid)) +
+    stat_qq() + stat_qq_line() +
+    facet_wrap(~Family) +
+    labs(x = "Theoretical quantiles", y = "Quantile residuals")
+}
+
+## Observed (bars) vs expected (lines) count frequencies, square-root scale so the zeros don't swamp the tail.
+frequency_plot <- function(diag, x_label) {
+  top <- diag$max_count + 1
+  ggplot() +
+    geom_col(data = diag$observed, aes(count, observed), fill = "grey80") +
+    geom_line(data = diag$expected, aes(count, expected, colour = Family)) +
+    geom_point(data = diag$expected, aes(count, expected, colour = Family), size = 1.2) +
+    scale_y_sqrt() +
+    scale_x_continuous(breaks = c(seq(0, diag$max_count, 10), top), labels = c(seq(0, diag$max_count, 10), paste0(top, "+"))) +
+    labs(x = x_label, y = "Sessions (square-root scale)", colour = "Family")
+}
+
+## Effective df of every term, for every parameter, in each compared model.
+edf_gt <- function(diag) {
+  diag$edf |>
+    dplyr::mutate(Column = paste(Family, Parameter)) |>
+    dplyr::select(Term, Column, edf) |>
+    tidyr::pivot_wider(names_from = Column, values_from = edf) |>
+    gt::gt() |>
+    gt::fmt_number(columns = -Term, decimals = 2) |>
+    gt::sub_missing(columns = everything(), missing_text = "--") |>
+    gt::data_color(columns = -Term, palette = "Blues", domain = c(0, max(diag$edf$edf)), na_color = "white") |>
+    gt::tab_options(table.font.size = "0.72em")
+}
+
+## Histogram of one response, with counts above cap grouped into one bar.
+response_hist <- function(y, cap, x_label) {
+  tibble::tibble(count_capped = pmin(y, cap + 1)) |>
+    ggplot(aes(count_capped)) +
+    geom_bar(fill = "grey50") +
+    scale_x_continuous(breaks = c(seq(0, cap, 10), cap + 1), labels = c(seq(0, cap, 10), paste0(cap + 1, "+"))) +
+    labs(x = x_label, y = "Sessions")
+}
+
+## Offset check: refit the carried-forward model with log_trapnights as a free covariate instead of a
+## fixed offset. A proportional effort effect implies a coefficient of 1; the AIC difference shows how
+## much the data prefer letting it float.
+free_offset_check <- function(sel, response, data) {
+  fam <- count_families[[sel$best_bic]]
+  f <- as.formula(sub("offset(log_trapnights)", "log_trapnights", deparse1_clean(full_formula(fam, response)), fixed = TRUE))
+  m <- gamlss2::gamlss2(f, data = data, family = fam, maxit = max_iter, select = TRUE, trace = FALSE)
+  list(coef = unname(coef(m)["mu.p.log_trapnights"]), aic_change = AIC(m) - AIC(sel$model))
+}
+
+## Terms kept (>= 0.5 effective df) or shrunk out (< 0.05) for one parameter of the carried-forward
+## model, formatted for inline use.
+terms_with <- function(diag, fam_name, param, keep = TRUE) {
+  e <- dplyr::filter(diag$edf, Family == fam_name, Parameter == param)
+  out <- if (keep) e$Term[e$edf >= 0.5] else e$Term[e$edf < 0.05]
+  if (length(out) == 0) "none" else paste0("\x60", out, "\x60", collapse = ", ")
+}
+```
+
+```{r}
+#| label: dist-stats
+#| include: false
+
+dist_success <- distribution_stats(success_data$y_success, success_data$number_functional_traps_session)
+dist_unique <- distribution_stats(unique_data$y_unique, unique_data$number_functional_traps_session)
+```
+
+- Every candidate count family is fitted to the same full model: every covariate in @tbl-covariate-reference (except `ae_zone`) on every parameter of the family, plus the trap-nights offset on `mu`. Each term has its own penalty and can be shrunk out of the model entirely, so one comparison chooses the family and shows which covariates matter.
+- The response is total captures per session, recaptures included, so `mu` is captures per trap-night.
+- Zeros are common: `r scales::percent(dist_success$zero, accuracy = 0.1)` of sessions caught no mice at all.
+- The counts are heavily right-skewed: 95% of sessions caught `r dist_success$q95` or fewer, but the largest catch is `r dist_success$max` (see @fig-hist-success).
+- Among sessions with typical effort (16-25 trap-nights), the variance is ~`r round(dist_success$overdispersion, 0)`x the mean -- far more spread than a Poisson count.
+
+```{r}
+#| label: candidate-terms
+#| echo: true
+
+## full_terms: the covariate set given to EVERY parameter of every candidate family, for both
+## responses. Every factor is a random-effect smooth (bs = "re"): each is shrunk by its own estimated
+## amount toward the overall mean, rather than toward an arbitrary reference level. Continuous smooths
+## use the default thin plate ("tp") basis, month a cyclic one. select = TRUE (in the gamlss2() calls)
+## adds a penalty on each smooth's null space, so a whole term with no real signal can be shrunk out of
+## the model entirely. No random paddock intercept: gamlss's re() is a no-op inside gamlss2(), and
+## mgcv's own s(paddock_id, bs = "re") badly under-regularises on these models.
+full_terms <- ~
+  ## month is a cyclic smooth by summer_zone_ne (zone-varying seasonal curve) -- gamlss's own cy()/
+  ## pbc() have no working by= argument, which is why this report uses gamlss2 at all. The by-factor
+  ## curves are centred, so summer_zone_ne also needs its own (random-effect) main effect.
+  s(month_num, bs = "cc", by = summer_zone_ne, k = 7) + s(summer_zone_ne, bs = "re") +
+  ## Crop and soil factors. crop_cell (crop_group x crop_stage) is the interaction, as its own random
+  ## effect, so thin combinations are shrunk toward what their crop group and stage predict.
+  s(crop_group, bs = "re") + s(crop_stage, bs = "re") + s(crop_cell, bs = "re") + s(soil_type, bs = "re") +
+  ## Every continuous main effect is its own smooth, s(x, k = 5).
+  s(min_temp_lag1, k = 5) + s(rain_whiplash_trough_to_peak_lag1, k = 5) + s(rain_rolling6_lag1, k = 5) + s(gpp_rolling6_lag1, k = 5) +
+  s(gpp_finescale, k = 5) + s(soil_moisture, k = 5) +
+  ## rain_rolling6_lag1:gpp_rolling6_lag1 is a ti() pure interaction (not te(), which would double-count
+  ## the main effects) -- 6-month rainfall and 6-month rolling GPP, both regional and over the same
+  ## window, are expected to jointly shape crop growth and food supply.
+  ti(rain_rolling6_lag1, gpp_rolling6_lag1, k = 5)
+
+## Every candidate count family -- constructors passed as functions, not strings, since gamlss2's own
+## available_families() string-matching doesn't resolve these names. ZINBI and ZIPIG are left out:
+## their gamlss.dist density functions mis-assign values across rows when parameters vary by row, so
+## their likelihoods are wrong.
+count_families <- list(PO = PO, NBI = NBI, NBII = NBII, PIG = PIG, DEL = DEL, SICHEL = SICHEL, ZIP = ZIP, ZAP = ZAP, ZANBI = ZANBI)
+```
+
+```{r}
+#| label: fig-hist-success
+#| fig-cap: "Distribution of total captures per session, with catches above 60 grouped into one bar."
+#| fig-asp: 0.4
+
+response_hist(success_data$y_success, 60, "Captures (total across the session)")
+```
+
+### Candidate models
+
+```{r}
+#| label: fits-success
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(success_data, deparse1_clean(full_terms), names(count_families)))
+
+## Cached: fitting every family is the slowest part of this report. knitr's cache only notices changes
+## to this chunk's own code, so cache.extra fingerprints what the fits depend on from earlier chunks --
+## the model data, the terms and the family list -- and a change to any of them re-runs the fits.
+fits_success <- fit_candidates("y_success", success_data)
+```
+
+```{r}
+#| label: select-success
+#| include: false
+
+sel_success <- summarise_candidates(fits_success, nrow(success_data))
+```
+
+- `r verdict_text(sel_success)`
+- `r not_valid_text(sel_success)`
+
+```{r}
+#| label: tbl-candidates-success
+#| tbl-cap: "Trap success: every candidate count family, fitted to the same full model (every covariate on every parameter, with shrinkage). PO has no overdispersion; NBI/NBII/PIG/DEL/SICHEL add it in different ways; ZIP/ZAP/ZANBI add zero-inflation or zero-adjustment (hurdle). ΔAIC/ΔBIC are relative to the best valid model; models in bold are compared in detail below. Only valid fits are ranked."
+
+candidate_gt(sel_success)
+```
+
+### Comparing the top models
+
+```{r}
+#| label: diagnostics-success
+#| include: false
+
+diag_success <- comparison_diagnostics(sel_success, fits_success, success_data$y_success, success_data$number_functional_traps_session, max_count = 60)
+```
+
+```{r}
+#| label: fig-residuals-success
+#| fig-cap: "Trap success: randomised quantile residuals for each compared model. A well-specified model falls on the reference line."
+#| fig-asp: 0.45
+
+residual_plot(diag_success)
+```
+
+```{r}
+#| label: fig-frequencies-success
+#| fig-cap: "Trap success: observed (grey bars) vs expected (lines) number of sessions with each total catch, for each compared model, on a square-root scale. Catches above 60 are grouped."
+#| fig-asp: 0.5
+
+frequency_plot(diag_success, "Captures (total across the session)")
+```
+
+```{r}
+#| label: tbl-edf-success
+#| tbl-cap: "Trap success: effective degrees of freedom of every term, for every parameter, in each compared model. 0 means the term was shrunk out entirely."
+
+edf_gt(diag_success)
+```
+
+```{r}
+#| label: success-effects
+#| results: asis
+
+## Full names for each family, for the headings below.
+family_names <- c(PO = "Poisson", NBI = "Negative binomial (type I)", NBII = "Negative binomial (type II)",
+                  PIG = "Poisson-inverse Gaussian", DEL = "Delaporte", SICHEL = "Sichel",
+                  ZIP = "Zero-inflated Poisson", ZAP = "Zero-adjusted Poisson", ZANBI = "Zero-adjusted negative binomial")
+
+## One heading and one effects figure per compared model (BIC-best first), each as its own knitted
+## child chunk so every figure gets its own caption and cross-reference label.
+for (fam_name in sel_success$comparison_set) {
+  child <- c(
+    paste0("### ", family_names[[fam_name]], " (", fam_name, ")", if (fam_name == sel_success$best_bic) " -- BIC-best" else ""),
+    "",
+    "```{r}",
+    paste0("#| label: fig-success-effects-", tolower(fam_name)),
+    paste0("#| fig-cap: \"Trap success -- Effects of every term, for every parameter, in the ", fam_name, " model (gamlss2::plot.gamlss2(which = 'effects', scale = FALSE)). Log scale for mu, shaded-gradient uncertainty band (gamlss2's own convention). month's by-factor smooth gets two panels, one per summer_zone_ne level (summer/winter_only).\""),
+    "#| fig-asp: 1.8",
+    "#| fig-width: 11",
+    "",
+    paste0("gamlss2:::plot.gamlss2(fits_success[[\"", fam_name, "\"]], which = \"effects\", scale = FALSE)"),
+    "```",
+    "")
+  cat(knitr::knit_child(text = child, envir = environment(), quiet = TRUE), sep = "\n")
+}
+```
+
+```{r}
+#| label: offset-success
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(success_data, deparse1_clean(full_terms), sel_success$best_bic))
+
+offset_success <- free_offset_check(sel_success, "y_success", success_data)
+```
+
+
+## 3) Unique individuals
+
+- The same approach, with distinct individuals per session as the response, so `mu` is unique individuals per trap-night. Sessions without a unique-individual count (unmarked live traps that only recorded nightly totals) are left out: `r nrow(unique_data)` sessions here, against `r nrow(success_data)` for trap success.
+- Zeros: `r scales::percent(dist_unique$zero, accuracy = 0.1)` of sessions. 95% of sessions caught `r dist_unique$q95` or fewer individuals; the largest is `r dist_unique$max` (see @fig-hist-unique). Among sessions with typical effort, the variance is ~`r round(dist_unique$overdispersion, 0)`x the mean.
+
+```{r}
+#| label: fig-hist-unique
+#| fig-cap: "Distribution of unique individuals per session, with counts above 60 grouped into one bar."
+#| fig-asp: 0.4
+
+response_hist(unique_data$y_unique, 60, "Unique individuals (per session)")
+```
+
+### Candidate models
+
+```{r}
+#| label: fits-unique
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(unique_data, deparse1_clean(full_terms), names(count_families)))
+
+## Cached, as for fits-success.
+fits_unique <- fit_candidates("y_unique", unique_data)
+```
+
+```{r}
+#| label: select-unique
+#| include: false
+
+sel_unique <- summarise_candidates(fits_unique, nrow(unique_data))
+```
+
+- `r verdict_text(sel_unique)`
+- `r not_valid_text(sel_unique)`
+
+```{r}
+#| label: tbl-candidates-unique
+#| tbl-cap: "Unique individuals: every candidate count family, fitted to the same full model. ΔAIC/ΔBIC are relative to the best valid model; models in bold are compared in detail below. Only valid fits are ranked."
+
+candidate_gt(sel_unique)
+```
+
+### Comparing the top models
+
+```{r}
+#| label: diagnostics-unique
+#| include: false
+
+diag_unique <- comparison_diagnostics(sel_unique, fits_unique, unique_data$y_unique, unique_data$number_functional_traps_session, max_count = 60)
+```
+
+```{r}
+#| label: fig-residuals-unique
+#| fig-cap: "Unique individuals: randomised quantile residuals for each compared model. A well-specified model falls on the reference line."
+#| fig-asp: 0.45
+
+residual_plot(diag_unique)
+```
+
+```{r}
+#| label: fig-frequencies-unique
+#| fig-cap: "Unique individuals: observed (grey bars) vs expected (lines) number of sessions with each count, for each compared model, on a square-root scale. Counts above 60 are grouped."
+#| fig-asp: 0.5
+
+frequency_plot(diag_unique, "Unique individuals (per session)")
+```
+
+```{r}
+#| label: tbl-edf-unique
+#| tbl-cap: "Unique individuals: effective degrees of freedom of every term, for every parameter, in each compared model. 0 means the term was shrunk out entirely."
+
+edf_gt(diag_unique)
+```
+
+```{r}
+#| label: unique-effects
+#| results: asis
+
+## Full names for each family, for the headings below.
+family_names <- c(PO = "Poisson", NBI = "Negative binomial (type I)", NBII = "Negative binomial (type II)",
+                  PIG = "Poisson-inverse Gaussian", DEL = "Delaporte", SICHEL = "Sichel",
+                  ZIP = "Zero-inflated Poisson", ZAP = "Zero-adjusted Poisson", ZANBI = "Zero-adjusted negative binomial")
+
+## One heading and one effects figure per compared model (BIC-best first), each as its own knitted
+## child chunk so every figure gets its own caption and cross-reference label.
+for (fam_name in sel_unique$comparison_set) {
+  child <- c(
+    paste0("### ", family_names[[fam_name]], " (", fam_name, ")", if (fam_name == sel_unique$best_bic) " -- BIC-best" else ""),
+    "",
+    "```{r}",
+    paste0("#| label: fig-unique-effects-", tolower(fam_name)),
+    paste0("#| fig-cap: \"Unique individuals -- Effects of every term, for every parameter, in the ", fam_name, " model (gamlss2::plot.gamlss2(which = 'effects', scale = FALSE)). Log scale for mu, shaded-gradient uncertainty band (gamlss2's own convention). month's by-factor smooth gets two panels, one per summer_zone_ne level (summer/winter_only).\""),
+    "#| fig-asp: 1.8",
+    "#| fig-width: 11",
+    "",
+    paste0("gamlss2:::plot.gamlss2(fits_unique[[\"", fam_name, "\"]], which = \"effects\", scale = FALSE)"),
+    "```",
+    "")
+  cat(knitr::knit_child(text = child, envir = environment(), quiet = TRUE), sep = "\n")
+}
+```
+
+```{r}
+#| label: offset-unique
+#| include: false
+#| cache: true
+#| cache.extra: !expr rlang::hash(list(unique_data, deparse1_clean(full_terms), sel_unique$best_bic))
+
+offset_unique <- free_offset_check(sel_unique, "y_unique", unique_data)
+```
+
+
+## 4) Comparing the two responses
+
+```{r}
+#| label: response-comparison
+#| include: false
+
+## Effective df of every mu term in each response's carried-forward model, side by side.
+mu_compare <- dplyr::full_join(
+  dplyr::filter(diag_success$edf, Family == sel_success$best_bic, Parameter == "mu") |> dplyr::select(Term, `Trap success` = edf),
+  dplyr::filter(diag_unique$edf, Family == sel_unique$best_bic, Parameter == "mu") |> dplyr::select(Term, `Unique individuals` = edf),
+  by = "Term")
+## A term "agrees" when it's kept (>= 0.5 edf) in both models or shrunk out (< 0.5) in both.
+mu_agree <- sum((mu_compare$`Trap success` >= 0.5) == (mu_compare$`Unique individuals` >= 0.5), na.rm = TRUE)
+## Session-level agreement between the two responses, as per-100-trap-night rates.
+both <- dplyr::filter(trap_data_model, !is.na(y_success), !is.na(y_unique))
+rate_cor <- cor(both$y_success / both$number_functional_traps_session, both$y_unique / both$number_functional_traps_session)
+```
+
+- **Family:** trap success uses `` `r sel_success$best_bic` `` and unique individuals `` `r sel_unique$best_bic` ``.
+- **Covariates on the mean:** `r mu_agree` of `r nrow(mu_compare)` mean terms are kept in both responses' models or shrunk out in both (@tbl-response-edf).
+- **Search effort:** freeing the offset gives a trap-nights coefficient of `r round(offset_success$coef, 2)` for trap success and `r round(offset_unique$coef, 2)` for unique individuals (1 = proportional), changing AIC by `r sprintf("%+.1f", offset_success$aic_change)` and `r sprintf("%+.1f", offset_unique$aic_change)` (negative = better).
+- **Raw agreement:** across the `r nrow(both)` sessions with both responses, the per-trap-night rates correlate at r = `r round(rate_cor, 2)`.
+
+```{r}
+#| label: tbl-response-edf
+#| tbl-cap: "Effective degrees of freedom of every mean (mu) term in each response's BIC-selected model. 0 means the term was shrunk out entirely."
+
+mu_compare |>
+  gt::gt() |>
+  gt::fmt_number(columns = -Term, decimals = 2) |>
+  gt::sub_missing(columns = everything(), missing_text = "--") |>
+  gt::data_color(columns = -Term, palette = "Blues", domain = c(0, max(c(mu_compare$`Trap success`, mu_compare$`Unique individuals`), na.rm = TRUE)), na_color = "white") |>
+  gt::tab_options(table.font.size = "0.78em")
+```
+
+
+## Summary of findings and recommended future directions
+
+- **Data:** `r nrow(trap_data)` first-visit trap sessions, `r nrow(success_data)` with complete covariates. Captures are zero in `r scales::percent(dist_success$zero, accuracy = 1)` of sessions and heavily overdispersed (~`r round(dist_success$overdispersion, 0)`x a Poisson at typical effort).
+- **Trap success:** `r if (sel_success$clear_winner) paste0("\x60", sel_success$best_bic, "\x60 is a clear winner.") else paste0("AIC prefers \x60", sel_success$best_aic, "\x60 and BIC \x60", sel_success$best_bic, "\x60; \x60", sel_success$best_bic, "\x60 is used.")` Mean terms shrunk out: `r terms_with(diag_success, sel_success$best_bic, "mu", keep = FALSE)`.
+- **Unique individuals:** `r if (sel_unique$clear_winner) paste0("\x60", sel_unique$best_bic, "\x60 is a clear winner.") else paste0("AIC prefers \x60", sel_unique$best_aic, "\x60 and BIC \x60", sel_unique$best_bic, "\x60; \x60", sel_unique$best_bic, "\x60 is used.")` Mean terms shrunk out: `r terms_with(diag_unique, sel_unique$best_bic, "mu", keep = FALSE)`.
+- **The two responses agree on `r if (mu_agree == nrow(mu_compare)) paste('all', nrow(mu_compare)) else paste(mu_agree, 'of', nrow(mu_compare))` mean terms** (kept in both or shrunk out in both), and their per-trap-night rates correlate at r = `r round(rate_cor, 2)``r if (mu_agree < nrow(mu_compare)) ' -- see section 4 for where they differ' else ''`.
+- **Search effort:** the free trap-nights coefficient is `r round(offset_success$coef, 2)` (trap success) and `r round(offset_unique$coef, 2)` (unique individuals), against the 1 a proportional offset assumes. Effort is tied to region and era (@tbl-effort), so neither is cleanly separable from those differences.
+- **Future -- capture-recapture:** for marked (pit-tagged) sessions, a closed-population capture-recapture estimate would separate abundance from capture probability directly, rather than relying on either raw count.
+- **Future -- paddock clustering:** a few long-term paddocks contribute many sessions each; a paddock random effect (or a model that handles it better than `gamlss2` currently does) would stop them dominating the fit.
+- **Future -- checking the model:** check residuals against month and each covariate, validate out-of-sample, and test whether the model holds separately by state.
