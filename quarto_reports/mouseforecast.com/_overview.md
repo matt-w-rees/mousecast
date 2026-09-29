@@ -1,13 +1,13 @@
-+ [Western Australia]{.underline}: [**A mouse plague is under way in the Northern (Geraldton) zone. Mouse damage is currently being reported for early maturing crops**.]{style="color: red;"}
-Mouse activity east from Fitzgerald in the Sandplain (Esperance) zone is also at concerning levels.
-Eastern (Kwinana East) and Central (Kwinana West) zones have overall low mouse activity, but growers here should remain vigilant as there are some patches with higher activity.
++ [Western Australia]{.underline}: Mice are widespread in the Geraldton and Esperance regions, particularly in canola, with damage reported. 
+While the plague has slowed, it doesn't appear to have crashed, and recent rainfall has been exceptionally favourable for mice. 
+Mouse plagues can extend into a second year, so growers should keep monitoring closely.
 
-+ [South Australia]{.underline}: Mouse activity is moderate across Adelaide Plains and Yorke Peninsula. 
-We have observed a decrease in activity from last season, likely due to lower food availability and proactive management during sowing. 
-However, mouse activity could increase as more food is now available. 
++ [South Australia]{.underline}: A quick swing from a dry period to above-average rainfall, which tends to come before plagues, has recently occurred across the Mid North, Yorke and Eyre Peninsulas, and the Mallee. 
+Mouse numbers are still low, but activity in cereal crops in the Mid North and Yorke Peninsula is slightly above normal for this time of year, so we are watching these regions closely. The Mallee remains quiet.
 
-+ [Elsewhere]{.underline}: mouse numbers likely remain low.
++ [Victoria and NSW]{.underline}: Activity is slightly above normal in the Wimmera and South East NSW. Growers should check paddocks through spring.
 
-+ [An emergency permit has been issued by the APVMA for the higher dose ZnP50 bait]{.underline}.
-Locations with permit access change on a fortnightly basis, based on APVMA-defined mouse activity categories (which differ from our mouse forecasts due to different data types, metrics and time periods).
-Check the [GRDC website](https://grdc.com.au/resources-and-publications/resources/mouse-management) for emergency permit information and current access.
++ [Queensland]{.underline}: Mice are present in some ripening winter crops and sorghum stubble paddocks in South East Queensland heading into spring. 
+Growers sowing summer crops should check paddocks, and neighbouring stubble, before planting.
+
++ [Elsewhere]{.underline}: mouse activity is low or at normal levels for this time of year.
