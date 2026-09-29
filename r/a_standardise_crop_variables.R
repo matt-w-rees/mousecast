@@ -2,8 +2,16 @@
 #
 # Replaces the free-text crop_type column with two columns matching the ODK form:
 #   crop_variety  specific crop name  (e.g. "wheat", "canola", NA for bare_soil/pasture)
-#   crop_group    broad category      ("cereals", "legumes", "oilseeds", "cotton",
-#                                      "pasture", "bare_soil", or NA for non-crop sites)
+#   crop_group    broad category      ("winter_cereals", "summer_cereals", "legumes", "oilseeds",
+#                                      "cotton", "pasture", "bare_soil", or NA for non-crop sites)
+#
+# summer_cereals (sorghum, maize, millet) and winter_cereals (wheat, barley, oats, triticale, other
+# cereals) are separate groups: the two
+# grow at opposite times of year (sorghum flowers around January, wheat around September), so pooling
+# them mixes paddocks at opposite points of their cycle whenever crop group is read with crop stage or
+# month, and sorghum paddocks carry markedly more mouse activity in the northern summer. ODK data
+# don't pass through this function, so clean_data_odk_traps()/clean_data_odk_rapid() apply the same
+# split to the "cereals" crop_group recorded on the ODK form.
 #
 # Also maps free-text crop_stage values to the six ODK stages:
 #   "stubble", "sown", "seedling", "vegetative", "flowering", "ripening"
@@ -85,10 +93,11 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
 
   # --- crop_variety → crop_group (derived from ODK choices) ---
   group_lookup <- c(
-    "wheat"         = "cereals",  "barley"        = "cereals",
-    "oats"          = "cereals",  "sorghum"       = "cereals",
-    "maize"         = "cereals",  "millet"        = "cereals",
-    "triticale"     = "cereals",  "cereal_other"  = "cereals",
+    "wheat"         = "winter_cereals", "barley"  = "winter_cereals",
+    "oats"          = "winter_cereals", "triticale" = "winter_cereals",
+    "cereal_other"  = "winter_cereals",
+    "sorghum"       = "summer_cereals", "maize"   = "summer_cereals",
+    "millet"        = "summer_cereals",
     "chickpea"      = "legumes",  "faba_bean"     = "legumes",
     "field_pea"     = "legumes",  "lentil"        = "legumes",
     "lupin"         = "legumes",  "soybean"       = "legumes",
@@ -147,7 +156,7 @@ standardise_crop_variables <- function(data, keep_raw = FALSE) {
   crop_type_lower <- tolower(trimws(data$crop_type))
 
   # Crop groups for which a growth stage is meaningful (mirrors ODK form logic)
-  crop_groups_with_stages <- c("cereals", "legumes", "oilseeds", "cotton", "unknown")
+  crop_groups_with_stages <- c("winter_cereals", "summer_cereals", "legumes", "oilseeds", "cotton", "unknown")
 
   # Named-vector indexing: unmatched keys return NA automatically; unname() strips
   # the lookup key from the result so columns are plain character vectors.

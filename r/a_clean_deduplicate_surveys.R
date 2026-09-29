@@ -1,3 +1,56 @@
+# OPEN ISSUE (parked 2026-09-28): parallel grids/transects that share site-level coordinates (e.g. Trifel's
+# East/West grids; NSW crop + pasture trap pairs; rapid surveys with a crop and a pasture/TSR transect on
+# the same day) are still resolved by keeping the one with the most mouse evidence, which biases counts
+# upward and can keep a pasture grid as the crop paddock's result. Preferred fixes, pending: separate grid
+# coordinates, or a crop-first rule that never selects by outcome. Worksheets listing every affected site:
+# tmp/parallel_trap_sessions_to_resolve.csv, tmp/parallel_rapid_surveys_to_resolve.csv.
+#
+# Resolve parallel trap sessions: two or more trap sessions (different site/subsite) on the same
+# paddock and the same session dates, recording DIFFERENT crops. These are separate grids in what are
+# really separate paddocks that share one set of site-level coordinates (e.g. Trifel's East and West
+# grids, 2016-2020, both at the Access database's single Trifel location). Without this step the
+# per-date resolution below keeps whichever grid caught more mice on each night, mixing nights from
+# both grids while carrying one grid's session totals. Instead, one whole session is kept: the one
+# with the most captures (number_mice_caught_session; NA counts as lowest), ties broken by more
+# trap-nights, then by the first listed. Parallel sessions recording the SAME crop are left alone --
+# the per-date step combines them as parts of one survey, as before.
+#
+# Returns list(data = the trap rows with the dropped sessions removed, n_groups = number of
+# parallel-session groups resolved, n_dropped = number of sessions dropped).
+resolve_parallel_trap_sessions <- function(data, crop_cols) {
+  # One row per session (site/subsite and session dates within a paddock), with its crop and totals.
+  sessions <- data |>
+    dplyr::distinct(dedup_id, session_start_date, session_end_date, site_name, subsite_name,
+                    dplyr::across(dplyr::all_of(crop_cols)), number_mice_caught_session, number_functional_traps_session) |>
+    dplyr::group_by(dedup_id, session_start_date, session_end_date, site_name, subsite_name) |>
+    dplyr::slice(1) |>
+    dplyr::ungroup()
+
+  # Groups of sessions sharing paddock and dates, with more than one crop recorded among them.
+  crop_key <- do.call(paste, c(sessions[crop_cols], sep = "|"))
+  parallel <- sessions |>
+    dplyr::mutate(crop_key = crop_key) |>
+    dplyr::group_by(dedup_id, session_start_date, session_end_date) |>
+    dplyr::filter(dplyr::n() > 1, dplyr::n_distinct(crop_key) > 1) |>
+    dplyr::ungroup()
+  if (nrow(parallel) == 0) return(list(data = data, n_groups = 0L, n_dropped = 0L))
+
+  # Within each group, rank sessions by captures, then trap-nights; keep the top one.
+  dropped <- parallel |>
+    dplyr::group_by(dedup_id, session_start_date, session_end_date) |>
+    dplyr::arrange(dplyr::desc(dplyr::coalesce(number_mice_caught_session, -Inf)),
+                   dplyr::desc(dplyr::coalesce(number_functional_traps_session, -Inf)), .by_group = TRUE) |>
+    dplyr::slice(-1) |>
+    dplyr::ungroup() |>
+    dplyr::select(dedup_id, session_start_date, session_end_date, site_name, subsite_name)
+
+  list(
+    data      = dplyr::anti_join(data, dropped, by = c("dedup_id", "session_start_date", "session_end_date", "site_name", "subsite_name")),
+    n_groups  = dplyr::n_distinct(paste(dropped$dedup_id, dropped$session_start_date)),
+    n_dropped = nrow(dropped)
+  )
+}
+
 # Resolve a single (paddock_id, survey_date) duplicate group.
 #
 # If crop_group/crop_variety/crop_stage agree across every row in the group,
@@ -159,6 +212,17 @@ clean_deduplicate_surveys <- function(data, survey_type = c("traps", "rapid")) {
       paste(paddock_id, subsite_name),
       as.character(paddock_id)
     ))
+
+  # Traps: parallel grids in different crops keep one whole session first (resolve_parallel_trap_sessions()
+  # above), so the per-date step below never mixes nights from different grids.
+  if (survey_type == "traps") {
+    parallel <- resolve_parallel_trap_sessions(data, crop_cols)
+    data <- parallel$data
+    if (parallel$n_groups > 0) {
+      message(sprintf("clean_deduplicate_surveys(traps): %d parallel-session group(s) with different crops - kept the session with the most captures, dropped %d session(s)",
+                      parallel$n_groups, parallel$n_dropped))
+    }
+  }
 
   dup_keys <- data |>
     dplyr::count(dedup_id, survey_date, name = "n") |>

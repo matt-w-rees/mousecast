@@ -2263,7 +2263,7 @@ server <- function(input, output, session) {
       # Drop surveys with no crop group recorded (all MouseAlert reports, plus a
       # few trap/rapid sessions); "unknown" is kept as its own bar, placed last.
       d <- dplyr::filter(d, !is.na(crop_group))
-      crop_levels <- c("cereals", "oilseeds", "legumes", "cotton",
+      crop_levels <- c("winter_cereals", "summer_cereals", "oilseeds", "legumes", "cotton",
                        "pasture", "bare_soil", "unknown")
       # Any crop group not in the fixed order above is appended before "unknown"
       # so a newly-added category still shows up rather than becoming NA.

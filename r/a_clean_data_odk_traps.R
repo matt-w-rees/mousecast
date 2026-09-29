@@ -44,7 +44,13 @@ clean_data_odk_traps <- function(data) {
       session_end_date = session_end,
       session_length_days = session_duration,
 
-      crop_group,
+      # ODK records every cereal as "cereals"; split into summer_cereals (sorghum/maize/millet) and
+      # winter_cereals, as standardise_crop_variables() does for every other source (see its header).
+      crop_group = dplyr::case_when(
+        crop_group == "cereals" & crop_variety %in% c("sorghum", "maize", "millet") ~ "summer_cereals",
+        crop_group == "cereals" ~ "winter_cereals",
+        TRUE ~ crop_group
+      ),
       crop_variety,
       crop_stage,
       bait_history,

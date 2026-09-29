@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-09-25 13:27:33
+Generated: 2026-09-28 16:14:58
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -189,7 +189,7 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 3120
+  Number of rows: 3119
   Number of columns: 45
 
 UNIQUE VARIABLES (specific to traps dataset):
@@ -198,8 +198,8 @@ UNIQUE VARIABLES (specific to traps dataset):
 crop_group
   Description: Broad crop category
   Type:        Character
-  Values:      wheat, coarse_grains, pulses, oilseeds, fallow_stubble, pasture, other
-  Source:      Standardized from crop_type in standardise_crop_variables()
+  Values:      winter_cereals, summer_cereals (sorghum, maize, millet), legumes, oilseeds, cotton, pasture, bare_soil, unknown
+  Source:      Standardized from crop_type in standardise_crop_variables(), or recorded in ODK (sorghum/maize/millet split into summer_cereals in both)
 
 crop_variety
   Description: Specific crop type or variety
@@ -350,8 +350,8 @@ irrigation_type
 crop_group
   Description: Broad crop category
   Type:        Character
-  Values:      wheat, coarse_grains, pulses, oilseeds, fallow_stubble, pasture, other
-  Source:      Standardized from crop_type in standardise_crop_variables()
+  Values:      winter_cereals, summer_cereals (sorghum, maize, millet), legumes, oilseeds, cotton, pasture, bare_soil, unknown
+  Source:      Standardized from crop_type in standardise_crop_variables(), or recorded in ODK (sorghum/maize/millet split into summer_cereals in both)
 
 crop_variety
   Description: Specific crop type or variety

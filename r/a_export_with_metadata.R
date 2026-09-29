@@ -412,8 +412,8 @@ get_all_variable_definitions <- function() {
     crop_group = list(
       desc   = "Broad crop category",
       type   = "Character",
-      values = "wheat, coarse_grains, pulses, oilseeds, fallow_stubble, pasture, other",
-      source = "Standardized from crop_type in standardise_crop_variables()"
+      values = "winter_cereals, summer_cereals (sorghum, maize, millet), legumes, oilseeds, cotton, pasture, bare_soil, unknown",
+      source = "Standardized from crop_type in standardise_crop_variables(), or recorded in ODK (sorghum/maize/millet split into summer_cereals in both)"
     ),
     crop_variety = list(
       desc   = "Specific crop type or variety",
