@@ -208,6 +208,11 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # "winter_only" is the reference level (factor()'s own alphabetical default), matching every other
     # covariate's own convention in this file of not hand-picking level order.
     dplyr::mutate(summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only"))) |>
+    # ae_zone_adj: adjusted AE zone (r/a_adjust_aez.R's ae_zone_adj_of(), the same rule as the aez_adj
+    # polygons), used for the burrow and chew-card zone effects (r/d_fit_plague_hmm.R's obs_zone
+    # argument) -- with the 11 original zones several plague-state zone effects had no data behind them
+    # and the unsupervised fit failed. The transitions keep the 11 original AE zones.
+    dplyr::mutate(ae_zone_adj = factor(ae_zone_adj_of(ae_zone, aus_state))) |>
     # bait_history_traps/bait_history_rapid (r/c_build_survey_state_wide.R, 2026-08 -- newly carried
     # through from Section A) -- unlike every other factor covariate in this file, the level order IS
     # hand-picked: "unsure" is the majority category (72% traps, 93% rapid -- confirmed live), so it's
@@ -225,13 +230,15 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # Detection-covariate versions of the rapid assessment's own crop fields and the paddock's soil
     # type, for fit_plague_hmm()'s optional detection_terms. hmmTMB needs a covariate value on every
     # row -- including seasons with no rapid visit, where crop is NA -- so missing crop (and a
-    # recorded "unknown") becomes its own "not recorded" level rather than an NA.
+    # recorded "unknown") becomes its own "not recorded" level rather than an NA. winter_cereals, the
+    # most common crop, is the reference level, so each crop's detection coefficient reads as a
+    # contrast against winter cereals.
     dplyr::mutate(
-      crop_group_det = factor(dplyr::if_else(is.na(crop_group_rapid) | crop_group_rapid == "unknown", "not recorded", crop_group_rapid)),
+      crop_group_det = stats::relevel(factor(dplyr::if_else(is.na(crop_group_rapid) | crop_group_rapid == "unknown", "not recorded", crop_group_rapid)), ref = "winter_cereals"),
       crop_stage_det = factor(dplyr::if_else(is.na(crop_stage_rapid), "not recorded", crop_stage_rapid)),
       soil_type_det  = factor(soil_type),
       # The trap survey's own crop fields, the same way (for trap-stream covariates).
-      crop_group_trap_det = factor(dplyr::if_else(is.na(crop_group_traps) | crop_group_traps == "unknown", "not recorded", crop_group_traps)),
+      crop_group_trap_det = stats::relevel(factor(dplyr::if_else(is.na(crop_group_traps) | crop_group_traps == "unknown", "not recorded", crop_group_traps)), ref = "winter_cereals"),
       crop_stage_trap_det = factor(dplyr::if_else(is.na(crop_stage_traps), "not recorded", crop_stage_traps))
     ) |>
     dplyr::arrange(ID, season_year_adj)

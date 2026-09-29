@@ -28,7 +28,7 @@
 # season-to-season propagation.
 #
 # Arguments:
-#   plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster, min_temp_raster, fit_zones_sf
+#   plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster, min_temp_raster, fit_zones_sf
 #                            as predict_plague_risk() (r/d_predict_plague_risk.R)
 #   start_period             first "<month>_<year>" period to hindcast (default "2_1983", Summer 1983)
 #   mask_zone_extrapolation  passed to build_risk_grid_newdata() (default FALSE, see above)
@@ -36,13 +36,13 @@
 # Returns a data frame with one row per grid cell (inside fit_zones_sf) and season: period,
 # year_adj, season, cell, x, y, ae_zone, rain_whiplash_trough_to_peak, onset, persist, occupancy.
 
-hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
                                        min_temp_raster, fit_zones_sf, start_period = "2_1983",
                                        mask_zone_extrapolation = FALSE) {
 
   # Every period shared by all four covariate rasters, in chronological order, from start_period on.
   shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster),
-                                           names(soil_moisture_raster), names(min_temp_raster)))
+                                           names(soil_moisture_anomaly_raster), names(min_temp_raster)))
   period_key <- function(p) as.integer(sub(".*_", "", p)) * 100 + as.integer(sub("_.*", "", p))
   shared_periods <- shared_periods[order(period_key(shared_periods))]
   periods <- shared_periods[period_key(shared_periods) >= period_key(start_period)]
@@ -57,7 +57,7 @@ hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_ras
     period <- periods[i]
 
     # This season's covariate table and transition matrices at every valid cell.
-    grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+    grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
                                     min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation)
     tpm <- plague_hmm$predict(what = "tpm", newdata = grid$newdata)
     onset <- persist <- rep(NA_real_, nrow(grid$cell_df))

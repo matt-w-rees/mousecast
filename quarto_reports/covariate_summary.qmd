@@ -64,7 +64,7 @@ source(file.path(r_path, "a_aez_zone_info.R"))
 ## stacks) to every render.
 tar_load(
   c(
-    aez_adj,
+    aez,
     gpp_raster_coarse,
     gpp_rolling_raster_3, gpp_rolling_anomaly_raster_3,
     gpp_rolling_raster_6, gpp_rolling_anomaly_raster_6,
@@ -340,7 +340,7 @@ aus_shp_4 <- aus_shp |> dplyr::filter(ST_NAME %in% names(state_abbrev_to_full)) 
   dplyr::mutate(ST_NAME = unname(state_abbrev_to_full[ST_NAME]))
 
 ## Reuses raster_zone_series()'s own approach (r/b_raster_zone_series.R), grouped by aus_shp's real
-## state polygons instead of aez_adj's AE zones -- yearly_plague_occurrence.csv is recorded at state
+## state polygons instead of aez's AE zones -- yearly_plague_occurrence.csv is recorded at state
 ## grain, not AE-zone grain.
 state_monthly <- function(rast, label) {
   extracted <- terra::extract(rast, terra::vect(aus_shp_4), fun = "mean", na.rm = TRUE, ID = FALSE)
@@ -492,7 +492,7 @@ A national mean can look unremarkable even when a real, sharp swing is happening
 #| fig-cap: "GPP anomaly (12-month rolling, z-score) by AE zone, grouped into the same regions used elsewhere in this pipeline (r/a_aez_zone_info.R). Shared y-axis across facets -- anomaly is already standardised, so zones are directly comparable on it."
 #| fig-asp: 1.1
 
-gpp_zone_anomaly_df <- raster_zone_series(gpp_rolling_anomaly_raster_12, aez_adj) |>
+gpp_zone_anomaly_df <- raster_zone_series(gpp_rolling_anomaly_raster_12, aez) |>
   dplyr::left_join(zone_regions, by = "ae_zone")
 
 ggplot(gpp_zone_anomaly_df, aes(date, value, colour = ae_zone)) +
@@ -590,7 +590,7 @@ ggplot(rain_seasonal_combined, aes(date, value)) +
 #| fig-cap: "Rainfall anomaly (12-month rolling, z-score) by AE zone -- winter-dominant rainfall in the south vs. summer-dominant rainfall in the north means a national mean can mix two quite different stories together; this is the check for that. Shared y-axis across facets, since anomaly is already standardised."
 #| fig-asp: 1.1
 
-rain_zone_anomaly_df <- raster_zone_series(rain_rolling_anomaly_raster_12, aez_adj) |>
+rain_zone_anomaly_df <- raster_zone_series(rain_rolling_anomaly_raster_12, aez) |>
   dplyr::left_join(zone_regions, by = "ae_zone")
 
 ggplot(rain_zone_anomaly_df, aes(date, value, colour = ae_zone)) +
@@ -607,7 +607,7 @@ ggplot(rain_zone_anomaly_df, aes(date, value, colour = ae_zone)) +
 #| fig-cap: "Rainfall whiplash (trough-to-peak) by AE zone, same grouping as above."
 #| fig-asp: 1.1
 
-rain_zone_whiplash_df <- raster_zone_series(rain_whiplash_trough_to_peak, aez_adj) |>
+rain_zone_whiplash_df <- raster_zone_series(rain_whiplash_trough_to_peak, aez) |>
   dplyr::left_join(zone_regions, by = "ae_zone")
 
 ggplot(rain_zone_whiplash_df, aes(date, value, colour = ae_zone)) +
@@ -682,7 +682,7 @@ ggplot(sm_whiplash_combined, aes(date, value)) +
 #| fig-cap: "Soil moisture anomaly (z-score) by AE zone, same grouping as GPP/rainfall's own zone figures above. Shared y-axis across facets, since anomaly is already standardised."
 #| fig-asp: 1.1
 
-sm_zone_anomaly_df <- raster_zone_series(soil_moisture_anomaly_raster, aez_adj) |>
+sm_zone_anomaly_df <- raster_zone_series(soil_moisture_anomaly_raster, aez) |>
   dplyr::left_join(zone_regions, by = "ae_zone")
 
 ggplot(sm_zone_anomaly_df, aes(date, value, colour = ae_zone)) +
@@ -699,7 +699,7 @@ ggplot(sm_zone_anomaly_df, aes(date, value, colour = ae_zone)) +
 #| fig-cap: "Soil moisture whiplash (trough-to-peak) by AE zone, same grouping as above."
 #| fig-asp: 1.1
 
-sm_zone_whiplash_df <- raster_zone_series(soil_moisture_whiplash_trough_to_peak, aez_adj) |>
+sm_zone_whiplash_df <- raster_zone_series(soil_moisture_whiplash_trough_to_peak, aez) |>
   dplyr::left_join(zone_regions, by = "ae_zone")
 
 ggplot(sm_zone_whiplash_df, aes(date, value, colour = ae_zone)) +
@@ -769,7 +769,7 @@ ggplot(mt_df, aes(date, value, colour = season)) +
 #| fig-cap: "Minimum temperature, winter only (the breeding-relevant season this covariate is actually meant to capture), by AE zone -- the national mean above collapses away exactly the latitudinal spread that matters here. Shared y-axis across facets: absolute degrees are directly comparable zone to zone, unlike a standardised anomaly."
 #| fig-asp: 1.1
 
-mt_zone_df <- raster_zone_series(min_temp_seasonal_raster, aez_adj) |>
+mt_zone_df <- raster_zone_series(min_temp_seasonal_raster, aez) |>
   dplyr::filter(lubridate::month(date) == 7) |> # winter's own representative month (see raster_mean_series())
   dplyr::left_join(zone_regions, by = "ae_zone")
 

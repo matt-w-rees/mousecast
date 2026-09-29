@@ -468,7 +468,7 @@ line_rate(raw_min_temp, "min_temp_lag1")
 
 ```{r}
 #| label: fig-raw-cropgroup
-#| fig-cap: "Mean trap success (captures per 100 trap-nights) by crop_group (the type of crop grown in the paddock, e.g. cereals/legumes/oilseeds)."
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) by crop_group (the type of crop grown in the paddock, e.g. winter cereals, summer cereals, legumes, oilseeds)."
 #| fig-asp: 0.35
 
 raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
@@ -476,7 +476,7 @@ raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
 
 ```{r}
 #| label: fig-raw-crop-cross
-#| fig-cap: "Mean trap success (captures per 100 trap-nights) across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving cereals, legumes and oilseeds."
+#| fig-cap: "Mean trap success (captures per 100 trap-nights) across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving winter cereals, summer cereals, legumes and oilseeds."
 #| fig-asp: 0.5
 
 crop_cross <- trap_data |>

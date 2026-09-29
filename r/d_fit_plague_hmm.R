@@ -10,8 +10,12 @@ append_formula_terms <- function(base, extra) {
 # e.g. all four chew-card blocks. Returns a list of row-name vectors, one per level.
 detection_tie_groups <- function(valid_rows, streams, param, term) {
   prefix <- paste0("^(", paste(streams, collapse = "|"), ")\\.", param, "\\.state[12]\\.")
-  rows <- grep(paste0(prefix, term), valid_rows, value = TRUE)
-  # The level itself (e.g. "crop_group_detcereals"), with stream and state stripped, is the group key.
+  # Each variable in the term may be followed by its level text, so an interaction such as
+  # "season:summer_zone_ne" matches "seasonSummer:summer_zone_newinter_only"; anchored at the end so
+  # "soil_moisture" can't also match "soil_moisture_anomaly".
+  term_pattern <- paste0(paste0(strsplit(term, ":", fixed = TRUE)[[1]], "[^:]*", collapse = ":"), "$")
+  rows <- grep(paste0(prefix, term_pattern), valid_rows, value = TRUE)
+  # The level itself (e.g. "crop_group_detwinter_cereals"), with stream and state stripped, is the group key.
   unname(split(rows, sub(prefix, "", rows)))
 }
 
@@ -842,6 +846,33 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     0.98, vs -0.20 / 1.52 under binom), and the posterior-predictive check now reproduces the
 #     share of untouched (Pr(0) 0.77) and fully chewed (Pr(10) 0.022) cards, which binom missed
 #     (simulated ~0.47 and ~0). Decoded states 99.9% unchanged; trap/burrow fit unaffected.
+#   Transition revision, ADOPTED (2026-09): soil_moisture in the transitions replaced by
+#     soil_moisture_anomaly (each season-end month's soil moisture as a z-score against the same month
+#     in other years). Raw soil moisture's strong negative onset effect (-10 per unit) mostly tracked
+#     its seasonal cycle and suppressed onset through the wet build-up to a plague, delaying the
+#     warning by 2-3 seasons (2010-11 hindcast). Variant tests, scored on the pre-2013 grid hindcast
+#     (r/d_hindcast_plague_occurrence.R, r/d_score_plague_hindcast.R), within-state AUC: one-year-ahead
+#     onset 0.75 vs 0.57 for raw soil moisture, same-year 0.65 vs 0.69, AIC -137. Also rejected: dropping
+#     soil moisture (same lead skill, +160 AIC vs the anomaly); season in the transitions, as fixed or
+#     random effects, shared or by cropping region (big in-sample gains but near-degenerate fits and
+#     worse hindcast skill -- it fits when the plague maps were drawn); a whiplash x soil-moisture
+#     interaction (raw or anomaly: better AIC, weaker one-year-ahead skill; its exit-side effect, wet
+#     soils ending plagues, is untested on its own); dropping min_temp (no valid fit).
+#   Observation zones, ADOPTED (2026-09): burrow and chew-card zone effects use the adjusted AE zones
+#     (ae_zone_adj, 7 in the fit; r/a_adjust_aez.R) instead of the 11 AE zones. With 11 zones several plague-state zone
+#     effects had no data behind them (stuck at 0, or -16.7 for WA Sandplain burrows) and the
+#     unsupervised fit ended in "false convergence" from any starting values. Merged zones with
+#     separate effects per state: supervised AIC -65 vs the 11-zone model, hindcast skill unchanged
+#     (one-year-ahead 0.76), and the unsupervised model fits cleanly from generic starting values, so
+#     it no longer needs init. Zone effects shared by both states fitted the supervised model (-42)
+#     but collapsed the unsupervised one to a single state.
+#   Adjusted AE zones in the transitions, REJECTED: for both the zone intercept and the whiplash slope,
+#     logLik -13,403 (vs -13,381), one-year-ahead hindcast 0.69; for the whiplash slope only, logLik
+#     -13,396, one-year-ahead 0.72. The transitions keep the 11 original AE zones.
+#   Trap detection terms, ADOPTED (same tests): season:summer_zone_ne and crop_group_trap_det on
+#     trap_count's mean, tied across states (-62 AIC; trap-success exploration report keeps both).
+#     Extra chew-card (season:summer_zone_ne, gpp_finescale) and burrow (soil_moisture) detection terms
+#     gave no gain. detection_tie_groups() now matches interaction terms.
 # Fitting note: run variant fits one at a time -- several fitted at once as parallel R processes
 # stopped at a NaN likelihood while still reporting "relative convergence". Separately, hmmTMB's C++ is
 # intermittently non-deterministic for three-parameter chew-card families even in a fresh process, so
@@ -886,10 +917,25 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #                       needs the patched hmmTMB pinned in renv.lock, not CRAN
 #                       1.1.2), "binom", or "zibinom" (zero-inflated binomial,
 #                       zero-inflation intercept tied across blocks).
+#   init                optional fitted HMM whose estimates are used as starting values
+#                       (hmmTMB's HMM$new(init = ...)) instead of the generic ones below.
+#                       Not used by the pipeline since the merged observation zones (the
+#                       unsupervised fit now converges from generic starting values); kept for
+#                       variant fits started from a previous model.
+#   obs_zone            name of the hmm_data column giving each row's zone for the burrow and chew-card
+#                       zone effects (default "ae_zone"); lets thin zones be merged for the observation
+#                       streams without changing the transitions' zone effects
+#   obs_zone_tied       TRUE: one zone effect per zone, shared by both states (and all four chew-card
+#                       blocks), like season; FALSE (default): a separate zone effect in each state
+#   start_jitter        standard deviation of random noise added to the transition coefficients'
+#                       starting values (default 0: none). fit_plague_hmm_subprocess() uses it on
+#                       retries, so a failed attempt isn't repeated from the exact same starting
+#                       point -- with init given, every retry otherwise starts identically.
 #
 # Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed).
 
-fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(), shape_terms = list(), chewcard_dist = "betabinom") {
+fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(), shape_terms = list(), chewcard_dist = "betabinom",
+                           init = NULL, obs_zone = "ae_zone", obs_zone_tied = FALSE, start_jitter = 0) {
 
   hid <- hmmTMB::MarkovChain$new(
     data          = hmm_data,
@@ -914,7 +960,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
   # (NA elsewhere, r/d_build_hmm_data.R), so a paddock-season's full card count is used instead of
   # truncating everyone to the first transect's own 10 cards.
   # Each stream's formula, plus any optional detection_terms for it.
-  chewcard_prob <- append_formula_terms(~season + ae_zone, detection_terms$chewcard)
+  chewcard_prob <- append_formula_terms(~season, c(obs_zone, detection_terms$chewcard))
   # Starting values for one chew-card stream: zibinom adds a zero-inflation probability z, betabinom
   # an overdispersion sigma.
   chewcard_par <- switch(chewcard_dist,
@@ -928,8 +974,8 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     formulas = list(
       trap_count      = list(mean = append_formula_terms(~season + log_trap_effort, detection_terms$trap_count),
                              shape = append_formula_terms(~1, shape_terms$trap_count)),
-      burrow_count    = list(mean = append_formula_terms(~season + log_burrow_metres_searched + ae_zone + season:summer_zone_ne + gpp_finescale,
-                                                         detection_terms$burrow_count),
+      burrow_count    = list(mean = append_formula_terms(~season + log_burrow_metres_searched,
+                                                         c(obs_zone, "season:summer_zone_ne", "gpp_finescale", detection_terms$burrow_count)),
                              shape = append_formula_terms(~1, shape_terms$burrow_count)),
       chewcard_count  = list(prob = chewcard_prob),
       chewcard_block2 = list(prob = chewcard_prob),
@@ -1028,13 +1074,12 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     # chewcard_count/block2/3/4: ae_zone tied across blocks (same reasoning as the intercept above)
     # but left free across states (matching burrow_count's own ae_zone treatment -- a real,
     # state-dependent regional outbreak-magnitude effect, not a detection one).
-    do.call(c, lapply(
-      c("NSW NE Qld SE", "NSW NW Qld SW", "NSW Vic Slopes",
-        "SA Midnorth-Lower Yorke Eyre", "SA Vic Bordertown-Wimmera", "SA Vic Mallee",
-        "WA Central", "WA Eastern", "WA Northern", "WA Sandplain"),
+    # (Zone levels come from the data, minus the reference level, so merged zones work too.)
+    if (!obs_zone_tied) do.call(c, lapply(
+      levels(factor(hmm_data[[obs_zone]]))[-1],
       function(zone) {
-        c(tie(paste0(chewcard_streams, ".prob.state1.ae_zone", zone)),
-          tie(paste0(chewcard_streams, ".prob.state2.ae_zone", zone)))
+        c(tie(paste0(chewcard_streams, ".prob.state1.", obs_zone, zone)),
+          tie(paste0(chewcard_streams, ".prob.state2.", obs_zone, zone)))
       }
     ))
 
@@ -1051,6 +1096,15 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
   stream_sets <- list(trap_count = list(streams = "trap_count", param = "mean"),
                       burrow_count = list(streams = "burrow_count", param = "mean"),
                       chewcard = list(streams = chewcard_streams, param = "prob"))
+  # obs_zone_tied: the burrow and chew-card zone effects get the detection-term treatment too, one
+  # value per zone shared by both states (and all four chew-card blocks).
+  if (obs_zone_tied) {
+    for (stream in c("burrow_count", "chewcard")) {
+      set <- stream_sets[[stream]]
+      groups <- detection_tie_groups(valid_rows, set$streams, set$param, obs_zone)
+      fixpar_obs <- c(fixpar_obs, do.call(c, lapply(groups, function(g) tie(g))))
+    }
+  }
   for (stream in names(detection_terms)) {
     set <- stream_sets[[stream]]
     for (term in detection_terms[[stream]]) {
@@ -1087,7 +1141,13 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
   coeff_fe["trap_count.mean.state2.log_trap_effort", 1] <- 1
   obs$update_coeff_fe(coeff_fe[, 1])
 
-  hmm <- hmmTMB::HMM$new(obs = obs, hid = hid)
+  # Starting values from a previous fit when init is given (see the init argument above).
+  hmm <- if (is.null(init)) hmmTMB::HMM$new(obs = obs, hid = hid) else hmmTMB::HMM$new(obs = obs, hid = hid, init = init)
+  # Optional jitter on the transition coefficients' starting values (see the start_jitter argument).
+  if (start_jitter > 0) {
+    hid_coeff <- hmm$hid()$coeff_fe()
+    hmm$hid()$update_coeff_fe(hid_coeff[, 1] + stats::rnorm(nrow(hid_coeff), 0, start_jitter))
+  }
   hmm$fit(silent = TRUE)
   hmm
 }

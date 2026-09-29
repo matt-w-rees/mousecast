@@ -504,7 +504,7 @@ ggplot(raw_min_temp, aes(x_mean, rate, colour = state, group = state)) +
 
 ```{r}
 #| label: fig-raw-cropgroup
-#| fig-cap: "Mean raw rate by crop_group (the type of crop grown in the paddock, e.g. cereals/legumes/oilseeds)."
+#| fig-cap: "Mean raw rate by crop_group (the type of crop grown in the paddock, e.g. winter cereals, summer cereals, legumes, oilseeds)."
 #| fig-asp: 0.35
 
 raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
@@ -512,13 +512,13 @@ raw_crop_group |> point_rate(reorder(crop_group, rate)) + coord_flip()
 
 ```{r}
 #| label: fig-raw-crop-cross
-#| fig-cap: "Mean raw rate across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving cereals, legumes and oilseeds."
+#| fig-cap: "Mean raw rate across crop_stage (the crop's growth stage, from sown through to stubble), one coloured line per crop_group. `cotton` and `unknown` are excluded (too few sessions per crop stage), leaving winter cereals, summer cereals, legumes and oilseeds."
 #| fig-asp: 0.5
 
 crop_cross <- chew_data |>
   ## cotton/unknown excluded -- both have as few as 2-4 sessions in several crop_stage combinations,
   ## several missing entirely, not enough per-stage coverage for a trend line to be worth reading
-  ## against the three well-sampled crop types (cereals, legumes, oilseeds) on the same shared axis.
+  ## against the well-sampled crop types (winter and summer cereals, legumes, oilseeds) on the same shared axis.
   filter(!is.na(crop_group), !is.na(crop_stage), !crop_group %in% c("cotton", "unknown")) |>
   mutate(crop_group = droplevels(factor(crop_group))) |>
   group_by(crop_group, crop_stage) |>

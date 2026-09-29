@@ -113,10 +113,12 @@ tar_plan(
   
   # GRDC "Agro-ecological" zones (used to link sites and derive seperate process models), this file was downloaded from https://github.com/DPIRD-FSI/extractOz/tree/main
   # Kangaroo Island removed from "SA Midnorth-Lower Yorke Eyre" -- zero real survey paddocks there, so any prediction reaching it is pure extrapolation. 
-  aez_adj = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |>
+  aez = sf::read_sf("raw_data/predictor_variables/ae_zone/aez.gpkg") |>
     dplyr::rename(ae_zone = AEZ) |>
     dplyr::mutate(ae_zone = gsub("/", " ", ae_zone)) |>
     remove_kangaroo_island(),
+  # Adjusted AE zones (ae_zone_adj): thin zones merged, northern zones split at the NSW/Qld border, for the plague HMM's detection zone effects -- see r/a_adjust_aez.R.
+  aez_adj = adjust_aez(aez, aus_shp),
 
   # GRDC growing subregions — finer-grained alternative zone system, provided by GRDC
   grdc_subregion_adj = sf::read_sf("raw_data/predictor_variables/grdc_regions/growing_subregion/GRDC SubRegion_region.shp") |>
@@ -222,7 +224,7 @@ tar_plan(
   data_mouse_alert = clean_data_mouse_alert(mouse_alert_file),
   
   # restrict MouseAlert to AE zones with structured survey data 
-  data_mouse_alert_filtered = filter_mouse_alert_to_structured_zones(data_mouse_alert, data_traps, data_rapid, aez_adj),
+  data_mouse_alert_filtered = filter_mouse_alert_to_structured_zones(data_mouse_alert, data_traps, data_rapid, aez),
 
   
   # vi. Historic: Walpeup (Victoria, Mallee) 1983-2004 live-trap data ---------------------------------------------------------------------------------------
@@ -320,7 +322,7 @@ tar_plan(
   paddocks_sf = load_paddocks(data_list_clean, custom_paddocks_path = paddocks_by_hand) |>
     # attach static spatial covariates extracted over each full polygon;
     # ae_zone — intersection join then snap unmatched systematic paddocks to nearest AEZ; MouseAlert-only paddocks outside the AEZ boundary are left as NA (not snapped).
-    attach_aez(aez_adj, data_list = data_list_clean, snap_dist = 15000) |>
+    attach_aez(aez, data_list = data_list_clean, snap_dist = 15000) |>
     # cropping_system — single (winter-only) vs dual (summer+winter) cropping system, derived from ae_zone
     attach_cropping_system() |>
     # grdc_subregion — finer-grained zone; same intersection + snap logic as attach_aez()
@@ -385,7 +387,7 @@ tar_plan(
       dir.create("shiny/raw_data_explorer/data", showWarnings = FALSE, recursive = TRUE)
       # save targets needed for shiny app -
       saveRDS(data_list_clean_paddocks,  "shiny/raw_data_explorer/data/data_list_clean_paddocks.rds")
-      saveRDS(aez_adj,                   "shiny/raw_data_explorer/data/aez_adj.rds")
+      saveRDS(aez,                       "shiny/raw_data_explorer/data/aez_adj.rds") # original AE zones (file name kept for the app)
       saveRDS(grdc_subregion_adj,        "shiny/raw_data_explorer/data/grdc_subregion_adj.rds")
       saveRDS(surveys_all,               "shiny/raw_data_explorer/data/surveys_all.rds")
       saveRDS(metric_ranges,             "shiny/raw_data_explorer/data/metric_ranges.rds")
@@ -488,7 +490,7 @@ tar_plan(
   covariate_download_region = build_study_area(
     paddocks_sf            = paddocks_sf,
     structured_paddock_ids = structured_paddock_ids,
-    aez_adj                = aez_adj,
+    aez_adj                = aez,
     buffer_km              = 20
   ),
 
@@ -912,6 +914,8 @@ tar_plan(
   # rainfall/evapotranspiration/drainage history into this single value, so windowing it further
   # would double-count memory that's already built in.
   tar_terra_rast(soil_moisture_anomaly_raster, compute_loo_anomaly_raster(soil_moisture_raster_coarse), gdal = covariate_gdal_options),
+  # Same anomaly on the untrimmed monthly raster, for the plague HMM's nowcast map (Section E).
+  tar_terra_rast(soil_moisture_anomaly_raster_nowcast, compute_loo_anomaly_raster(soil_moisture_raster_coarse_nowcast), gdal = covariate_gdal_options),
   tar_terra_rast(soil_moisture_climatology_mean, compute_climatology_raster(soil_moisture_raster_coarse, stat = "mean"), gdal = covariate_gdal_options),
   tar_terra_rast(soil_moisture_climatology_sd, compute_climatology_raster(soil_moisture_raster_coarse, stat = "sd"), gdal = covariate_gdal_options),
 
@@ -1102,7 +1106,7 @@ tar_plan(
   # Reshapes to hmmTMB's ID/state format.
   hmm_data = build_hmm_data(plague_state_anchors,
     state_filter   = c("NSW", "VIC", "SA", "QLD", "WA"),
-    covariates     = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp"),
+    covariates     = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp"),
     exclude_zones  = "Qld Central"
   ),
 
@@ -1111,22 +1115,26 @@ tar_plan(
   # detection tied across states as a shared detection effect, ae_zone/shape left free per state as real density/dispersion effects, trap/burrow search-effort
   # offsets). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, s(ae_zone, by = ..., bs = "re") -- not a fixed
   # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/d_fit_plague_hmm.R's header for why.
-  # Detection covariates on the burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/d_fit_plague_hmm.R.
+  # Detection covariates on the trap, burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/d_fit_plague_hmm.R.
   # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/d_fit_plague_hmm_subprocess.R.
-  hmm_detection_terms = list(burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det"),
+  hmm_detection_terms = list(trap_count   = c("season:summer_zone_ne", "crop_group_trap_det"),
+                             burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det"),
                              chewcard     = c("crop_group_det", "crop_stage_det", "soil_type_det")),
 
+  # Burrow/chew-card zone effects use the adjusted AE zones (ae_zone_adj, 7 in the fit); transitions keep the 11 original AE zones -- see r/a_adjust_aez.R.
   plague_hmm = fit_plague_hmm_subprocess(hmm_data,
-    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re"),
-    detection_terms    = hmm_detection_terms
+    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture_anomaly + min_temp + s(ae_zone, bs = "re"),
+    detection_terms    = hmm_detection_terms,
+    obs_zone           = "ae_zone_adj"
   ),
 
   # Fully unsupervised comparison fit -- identical spec, but every state anchor wiped to NA, so the HMM discovers its own 2-state split purely from the
   # observation/transition data. Quantifies how much the anchors themselves are actually doing vs. structure already in the data -- see
   # quarto_reports/plague_model_summary.qmd's fig-anchor-vs-model, where its own state_probs() is plotted alongside the anchored model's.
   plague_hmm_unsupervised = fit_plague_hmm_subprocess(dplyr::mutate(hmm_data, state = NA_integer_),
-    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = "re"),
-    detection_terms    = hmm_detection_terms
+    transition_formula = ~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re") + gpp_rolling6 + soil_moisture_anomaly + min_temp + s(ae_zone, bs = "re"),
+    detection_terms    = hmm_detection_terms,
+    obs_zone           = "ae_zone_adj"
   ),
 
   # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/d_fit_plague_hmm.R's own header documents ~18 formula/
@@ -1148,7 +1156,7 @@ tar_plan(
   # including un-monitored paddocks, but not extrapolated to non-agricultural parts of these states (deserts, alps, cities) a raw state-outline mask would
   # include. min_temp_raster_coarse (not min_temp_seasonal_raster) supplies min_temp. Also masks (default on) any cell that extrapolates a zone-varying
   # covariate term beyond that zone's own evidence-bearing training range (2026-09) -- see predict_plague_risk()'s own header for the SA Vic Mallee case this fixes.
-  fit_zones_sf = dplyr::filter(aez_adj, ae_zone %in% unique(hmm_data$ae_zone)),
+  fit_zones_sf = dplyr::filter(aez, ae_zone %in% unique(hmm_data$ae_zone)),
 
   # Both the semi-supervised (anchored) and unsupervised models get their own risk/uncertainty maps -- a standing comparison, not a one-off, via tar_map() over model variant.
   # Same "same computation, several variants" pattern as gpp_rolling_attach_map/rain_rolling_attach_map above -- a third model variant later is one more tibble row, not a hand-copied target pair.
@@ -1159,15 +1167,15 @@ tar_plan(
     ),
     names = "model_variant",
     tar_terra_rast(plague_risk_map, predict_plague_risk(model_sym,
-      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_anomaly_raster, min_temp_raster_coarse, fit_zones_sf
     )),
     # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/d_predict_plague_risk.R's header for why this is a separate cached target rather than computed live in the report.
     tar_terra_rast(plague_risk_map_uncertainty, predict_plague_risk(model_sym,
-      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf,
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_anomaly_raster, min_temp_raster_coarse, fit_zones_sf,
       n_post = 500
     )),
 
-    # "Nowcast" variant -- same prediction, but using gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast (2.xii-b/4.iii-b above) in place of
+    # "Nowcast" variant -- same prediction, but using gpp_rolling_raster_6_nowcast/soil_moisture_anomaly_raster_nowcast (2.xii-b/4.iv above) in place of
     # their season-end-trimmed counterparts, so predict_plague_risk()'s own shared-period auto-detection can land on the latest complete calendar month
     # (whatever it is) instead of being held back to the last Feb/May/Aug/Nov boundary. rain_whiplash_trough_to_peak/min_temp_raster_coarse are unchanged --
     # already full monthly grain, never season-end-trimmed to begin with (see rain_whiplash_source_raster's own comment above). Real, complete-month data
@@ -1175,7 +1183,7 @@ tar_plan(
     # shifts. Point estimate only, no uncertainty variant yet (2026-09) -- deliberately deferred, not an oversight, see the TO-DO note at the top of this
     # file. See r/d_predict_plague_risk.R's header.
     tar_terra_rast(plague_risk_map_nowcast, predict_plague_risk(model_sym,
-      rain_whiplash_trough_to_peak, gpp_rolling_raster_6_nowcast, soil_moisture_raster_coarse_nowcast, min_temp_raster_coarse, fit_zones_sf
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6_nowcast, soil_moisture_anomaly_raster_nowcast, min_temp_raster_coarse, fit_zones_sf
     ))
   ),
 
@@ -1193,7 +1201,7 @@ tar_plan(
     ),
     names = "model_variant",
     tar_target(plague_hindcast, hindcast_plague_occurrence(model_sym,
-      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse, fit_zones_sf
+      rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_anomaly_raster, min_temp_raster_coarse, fit_zones_sf
     )),
     # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/d_score_plague_hindcast.R.
     tar_target(plague_hindcast_scores, score_plague_hindcast(plague_hindcast, aus_shp, yearly_plague_occurrence))

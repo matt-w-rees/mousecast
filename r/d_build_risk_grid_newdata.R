@@ -12,17 +12,17 @@
 # has_covariates (logical, which rows are valid to predict), newdata (cell_df[has_covariates, ]) and
 # crs (the covariate grid's CRS, for rebuilding a raster from cell_df's x/y).
 
-build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
                                     min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation = TRUE) {
 
 
   covariate_stack <- c(
     rain_whiplash_raster[[period]],
     gpp_raster[[period]],
-    soil_moisture_raster[[period]],
+    soil_moisture_anomaly_raster[[period]],
     min_temp_raster[[period]]
   )
-  names(covariate_stack) <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp")
+  names(covariate_stack) <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp")
   covariate_stack <- terra::mask(covariate_stack, terra::vect(fit_zones_sf))
 
   # one row per grid cell, in stable cell order, for rast(..., type = "xyz") below
@@ -138,10 +138,10 @@ build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster
   # ae_zone included alongside the three real transition covariates -- a cell that fell inside
   # covariate_stack's mask but outside every zone polygon (a rare boundary/rounding case, mask and
   # rasterize aren't guaranteed pixel-identical) has no valid zone for the random effect either, so
-  # it's excluded here the same way a missing rain_whiplash/gpp/soil_moisture value would be.
+  # it's excluded here the same way a missing rain_whiplash/gpp/soil_moisture_anomaly value would be.
   # in_zone_range is TRUE everywhere when mask_zone_extrapolation = FALSE or no covariate has a
   # zone interaction, so this line is a pure no-op extension in either of those cases.
-  covariate_cols <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp", "ae_zone")
+  covariate_cols <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp", "ae_zone")
   has_covariates <- stats::complete.cases(cell_df[covariate_cols]) & in_zone_range
 
   newdata <- cell_df[has_covariates, , drop = FALSE]

@@ -123,7 +123,7 @@ tar_load(
     gpp_viirs_nongf_paddock_mean, gpp_corrected_paddock_mean,
     gpp_viirs_frozen_blocks, gpp_viirs_recent_blocks, gpp_files_viirs_recent_block,
     gpp_files_viirs_frozen_block, aus_shp,
-    gpp_focal_raster, paddocks_sf_with_soil_type, data_list_clean_paddocks
+    gpp_focal_raster, paddocks_sf_with_soil_type
   ),
   store = store_path
 )
@@ -1062,35 +1062,22 @@ The one exception to "coarse, landscape-scale" (see Overview above): I build a n
 
 ```{r}
 #| label: fig-gpp-paddock-timeseries
-#| fig-cap: "Broadscale (0.1°, red) and fine-scale (focal-smoothed, blue) GPP over time at three real, long-term live-trap paddocks -- one from each of the three AE zones with the longest, still-active live-trap history. Grey ticks mark each paddock's actual survey dates. Fine-scale only exists from 2000 (MODIS start); where both exist they track closely, with fine-scale sometimes pulling below broadscale at a sharp local peak -- the same focal-smoothing effect visible over time rather than spatially."
+#| fig-cap: "Broadscale (0.1°, red) and fine-scale (focal-smoothed, blue) GPP over time at three real, long-term live-trap paddocks, one per AE zone (Mallee, SA Mid North and NSW-Vic Slopes). Fine-scale only exists from 2000 (MODIS start); where both exist they track closely, with fine-scale sometimes pulling below broadscale at a sharp local peak -- the same focal-smoothing effect visible over time rather than spatially."
 #| fig-asp: 0.85
 
-# Long-term live-trap paddocks, computed live (not hardcoded IDs) so this figure can't quietly go
-# stale as more survey data arrives: among paddocks still actively trapped recently (max_year >=
-# 2023, so there's meaningful overlap with gpp_focal_raster's own effective coverage), the single
-# longest-running paddock in each of the 3 AE zones with the longest trap history overall -- one
-# per zone, for geographic spread, rather than 3 paddocks that might all sit at the same property.
-trap_paddock_history <- data_list_clean_paddocks$traps |>
-  dplyr::mutate(year = as.integer(format(survey_date, "%Y"))) |>
-  dplyr::group_by(paddock_id, state, ae_zone) |>
-  dplyr::summarise(n_years = dplyr::n_distinct(year), n_surveys = dplyr::n(),
-                    min_year = min(year), max_year = max(year), .groups = "drop")
-
-demo_paddocks_trap <- trap_paddock_history |>
-  dplyr::filter(max_year >= 2023) |>
-  dplyr::group_by(ae_zone) |>
-  dplyr::slice_max(n_years, n = 1, with_ties = FALSE) |>
-  dplyr::ungroup() |>
-  dplyr::arrange(dplyr::desc(n_years)) |>
-  dplyr::slice_head(n = 3)
+# Three long-term live-trap paddocks, one per AE zone for geographic spread: the longest-running
+# still-active trap paddock in each of the three zones with the longest trap history. Named
+# directly rather than chosen from the survey data, so this GPP report depends only
+# on GPP targets and isn't re-rendered by unrelated survey-data or cleaning changes.
+demo_paddock_ids <- c(2288853, 4056644, 1231334)
 
 demo_paddocks <- paddocks_sf_with_soil_type |>
   sf::st_drop_geometry() |>
-  dplyr::filter(paddock_id %in% demo_paddocks_trap$paddock_id) |>
-  dplyr::transmute(paddock_id, longitude = longitude_paddock, latitude = latitude_paddock) |>
-  dplyr::left_join(demo_paddocks_trap, by = "paddock_id") |>
-  dplyr::mutate(paddock_label = sprintf("Paddock %s (%s, %s) -- %d yrs live-trap data (%d-%d)",
-                                         paddock_id, ae_zone, state, n_years, min_year, max_year))
+  dplyr::filter(paddock_id %in% demo_paddock_ids) |>
+  dplyr::transmute(paddock_id, longitude = longitude_paddock, latitude = latitude_paddock, ae_zone, state) |>
+  # Keep the order above (longest trap history first) for the facets.
+  dplyr::arrange(match(paddock_id, demo_paddock_ids)) |>
+  dplyr::mutate(paddock_label = sprintf("Paddock %s (%s, %s)", paddock_id, ae_zone, state))
 
 # raster_mean_series() always collapses multiple points into one shared mean (its usual national-
 # vs-paddock-mean use throughout this report) -- called once per paddock here instead (via pmap),
@@ -1106,15 +1093,7 @@ fine_series <- purrr::pmap_dfr(demo_paddocks, function(paddock_id, longitude, la
 gpp_series <- dplyr::bind_rows(broad_series, fine_series) |>
   dplyr::mutate(paddock_label = factor(paddock_label, levels = demo_paddocks$paddock_label))
 
-# Real trap survey dates at these same three paddocks, drawn as a rug -- ties this figure back to
-# the actual mouse survey history each paddock's own GPP series is standing in for.
-trap_dates <- data_list_clean_paddocks$traps |>
-  dplyr::filter(paddock_id %in% demo_paddocks$paddock_id) |>
-  dplyr::left_join(dplyr::select(demo_paddocks, paddock_id, paddock_label), by = "paddock_id") |>
-  dplyr::mutate(paddock_label = factor(paddock_label, levels = levels(gpp_series$paddock_label)))
-
 ggplot(gpp_series, aes(date, value, colour = source)) +
-  geom_rug(data = trap_dates, aes(x = survey_date), inherit.aes = FALSE, sides = "b", colour = "grey40", alpha = 0.4, linewidth = 0.3) +
   geom_line() +
   facet_wrap(~paddock_label, ncol = 1) + # fixed y (default) -- one shared GPP scale across all three paddocks, so relative productivity between them is directly comparable (found via user review, 2026-09; supersedes an earlier free_y version)
   scale_colour_brewer(palette = "Set1", name = NULL) +

@@ -150,15 +150,16 @@
 #   plague_hmm            a fitted HMM object (r/d_fit_plague_hmm.R) whose
 #                          transition formula uses exactly rain_whiplash_trough_to_peak
 #                          (+ its own ae_zone interaction) + gpp_rolling6 +
-#                          soil_moisture + min_temp -- rename the raster
+#                          soil_moisture_anomaly + min_temp -- rename the raster
 #                          arguments below if a differently-specified model
 #                          is ever passed in
 #   rain_whiplash_raster   rain_whiplash_trough_to_peak (_targets.R) -- one
 #                          layer per period, named "<month>_<year>"
 #   gpp_raster             gpp_rolling_raster_6 (_targets.R) -- season-end-month
 #                          grain only, same "<month>_<year>" layer naming
-#   soil_moisture_raster   soil_moisture_raster_coarse (_targets.R) -- season-end-month
-#                          grain only, same "<month>_<year>" layer naming
+#   soil_moisture_anomaly_raster  soil_moisture_anomaly_raster (_targets.R) -- each season-end
+#                          month's soil moisture as a z-score against the same month in every other
+#                          year (seasonal cycle removed), same "<month>_<year>" layer naming
 #   min_temp_raster        min_temp_raster_coarse (_targets.R) -- full monthly
 #                          grain, same "<month>_<year>" layer naming; see
 #                          header for why this (not min_temp_seasonal_raster)
@@ -168,13 +169,13 @@
 #   period                 which layer to predict for, e.g. "5_2026"; NULL
 #                          (default) uses the chronologically latest period
 #                          common to all four rasters, for a "current risk"
-#                          snapshot -- see gpp_raster/soil_moisture_raster's
+#                          snapshot -- see gpp_raster/soil_moisture_anomaly_raster's
 #                          own "nowcast" note just below for how this
 #                          auto-detection is used to reach the true latest
 #                          complete month, not just the latest season-end one
 #   gpp_raster/            (2026-09) plague_risk_map_nowcast (_targets.R)
-#   soil_moisture_raster   passes gpp_rolling_raster_6_nowcast/
-#                          soil_moisture_raster_coarse_nowcast here instead of
+#   soil_moisture_anomaly_raster passes gpp_rolling_raster_6_nowcast/
+#                          soil_moisture_anomaly_raster_nowcast here instead of
 #                          their season-end-trimmed namesakes -- same
 #                          underlying computation, just without the trim to
 #                          Feb/May/Aug/Nov, so the "latest shared period"
@@ -227,12 +228,12 @@
 # (mask_zone_extrapolation, default TRUE) a zone-interacted covariate value
 # there falls outside that zone's own training range.
 
-predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
                                  min_temp_raster, fit_zones_sf, period = NULL,
                                  mask_zone_extrapolation = TRUE, n_post = NULL, level = 0.95, seed = 20260807) {
 
   if (is.null(period)) {
-    shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster), names(soil_moisture_raster), names(min_temp_raster)))
+    shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster), names(soil_moisture_anomaly_raster), names(min_temp_raster)))
     period_month <- as.integer(sub("_.*", "", shared_periods))
     period_year  <- as.integer(sub(".*_", "", shared_periods))
     period <- shared_periods[order(period_year, period_month)][length(shared_periods)]
@@ -240,7 +241,7 @@ predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, so
 
   # Per-cell covariate table for this period (r/d_build_risk_grid_newdata.R) -- see header above for
   # what each step does and why.
-  grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_raster,
+  grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
                                   min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation)
   cell_df <- grid$cell_df
   has_covariates <- grid$has_covariates

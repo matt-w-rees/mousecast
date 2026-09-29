@@ -1,6 +1,6 @@
 ---
-title: "Section D Plague Forecast Model: Fit & Prediction"
-subtitle: "Two-state hidden Markov model diagnostics and the resulting risk map"
+title: "Plague Forecast Model"
+subtitle: "Two-state hidden Markov model: data, fit, checks, validation and the current forecast"
 format:
   html:
     self-contained: true
@@ -31,16 +31,13 @@ library(ggplot2)
 library(gt)
 suppressPackageStartupMessages(library(hmmTMB))
 
-## Handle both pipeline rendering (from project root) and standalone rendering
-## (from inside quarto_reports/), same convention as covariate_summary.qmd.
-store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
-r_path     <- if (dir.exists("_targets")) "r" else "../r"
+## Paths work both from the project root (tar_make) and from quarto_reports/ (manual render).
+root_path  <- if (dir.exists("_targets")) "." else ".."
+store_path <- file.path(root_path, "_targets")
+r_path     <- file.path(root_path, "r")
 
-## season_info() (r/a_season_info.R) -- used below (forecast-period) to label which season the
-## risk map's own covariate period falls in and which season it therefore forecasts. Sourced
-## directly (not tar_load()'d, a plain function not a target), same pattern as covariate_summary.qmd.
+## season_info() labels the forecast season; hindcast_auc() scores the Mutze spot check.
 source(file.path(r_path, "a_season_info.R"))
-## hindcast_auc() (r/d_score_plague_hindcast.R) -- used below (mutze-1984) for the cell-level AUC.
 source(file.path(r_path, "d_score_plague_hindcast.R"))
 
 tar_load(
@@ -50,51 +47,68 @@ tar_load(
     plague_risk_map_supervised, plague_risk_map_unsupervised,
     plague_risk_map_uncertainty_supervised, plague_risk_map_uncertainty_unsupervised,
     plague_risk_map_nowcast_supervised, plague_risk_map_nowcast_unsupervised,
-    survey_state_wide, yearly_plague_occurrence, recent_plague_maps,
-    rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_raster_coarse, min_temp_raster_coarse,
-    gpp_rolling_raster_6_nowcast, soil_moisture_raster_coarse_nowcast,
+    yearly_plague_occurrence, recent_plague_maps, recent_plague_maps_map, mutze_plague_maps,
+    rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_anomaly_raster, min_temp_raster_coarse,
+    gpp_rolling_raster_6_nowcast, soil_moisture_anomaly_raster_nowcast,
     plague_hindcast_supervised, plague_hindcast_unsupervised,
-    plague_hindcast_scores_supervised, plague_hindcast_scores_unsupervised, mutze_plague_maps
+    plague_hindcast_scores_supervised, plague_hindcast_scores_unsupervised
   ),
   store = store_path
 )
 
-## Supervised vs. unsupervised is a STANDING comparison throughout this report (2026-08), not a
-## one-off toggle -- both models are always fit (Section D, _targets.R), and every prediction-side
-## target (plague_risk_map_*, plague_risk_map_uncertainty_*) is built for both via a tar_map() over
-## model variant (_targets.R), the same "same computation, several variants" pattern this pipeline
-## already uses for GPP/rain rolling windows. This list is the single place that defines which
-## models are compared and how they're labelled -- every section below (coefficient tables, risk
-## maps, uncertainty maps) loops over this rather than hard-coding "plague_hmm" -- so a third model
-## variant later (e.g. a re-anchored version) needs one more entry here (plus its own tar_map() row
-## in _targets.R) rather than a hand-copied section.
-## risk_map_nowcast added alongside risk_map (2026-09) -- same fitted model, same predict_plague_risk()
-## call, just fed gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast in place of their
-## season-end-trimmed namesakes (_targets.R), so it lands on the latest complete calendar month
-## instead of waiting for the next Feb/May/Aug/Nov boundary. No uncertainty variant yet (deliberately
-## deferred, see _targets.R's own TO-DO note and r/d_predict_plague_risk.R's header) -- so
-## risk_map_uncertainty stays keyed to the season-end-aligned model only.
+## The two models compared throughout: same specification, with and without the plague anchors.
 model_variants <- list(
-  Supervised   = list(hmm = plague_hmm,              risk_map = plague_risk_map_supervised,   risk_map_uncertainty = plague_risk_map_uncertainty_supervised,   risk_map_nowcast = plague_risk_map_nowcast_supervised),
-  Unsupervised = list(hmm = plague_hmm_unsupervised, risk_map = plague_risk_map_unsupervised, risk_map_uncertainty = plague_risk_map_uncertainty_unsupervised, risk_map_nowcast = plague_risk_map_nowcast_unsupervised)
+  Supervised   = list(hmm = plague_hmm, risk_map = plague_risk_map_supervised,
+                      risk_map_uncertainty = plague_risk_map_uncertainty_supervised,
+                      risk_map_nowcast = plague_risk_map_nowcast_supervised),
+  Unsupervised = list(hmm = plague_hmm_unsupervised, risk_map = plague_risk_map_unsupervised,
+                      risk_map_uncertainty = plague_risk_map_uncertainty_unsupervised,
+                      risk_map_nowcast = plague_risk_map_nowcast_unsupervised)
 )
+model_colours <- c(Supervised = "#2166ac", Unsupervised = "#8c8c8c")
 
-## Same hazard palette as the standalone risk-map artifact this report
-## supersedes as the pipeline's own copy -- muted sage (calm) through ochre
-## to brick red (severe), not a default viridis/RdYlGn scale, so any output
-## showing plague_risk reads consistently across the project.
+## Hazard palette for risk (calm sage to brick red), shared with the project's other risk outputs.
 hazard_colors <- c("#3F5B45", "#7C8C43", "#C99A34", "#BE5F2C", "#7A2626")
 
-## Shared national outline (WGS84) -- used as spatial context by both fig-spatial-key-years and
-## fig-risk-map below, built once here rather than duplicated in each chunk.
+## Map layers in WGS84: national outline, fitted AE zones, and GRDC subregions clipped to those zones.
 aus_sf <- st_as_sf(aus_shp) |> st_transform(4326)
+fit_zones_ll <- st_transform(fit_zones_sf, 4326)
+zones_bbox <- st_bbox(fit_zones_ll)
+s2_was_on <- sf::sf_use_s2()
+suppressMessages(sf::sf_use_s2(FALSE))
+grdc_subregion_ll <- st_transform(grdc_subregion_adj, 4326) |>
+  sf::st_intersection(sf::st_union(fit_zones_ll)) |>
+  suppressMessages() |>
+  suppressWarnings()
+suppressMessages(sf::sf_use_s2(s2_was_on))
 
-## The 4 chewcard streams (chewcard_count = cards 1-10, chewcard_block2/3/4 = cards 11-20/21-30/
-## 31-40, r/d_fit_plague_hmm.R) share every coefficient by construction (tied across blocks) -- so
-## anywhere a diagnostic would just repeat the same fitted values 4 times, chewcard_count alone
-## stands in for all four; pseudo-residuals are the one exception, since they're computed against
-## each block's own distinct rows.
+## The four chew-card streams share every coefficient, so chewcard_count stands in for all four.
 chewcard_streams <- c("chewcard_count", "chewcard_block2", "chewcard_block3", "chewcard_block4")
+
+## AE zones (transitions) and adjusted AE zones (burrow/chew-card zone effects).
+zone_levels <- levels(hmm_data$ae_zone)
+adj_zone_levels <- levels(hmm_data$ae_zone_adj)
+
+## Mann-Whitney AUC: probability a positive case outranks a negative one.
+auc_fn <- function(yes, no) {
+  r <- rank(c(yes, no))
+  (sum(r[seq_along(yes)]) - length(yes) * (length(yes) + 1) / 2) / (length(yes) * length(no))
+}
+
+## One-season-ahead risk shown as a map tile layer, used by every risk/uncertainty panel.
+risk_tile_map <- function(df, fill_col, title, fill_scale) {
+  xr <- range(df$x); yr <- range(df$y); pad <- 0.6
+  ggplot() +
+    # geom_raster fills the regular 0.1 degree grid without the hairline gaps geom_tile leaves between rows.
+    geom_raster(data = df, aes(x, y, fill = .data[[fill_col]])) +
+    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
+    fill_scale +
+    coord_sf(xlim = c(xr[1] - pad, xr[2] + pad), ylim = c(yr[1] - pad, yr[2] + pad), expand = FALSE) +
+    labs(title = title) +
+    theme_void(base_size = 12) +
+    theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
+          plot.title = element_text(hjust = 0.5, face = "bold"))
+}
 
 theme_set(
   theme_minimal(base_size = 12) +
@@ -102,142 +116,190 @@ theme_set(
 )
 ```
 
-## Overview
-
-Section D fits a two-state (not-plague / plague) hidden Markov model (`hmmTMB`) to the seasonal survey panel Section C builds, then applies the fitted model to the gridded covariate surface to produce a continuous plague-risk map. This report is the empirical companion to `r/d_fit_plague_hmm.R` -- that file's own header carries the full design rationale and investigation history (why a semi-supervised HMM, every covariate/family/anchoring choice tried and why it was adopted or reverted); this page shows the numbers themselves, generated live from the pipeline's own targets so it can't silently drift out of sync with the model actually in use.
-
-Two versions of the same specification are fit, and compared throughout this report as a standing design, not a one-off check: **`plague_hmm`** (labelled **Supervised** below), the real semi-supervised model (known plague occurrences anchor the hidden state where available -- see [Data and anchoring]), and **`plague_hmm_unsupervised`** (labelled **Unsupervised**), identical in every other respect but with every anchor wiped to `NA`, so the HMM discovers its own 2-state split purely from the observation/transition data. The gap between the two (see [Validation against known history]) is a direct measure of how much the anchors themselves are doing -- worth watching in its own right whenever the anchoring pipeline's own upstream data is mid-update, since the unsupervised model's own numbers don't move when only the anchors' inputs have changed. Every prediction-side output (risk map, its own uncertainty) is built for both models (`_targets.R`'s own `tar_map()` over model variant), not just one -- see `model_variants` above.
-
-## Data and anchoring
-
 ```{r}
-#| label: tbl-zones
+#| label: summary-stats
+#| include: false
 
-## Derived live from hmm_data's own states, not a hand-maintained list (hmm_states, _targets.R) --
-## WA joined 2026-09 once the transition formula's own zone slope moved to a hierarchical spec (see
-## [Zone-specific deviations]), so this table (and its own title below) tracks that automatically.
+## Numbers quoted in the Summary, computed here so the Summary can come first.
+
+## Panel size.
+n_rows     <- nrow(hmm_data)
+n_paddocks <- n_distinct(hmm_data$ID)
 fit_states <- sort(unique(hmm_data$aus_state))
 
-tibble::tibble(
-  State = fit_states,
-  Paddocks = sapply(fit_states, function(s) n_distinct(hmm_data$ID[hmm_data$aus_state == s]))
-) |>
-  arrange(desc(Paddocks)) |>
-  gt::gt() |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = sprintf("The %d states the model is fit to", length(fit_states)))
-```
-
-The model pools every paddock across these `r length(fit_states)` states into one fit -- a single-zone fit was tried and found non-viable (see `r/d_fit_plague_hmm.R`), since one zone's own anchor data gave the model no examples of ever leaving the plague state. One zone, `"Qld Central"`, is excluded entirely: its 17 paddocks have zero plague anchors and zero real observations of any kind since 2008, and including it produced the same degenerate-fit signature documented for other thin-data cases elsewhere (`r/d_fit_plague_hmm.R`). WA joined the fit 2026-09, once the transition formula's own zone-varying `rain_whiplash_trough_to_peak` slope moved to a hierarchical (partially-pooled) spec -- see [Zone-specific deviations] -- WA's own 4 zones weren't viable under the earlier fixed-interaction spec, for the same "one zone with no examples of leaving plague" identifiability reason. `r n_distinct(hmm_data$ID)` paddocks remain across `r n_distinct(hmm_data$ae_zone)` zones.
-
-```{r}
-#| label: anchor-counts
-
+## Anchors.
 n_plague    <- sum(hmm_data$state == 2, na.rm = TRUE)
 n_nonplague <- sum(hmm_data$state == 1, na.rm = TRUE)
-n_both <- hmm_data |>
-  filter(!is.na(state)) |>
-  group_by(ID) |>
-  summarise(has_2 = any(state == 2), has_1 = any(state == 1), .groups = "drop") |>
-  filter(has_2, has_1) |>
-  nrow()
+mapped_seasons <- recent_plague_maps |>
+  sf::st_drop_geometry() |>
+  distinct(season, year) |>
+  arrange(year, match(season, c("Summer", "Autumn", "Winter", "Spring")))
+first_mapped_year <- min(mapped_seasons$year)
 
-## anchor_plague_state() (r/c_anchor_plague_state.R) anchors from recent_plague_maps -- hand-
-## digitised, paddock-scale plague-extent polygons, one gpkg per season (r/c_read_recent_plague_
-## maps.R) -- REPLACING (2026-09) the earlier state x year / state x season (a)+(b) rule (still
-## available in r_not_in_use/c_anchor_plague_state.R, for the full history of that rule's own
-## development). A paddock-season anchors plague_state = 2 if its own location falls inside any
-## polygon mapped for that exact season (any severity), plague_state = 1 if it's outside every
-## polygon mapped for a season recent_plague_maps DOES cover, and NA (unanchored) everywhere else --
-## except that same paddock's own 2 seasons immediately before a plague_state = 2 anchor, where a
-## forced plague_state = 1 is loosened back to NA (added 2026-09: a real outbreak is rarely
-## confirmed the very first season it begins, so those lead-up seasons aren't confidently non-plague
-## either).
-mapped_years      <- sort(unique(recent_plague_maps$year))
-first_mapped_year <- min(mapped_years)
-n_pre_coverage_anchored <- hmm_data |>
-  filter(year_adj < first_mapped_year, !is.na(state)) |>
-  nrow()
+## Forecast period: the latest period shared by all four transition covariates, and the season after it.
+latest_shared_period <- function(rasters) {
+  periods <- Reduce(intersect, lapply(rasters, names))
+  key <- as.integer(sub(".*_", "", periods)) * 100 + as.integer(sub("_.*", "", periods))
+  periods[which.max(key)]
+}
+period_seasons <- function(period) {
+  info <- season_info(as.Date(paste(sub(".*_", "", period), sub("_.*", "", period), "15", sep = "-")))
+  season_order <- c("Summer", "Autumn", "Winter", "Spring")
+  cov_season <- as.character(info$season)
+  target <- season_order[(match(cov_season, season_order) %% 4) + 1]
+  list(period = period, covariate_season = cov_season, covariate_year = info$year_adj,
+       target_season = target, target_year = if (target == "Summer") info$year_adj + 1 else info$year_adj)
+}
+forecast <- period_seasons(latest_shared_period(list(rain_whiplash_trough_to_peak, gpp_rolling_raster_6,
+                                                     soil_moisture_anomaly_raster, min_temp_raster_coarse)))
+nowcast  <- period_seasons(latest_shared_period(list(rain_whiplash_trough_to_peak, gpp_rolling_raster_6_nowcast,
+                                                     soil_moisture_anomaly_raster_nowcast, min_temp_raster_coarse)))
+
+## Current risk by AE zone, for both models: mean, 90th percentile and maximum across each zone's cells.
+zone_raster <- terra::rasterize(terra::vect(fit_zones_ll), plague_risk_map_supervised, field = "ae_zone")
+risk_by_zone <- purrr::imap_dfr(model_variants, function(m, label) {
+  z <- terra::zonal(m$risk_map, zone_raster,
+                    fun = function(x, ...) c(mean = mean(x, na.rm = TRUE), q90 = stats::quantile(x, 0.9, na.rm = TRUE, names = FALSE),
+                                             max = max(x, na.rm = TRUE)))
+  tibble::tibble(Model = label, ae_zone = as.character(z[[1]]), mean = z[[2]][, 1], q90 = z[[2]][, 2], max = z[[2]][, 3])
+})
+top_zones <- risk_by_zone |> filter(Model == "Supervised") |> arrange(desc(mean)) |> slice_head(n = 2)
+
+## Hindcast skill (state-mean summary), both models.
+hindcast_scores <- bind_rows(
+  mutate(plague_hindcast_scores_supervised$scores, Model = "Supervised"),
+  mutate(plague_hindcast_scores_unsupervised$scores, Model = "Unsupervised")
+) |>
+  filter(stat == "mean")
+get_hindcast <- function(model, predictor_name, era_name, col = "auc_within") {
+  hindcast_scores[[col]][hindcast_scores$Model == model & hindcast_scores$predictor == predictor_name & hindcast_scores$era == era_name]
+}
+fmt2 <- function(x) sprintf("%.2f", x)
+
+## Residual calibration and posterior-predictive statistics outside the simulated range.
+pr_summary <- purrr::imap_dfr(plague_hmm_pseudores, function(x, nm) {
+  x <- x[is.finite(x)]
+  tibble::tibble(Stream = nm, n = length(x), Mean = mean(x), SD = sd(x), `% |z|>2` = 100 * mean(abs(x) > 2))
+})
+ppc_summary <- plague_hmm_ppc$simulated |>
+  group_by(statistic) |>
+  summarise(sim_mean = mean(simulated), sim_lo = quantile(simulated, 0.025), sim_hi = quantile(simulated, 0.975), .groups = "drop") |>
+  left_join(plague_hmm_ppc$observed, by = "statistic") |>
+  mutate(inside = observed >= sim_lo & observed <= sim_hi)
+ppc_outside <- ppc_summary$statistic[!ppc_summary$inside]
+ppc_label <- function(stat) {
+  stream <- c(trap_count = "trap", burrow_count = "burrow", chewcard_count = "chew-card")[sub(":.*", "", stat)]
+  what <- sub(".*: ", "", stat)
+  what <- dplyr::recode(what, mean = "mean", SD = "SD", `Pr(0)` = "share of zeros", `Pr(10)` = "share of fully chewed sessions")
+  paste(stream, what)
+}
+## "a, b and c" for lists in the text.
+and_join <- function(x) if (length(x) <= 1) x else paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+chew_freq_stats <- c("chewcard_count: Pr(0)", "chewcard_count: Pr(10)")
+chew_freq_ok <- chew_freq_stats[!chew_freq_stats %in% ppc_outside]
+
+## Decoded-state agreement and second-state shares.
+decoded <- lapply(model_variants, function(m) m$hmm$viterbi())
+agreement_pct <- round(100 * mean(decoded$Supervised == decoded$Unsupervised), 1)
+state2_share <- sapply(decoded, function(v) mean(v == 2))
 ```
 
-Of `r nrow(hmm_data)` paddock-seasons, `r n_plague` are anchored to the plague state and `r n_nonplague` to the non-plague state (`r round(100*(n_plague+n_nonplague)/nrow(hmm_data), 1)`% of the panel), all of them within recent_plague_maps' own `r length(mapped_years)` mapped seasons (`r paste(mapped_years, collapse = ", ")`) (`r n_pre_coverage_anchored` rows anchored outside that coverage, confirming the rule really does leave every other season untouched). `r n_both` paddocks have both a plague and a non-plague anchor at different times, giving the model genuine before/after evidence of the transition it's meant to estimate.
+## Summary
+
+- **Model.** A two-state (not-plague / plague) hidden Markov model fitted to `r format(n_rows, big.mark = ",")` paddock-seasons across `r n_paddocks` paddocks in `r length(fit_states)` states. Live-trap, active-burrow and chew-card surveys are the observations; rainfall whiplash, GPP, soil-moisture anomaly and minimum temperature drive the seasonal transitions into and out of plague.
+- **Anchoring.** `r format(n_plague, big.mark = ",")` paddock-seasons are anchored to plague and `r format(n_nonplague, big.mark = ",")` to not-plague, from `r nrow(mapped_seasons)` hand-mapped plague seasons since `r first_mapped_year`.
+- **Current forecast.** For `r forecast$target_season` `r forecast$target_year` (from `r forecast$covariate_season` `r forecast$covariate_year` covariates), onset risk is highest in `r top_zones$ae_zone[1]` (zone mean `r scales::percent(top_zones$mean[1], accuracy = 0.1)`) and `r top_zones$ae_zone[2]` (`r scales::percent(top_zones$mean[2], accuracy = 0.1)`).
+- **Early warning.** On recorded plague years before 2013, which the model never saw, one-year-ahead onset risk has a within-state AUC of `r fmt2(get_hindcast("Supervised", "onset_lead", "hindcast"))`, against `r fmt2(get_hindcast("Supervised", "rain_whiplash", "hindcast"))` for rainfall whiplash alone (same-year onset `r fmt2(get_hindcast("Supervised", "onset", "hindcast"))`).
+- **Model checks.** Randomised residuals are calibrated for every stream (means `r fmt2(min(pr_summary$Mean))` to `r fmt2(max(pr_summary$Mean))`, SDs `r fmt2(min(pr_summary$SD))` to `r fmt2(max(pr_summary$SD))`). `r if (length(ppc_outside) > 0) paste0("Data simulated from the model match the real data except for the ", and_join(ppc_label(ppc_outside)), ", which fall just outside the simulated 95% ranges.") else "Data simulated from the model match every checked statistic."`
+- **Supervised vs. unsupervised.** The two models agree on `r agreement_pct`% of decoded states. Without anchors the second state is rarer (`r scales::percent(state2_share[["Unsupervised"]], accuracy = 0.1)` against `r scales::percent(state2_share[["Supervised"]], accuracy = 0.1)` of paddock-seasons) and more extreme.
+- **Main limitations.** The plague transition rests on few independent mapped plague seasons; the forecast reaches one season ahead only; and validation before 2013 relies on coarse state-by-year plague records.
+
+## Data
 
 ```{r}
-#| label: trigger-episodes
+#| label: tbl-data
 
-## Unlike the superseded (a)+(b) rule, this anchor has no persistence propagation -- every
-## plague_state=2 row is its own independent point-in-polygon match, not a trigger multiplied
-## forward across seasons -- so the anchored-row count above already IS the independent-event
-## count. Broken down per mapped season here rather than recomputed.
-anchors_by_season <- hmm_data |>
-  filter(!is.na(state)) |>
-  count(year_adj, state)
+## Surveys per state: paddocks, paddock-seasons, and paddock-seasons with each observation stream.
+hmm_data |>
+  group_by(State = aus_state) |>
+  summarise(Paddocks = n_distinct(ID), `Paddock-seasons` = n(),
+            `Live-trap` = sum(!is.na(trap_count)), `Active burrow` = sum(!is.na(burrow_count)),
+            `Chew card` = sum(!is.na(chewcard_count)), .groups = "drop") |>
+  arrange(desc(Paddocks)) |>
+  gt::gt() |>
+  gt::fmt_integer(columns = -State) |>
+  gt::tab_spanner(label = "Paddock-seasons surveyed by", columns = c(`Live-trap`, `Active burrow`, `Chew card`)) |>
+  gt::tab_options(table.font.size = "0.85em")
 ```
 
-**Every one of the `r n_plague` plague-anchored rows above is a genuinely independent event** -- a paddock's own location falling inside a mapped polygon for that exact season, with no propagation to inflate the count -- spread across `r length(mapped_years)` mapped seasons (`r paste(mapped_years, collapse = ", ")`). **The transition coefficient this whole forecasting use case leans on is therefore estimated from exactly `r n_plague` independent events** -- a real small-N caveat worth keeping visible alongside the coefficient's own point estimate below, and a smaller number than the superseded rule's own (that rule's much broader 2013+ coverage came at the cost of state/subregion-grain, not paddock-grain, evidence).
+Each paddock is one time series of seasons, from `r min(hmm_data$year_adj)` to `r max(hmm_data$year_adj)`; seasons without a survey stay in the panel with no observations, so the hidden state is carried through them by the transition model. Repeat visits within a season are reduced to the first visit. The fit covers `r length(zone_levels)` agro-ecological (AE) zones; `"Qld Central"` is excluded, having no surveys since 2008 and no plague anchors.
 
-`recent_plague_maps` has no coverage at all before `r first_mapped_year`, so the historic panel back to 1985 (`trap_count` only) is fully unanchored -- see `r/c_anchor_plague_state.R`'s header for why no fallback rule covers that stretch (the superseded (a)+(b) rule's own two attempts at one were tried and reverted; this rule doesn't reattempt them). Historic `trap_count` data still informs that stream's own distribution, but contributes no state-anchor evidence in either direction.
+The burrow and chew-card zone effects use `r length(adj_zone_levels)` adjusted AE zones, merging AE zones with few surveys so every zone has enough data in each state (`r/a_adjust_aez.R`); the transitions keep all `r length(zone_levels)` original AE zones.
 
-### Anchored states vs. the model's own estimate, by state
+```{r}
+#| label: tbl-obs-zones
+
+## Which AE zones make up each adjusted AE zone, and the burrow/chew-card surveys behind each.
+hmm_data |>
+  group_by(`Adjusted AE zone` = ae_zone_adj) |>
+  summarise(`AE zones` = paste(sort(unique(as.character(ae_zone))), collapse = ", "),
+            `Burrow surveys` = sum(!is.na(burrow_count)), `Chew-card surveys` = sum(!is.na(chewcard_count)),
+            .groups = "drop") |>
+  gt::gt() |>
+  gt::tab_options(table.font.size = "0.85em")
+```
+
+The northern adjusted zones split the two northern AE zones at the NSW/Queensland border.
+
+## Anchoring
+
+Known plague occurrence fixes the hidden state where it is known. Plague extents are hand-digitised for each mapped season (`raw_data/plague_occurrence/recent_plague_maps/`). A paddock-season inside a mapped extent is anchored to plague; one outside every extent is anchored to not-plague, for every season from the start of the census (Summer 2013) to the latest mapped season, except the two seasons before a paddock's plague anchor, which are left unanchored because a plague is rarely confirmed the season it begins. Full rule: `r/c_anchor_plague_state.R`.
+
+```{r}
+#| label: fig-anchor-maps
+#| fig-cap: "The hand-digitised plague extents used as anchors, one panel per mapped season."
+#| out-width: "100%"
+
+knitr::include_graphics(file.path(root_path, recent_plague_maps_map))
+```
+
+`r format(n_plague, big.mark = ",")` paddock-seasons are anchored to plague and `r format(n_nonplague, big.mark = ",")` to not-plague (`r round(100 * (n_plague + n_nonplague) / n_rows, 1)`% of the panel). Each plague anchor is a separate paddock falling inside a mapped extent, but they come from only `r nrow(mapped_seasons)` mapped seasons (`r paste(paste(mapped_seasons$season, mapped_seasons$year), collapse = ", ")`), so the plague transition is estimated from a modest number of independent plague events. Before `r first_mapped_year` there are no anchors.
 
 ```{r}
 #| label: fig-anchor-vs-model
-#| fig-cap: "Anchored plague-state evidence fed into the fit (points, only where at least one paddock in that state-season has an anchor -- none before 2014) against the model's own smoothed Pr(plague state) (line, averaged across every paddock in that state-season) -- hmmTMB's state_probs(), not a hard Viterbi decode. Faceted by state to match the grain plague_state is itself anchored at."
-#| fig-asp: 0.5
+#| fig-cap: "Share of anchored paddock-seasons in plague (points, where anchors exist) against each model's mean smoothed Pr(plague state) across all paddocks in that state and season (lines)."
+#| fig-asp: 0.55
 
-## state_probs() returns one row per hmm_data row, in the same order (confirmed live: at anchored
-## rows, state_probs()'s own smoothed probability for the anchored state is exactly 1 -- hmmTMB
-## fixes known states during estimation, so this isn't a coincidence, it's the alignment check).
-state2_prob <- plague_hmm$state_probs()[, "state2"]
-state2_prob_unsup <- plague_hmm_unsupervised$state_probs()[, "state2"]
-
-## Row-level Viterbi agreement between the anchored and unsupervised models -- computed live so
-## the prose number below can't drift out of sync with whichever model this chunk compares.
-row_agreement <- round(100 * mean(plague_hmm$viterbi() == plague_hmm_unsupervised$viterbi()), 1)
-
-## Same season_mid_month convention as raster_layer_dates() (r/b_raster_mean_series.R) -- the 15th
-## of that season's own mid-month, purely for a continuous, sortable x-axis.
+## Smoothed state probabilities are in hmm_data's row order; season mid-months give a date axis.
 season_mid_month <- c(Summer = 1L, Autumn = 4L, Winter = 7L, Spring = 10L)
-
 anchor_vs_model <- hmm_data |>
   mutate(
-    state2_prob_model = state2_prob,
-    state2_prob_unsup_model = state2_prob_unsup,
-    anchored_plague    = dplyr::case_when(state == 2 ~ 1, state == 1 ~ 0, TRUE ~ NA_real_),
-    season_str  = as.character(season_year_adj),
-    season_name = sub("-.*", "", season_str),
-    year_adj    = as.integer(sub(".*-", "", season_str)),
-    date        = as.Date(paste(year_adj, season_mid_month[season_name], "15", sep = "-"))
+    Supervised   = plague_hmm$state_probs()[, "state2"],
+    Unsupervised = plague_hmm_unsupervised$state_probs()[, "state2"],
+    anchored     = case_when(state == 2 ~ 1, state == 1 ~ 0, TRUE ~ NA_real_),
+    date         = as.Date(paste(year_adj, season_mid_month[as.character(season)], "15", sep = "-"))
   ) |>
   group_by(aus_state, date) |>
-  summarise(
-    anchored_frac = mean(anchored_plague, na.rm = TRUE),
-    model_prob    = mean(state2_prob_model),
-    model_prob_unsup = mean(state2_prob_unsup_model),
-    .groups = "drop"
-  )
+  summarise(anchored_share = mean(anchored, na.rm = TRUE), Supervised = mean(Supervised),
+            Unsupervised = mean(Unsupervised), .groups = "drop")
 
 ggplot(anchor_vs_model, aes(date)) +
-  geom_line(aes(y = model_prob, colour = "Anchored model (state_probs)"), linewidth = 0.4) +
-  geom_line(aes(y = model_prob_unsup, colour = "Unsupervised model (state_probs)"), linewidth = 0.4, linetype = "22") +
-  geom_point(aes(y = anchored_frac, colour = "Anchored (ground truth)"), size = 1.2, na.rm = TRUE) +
+  geom_line(data = pivot_longer(anchor_vs_model, c(Supervised, Unsupervised), names_to = "Model"),
+            aes(y = value, colour = Model), linewidth = 0.4) +
+  geom_point(aes(y = anchored_share), colour = hazard_colors[5], size = 1.1, na.rm = TRUE) +
   facet_wrap(~aus_state, ncol = 2) +
-  scale_colour_manual(values = c(
-    `Anchored model (state_probs)`      = "#2166ac",
-    `Unsupervised model (state_probs)`  = "#8c8c8c",
-    `Anchored (ground truth)`           = hazard_colors[5]
-  ), name = NULL) +
+  scale_colour_manual(values = model_colours, name = NULL) +
   labs(x = NULL, y = "Pr(plague state)") +
-  theme(legend.position = "top", strip.text = element_text(size = 8.5))
+  theme(legend.position = "top")
 ```
 
-Where anchor points sit near 0 or 1 and the anchored line tracks them closely, the fit is doing what it should. Divergence is the more informative case -- either the model finding independent support for a state the anchors don't confirm, or a sign the covariate relationship isn't transferring cleanly. The grey (unsupervised) line tracks the blue (anchored) one closely almost everywhere -- `r row_agreement`% row-level Viterbi agreement between the two. Divergence concentrated around recent_plague_maps' own mapped seasons (`r paste(mapped_years, collapse = ", ")`) would be the expected signature of the anchors doing real work, exactly what they're *for*: sharpening the estimate where independent regional evidence exists and the observation data alone wouldn't quite have been enough; sustained divergence elsewhere would be worth a closer look.
+The supervised model follows the anchors where they exist, as it must. The unsupervised model, fitted without them, still rises through the mapped plague seasons, so the observation data carry much of the same signal.
 
-## Model specification
+## Model
 
 ```{=html}
 <figure>
-<svg viewBox="0 0 980 605" role="img" aria-label="Diagram of the two-state seasonal hidden Markov model: the hidden not-plague/plague state forms a Markov chain across seasons, with transition probabilities driven by rainfall whiplash (zone-varying), soil moisture, gross primary productivity and agro-ecological zone; below, each season's hidden state emits three conditionally independent observation streams (trap_count, burrow_count, chewcard_count), each with its own distribution and detection-side covariates." style="max-width:100%;height:auto;font-family:inherit;">
+<svg viewBox="0 0 980 605" role="img" aria-label="Diagram of the two-state seasonal hidden Markov model: the hidden not-plague/plague state forms a Markov chain across seasons, with transition probabilities driven by rainfall whiplash (zone-varying), soil moisture anomaly, gross primary productivity, minimum temperature and agro-ecological zone; below, each season's hidden state emits three conditionally independent observation streams (trap_count, burrow_count, chewcard_count), each with its own distribution and detection-side covariates." style="max-width:100%;height:auto;font-family:inherit;">
   <defs>
     <marker id="arrowN" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
@@ -297,7 +359,7 @@ Where anchor points sit near 0 or 1 and the anchored line tracks them closely, t
   <!-- process-model covariate box, feeding the two switching arrows -->
   <rect x="90" y="255" width="340" height="80" rx="8" fill="currentColor" fill-opacity="0.06" stroke="currentColor" stroke-opacity="0.35" />
   <text x="105" y="274" font-size="11" font-weight="600" fill="currentColor">Transition covariates:</text>
-  <text x="105" y="289" font-size="11" fill="currentColor">Rainfall whiplash (zone-varying) · Soil moisture</text>
+  <text x="105" y="289" font-size="11" fill="currentColor">Rainfall whiplash (zone-varying) · Soil moisture anomaly</text>
   <text x="105" y="304" font-size="11" fill="currentColor">Gross Primary Productivity · Minimum temperature</text>
   <text x="105" y="319" font-size="11" fill="currentColor">Agro-ecological zone</text>
   <line x1="260" y1="255" x2="305" y2="170" stroke="currentColor" stroke-width="1.2" marker-end="url(#arrowN)" />
@@ -322,17 +384,17 @@ Where anchor points sit near 0 or 1 and the anchored line tracks them closely, t
   <rect x="140" y="432" width="180" height="70" rx="8" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.4" />
   <text x="230" y="456" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">trap_count</text>
   <text x="230" y="476" text-anchor="middle" font-size="10.5" fill="currentColor">nbinom2(mean, shape)</text>
-  <text x="230" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season (tied) + effort offset</text>
+  <text x="230" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season + crop group (tied) + effort</text>
 
   <rect x="390" y="432" width="180" height="70" rx="8" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.4" />
   <text x="480" y="456" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">burrow_count</text>
   <text x="480" y="476" text-anchor="middle" font-size="10.5" fill="currentColor">nbinom2(mean, shape)</text>
-  <text x="480" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season + crop + soil (tied) + ae_zone + effort</text>
+  <text x="480" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season + crop + soil (tied) + adj. AE zone + effort</text>
 
   <rect x="640" y="432" width="180" height="70" rx="8" fill="currentColor" fill-opacity="0.05" stroke="currentColor" stroke-opacity="0.4" />
   <text x="730" y="456" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">chewcard_count (+3 blocks)</text>
   <text x="730" y="476" text-anchor="middle" font-size="10.5" fill="currentColor">beta-binomial(size = 10) each</text>
-  <text x="730" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season + crop + soil (tied) + ae_zone</text>
+  <text x="730" y="493" text-anchor="middle" font-size="10.5" fill="currentColor">~season + crop + soil (tied) + adj. AE zone</text>
 
   <!-- legend -->
   <circle cx="98" cy="562" r="7" fill="#3F5B45" fill-opacity="0.4" stroke="#3F5B45" />
@@ -342,7 +404,7 @@ Where anchor points sit near 0 or 1 and the anchored line tracks them closely, t
   <text x="270" y="562" font-size="11" fill="currentColor" opacity="0.75">Both streams and states repeat every season -- one HMM fit</text>
   <text x="270" y="578" font-size="11" fill="currentColor" opacity="0.75">per paddock, most paddock-seasons observe only 1-2 of the 3 streams.</text>
 </svg>
-<figcaption>The hidden not-plague/plague state forms a Markov chain across seasons (top): which of the four transition arrows applies each season is set by the process-model covariates in the box, not fixed. Whichever state a paddock is in that season (bottom) independently generates up to three response types, each with its own distribution family and detection-side covariates -- "tied" means that covariate's effect is constrained to be identical across states (or, for chewcard's extra blocks, across blocks too), on the view that it's a detection mechanism rather than a real state-dependent one, see [Fit diagnostics]. Semi-supervised anchoring is not shown here, see <a href="#data-and-anchoring">Data and anchoring</a>.</figcaption>
+<figcaption>The hidden not-plague/plague state forms a Markov chain across seasons (top): the chance of switching state each season is set by the transition covariates. Each season's state generates up to three observation streams (bottom), each with its own distribution and detection covariates; "tied" terms take the same value in both states. Anchoring is not shown; see <a href="#anchoring">Anchoring</a>.</figcaption>
 </figure>
 ```
 
@@ -351,778 +413,314 @@ Where anchor points sit near 0 or 1 and the anchored line tracks them closely, t
 
 tibble::tribble(
   ~Component, ~Specification,
-  "States", "2 (not-plague, plague)",
-  "Transition formula", "~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = 're') + gpp_rolling6 + soil_moisture + min_temp + s(ae_zone, bs = 're'). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, not a fixed per-zone interaction -- see [Zone-specific deviations]. Structurally one-season-ahead only -- see [Prediction: current risk map]",
-  "Initial state distribution", "stationary (not hmmTMB's own default of one estimated distribution per paddock -- too many free parameters relative to the anchor data available)",
-  "trap_count", "Total captures per session (trap success; recaptures included). nbinom2 (mean/shape); mean ~season (tied across states) + a search-effort offset (log_trap_effort, coefficient fixed at 1, correcting for true trap-nights, 4-827, ~200x range). No ae_zone, crop/soil or shape formula -- see [Fit diagnostics] for why.",
-  "burrow_count", "nbinom2 (mean/shape); mean ~season (tied) + ae_zone (free per state) + season:summer_zone_ne (tied) + gpp_finescale (tied) + crop group, crop stage and soil type (tied; missing crop as 'not recorded') + a search-effort offset (log_burrow_metres_searched, fixed at 1, correcting for burrow_transects_surveyed's own real variation).",
-  "chewcard_count + 3 blocks", "betabinom (beta-binomial: prob = mean, sigma = overdispersion), trials fixed at 10 each. chewcard_count = cards 1-10; chewcard_block2/3/4 = cards 11-20/21-30/31-40 (r/a_data_rapid_session_summary.R), NA wherever that block wasn't deployed. prob ~season (tied) + crop group, crop stage and soil type (tied) + ae_zone (free per state); every coefficient additionally tied ACROSS the 4 blocks, since they measure the same underlying detection rate over however many transects were actually deployed. sigma ~1, free per state, tied across the 4 blocks."
+  "States", "2 (not-plague, plague), one time series per paddock; stationary initial distribution",
+  "Transitions", "Pr(enter plague) and Pr(leave plague) each ~ rainfall whiplash (with a zone-varying random slope) + GPP (6-month rolling) + soil-moisture anomaly + minimum temperature + AE-zone random intercept. This season's covariates set the transition to next season's state.",
+  "trap_count", "Total captures per session (trap success). Negative binomial (mean, shape); mean ~ season + season x summer-cropping zone + crop group (all tied) + log trap-nights (offset, coefficient fixed at 1).",
+  "burrow_count", "Active burrows per session. Negative binomial (mean, shape); mean ~ season + season x summer-cropping zone + fine-scale GPP + crop group + crop stage + soil type (all tied) + observation zone (per state) + log metres searched (offset).",
+  "chewcard_count (+3 blocks)", "Cards chewed out of 10, in up to four blocks of 10 cards. Beta-binomial (prob, overdispersion sigma); prob ~ season + crop group + crop stage + soil type (all tied) + observation zone (per state); every coefficient shared by the four blocks."
 ) |>
   gt::gt() |>
   gt::tab_options(table.font.size = "0.85em") |>
-  gt::cols_width(Component ~ px(200))
+  gt::cols_width(Component ~ px(170))
 ```
 
-"Tied" (season on all streams; crop group, crop stage and soil type on `burrow_count` and the chewcard streams; `gpp_finescale`/`season:summer_zone_ne` on `burrow_count`; and everything across the 4 chewcard blocks) means hmmTMB's own coefficient is constrained to one shared, freely-estimated value via its `fixpar` "estimate to a common value" mechanism, not independently fit per state/stream -- chosen on the view that these are detection mechanisms (ground-cover/crop-stage visibility, or just more replicates of the same card-reading process), which shouldn't depend on the true state or which specific transect a card came from. `ae_zone` and `shape` are deliberately left free per state -- real, potentially state-dependent regional/dispersion effects, not detection artefacts. Full reasoning in `r/d_fit_plague_hmm.R`'s header.
+- **Tied** terms have one shared value in both states: they describe how easily mice are detected (season, crop, soil, search conditions), which should not depend on whether a paddock is in plague. The state intercepts and the observation-zone effects differ between states, carrying the difference in mouse numbers.
+- **Families.** Trap and burrow counts use the negative binomial; chew cards use the beta-binomial, which lets the chew rate vary between sessions so cards within a session tend to be chewed together. The beta-binomial is not in CRAN hmmTMB; it comes from the patched build pinned in `renv.lock`.
+- **Effort.** Search effort (trap-nights, metres searched) enters as an offset, so means are per unit of effort.
+- Full specification, and the alternatives tested: `r/d_fit_plague_hmm.R`.
 
-## Fit diagnostics
+## Estimates
+
+### Transitions
 
 ```{r}
-#| label: convergence
+#| label: fit-stats
 
-## Both models, side by side -- purrr::imap_dfr() over model_variants (setup chunk) rather than
-## repeating this chunk once per model, so a third model variant later needs no new chunk here.
-## AIC comes from fit_stats, computed at fit time: AIC() on a model reloaded from the store segfaults
-## (r/d_fit_plague_hmm_subprocess.R).
-conv_by_model <- purrr::imap_dfr(model_variants, function(m, label) {
-  conv <- m$hmm$out()
-  tibble::tibble(Model = label, Convergence = conv$convergence, Message = conv$message,
-                 Iterations = conv$iterations, AIC = round(attr(m$hmm, "fit_stats")$aic, 1))
+fit_stats_tbl <- purrr::imap_dfr(model_variants, function(m, label) {
+  fs <- attr(m$hmm, "fit_stats")
+  tibble::tibble(Model = label, Convergence = m$hmm$out()$convergence, AIC = fs$aic, `Fit attempts` = fs$attempts)
 })
 ```
 
-```{r}
-#| label: tbl-convergence
-
-conv_by_model |>
-  gt::gt() |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "Optimiser convergence and AIC, by model") |>
-  gt::tab_footnote("hmmTMB flags AIC as \"experimental for models with random effects or splines\" -- read as directional, not a precise figure.")
-```
+Both models converged (`r paste(paste0(fit_stats_tbl$Model, ": AIC ", format(round(fit_stats_tbl$AIC, 1), big.mark = ",")), collapse = "; ")`). Their AICs are not comparable with each other, because the supervised model's likelihood is conditioned on the anchors.
 
 ```{r}
 #| label: tbl-coeff
 
-## One row per transition-formula parameter, one column per model -- a natural side-by-side read
-## since both models share the exact same formula, differing only in which paddock-seasons are
-## anchored.
-coeff_by_model <- purrr::imap_dfr(model_variants, function(m, label) {
-  hid_coeff <- m$hmm$hid()$coeff_fe()
-  tibble::tibble(Model = label, Parameter = rownames(hid_coeff), Estimate = round(hid_coeff[, 1], 3))
+## Fixed-effect transition coefficients (logit scale), both models side by side.
+purrr::imap_dfr(model_variants, function(m, label) {
+  cf <- m$hmm$hid()$coeff_fe()
+  tibble::tibble(Model = label, Parameter = rownames(cf), Estimate = cf[, 1])
+}) |>
+  mutate(Transition = ifelse(grepl("^S1>S2", Parameter), "Enter plague", "Leave plague"),
+         Term = sub("^S[12]>S[12]\\.", "", Parameter)) |>
+  select(-Parameter) |>
+  pivot_wider(names_from = c(Transition, Model), values_from = Estimate, names_sep = " | ") |>
+  gt::gt() |>
+  gt::fmt_number(columns = -Term, decimals = 2) |>
+  gt::tab_options(table.font.size = "0.8em") |>
+  gt::tab_header(title = "Transition fixed effects (logit scale)",
+                 subtitle = "Rainfall whiplash is the pooled slope; zone deviations are below")
+```
+
+```{r}
+#| label: tbl-zone-effects
+
+## Zone random effects: intercept deviations and total rainfall-whiplash slopes, by model and transition.
+zone_effects <- purrr::imap_dfr(model_variants, function(m, label) {
+  re <- m$hmm$hid()$coeff_re()
+  fe <- m$hmm$hid()$coeff_fe()
+  rn <- rownames(re)
+  is_slope <- grepl(":rain_whiplash_trough_to_peak\\.[0-9]+$", rn)
+  tibble::tibble(
+    Model      = label,
+    Transition = ifelse(grepl("^S1>S2", rn), "Enter", "Leave"),
+    ae_zone    = zone_levels[as.integer(sub(".*\\.", "", rn))],
+    Effect     = ifelse(is_slope, "Whiplash slope", "Intercept deviation"),
+    value      = re[, 1]
+  ) |>
+    mutate(value = ifelse(Effect == "Whiplash slope",
+                          value + fe[paste0(ifelse(Transition == "Enter", "S1>S2", "S2>S1"), ".rain_whiplash_trough_to_peak"), 1],
+                          value))
 })
 
-coeff_by_model |>
-  tidyr::pivot_wider(names_from = Model, values_from = Estimate) |>
+sup_enter_slopes <- zone_effects$value[zone_effects$Model == "Supervised" & zone_effects$Effect == "Whiplash slope" & zone_effects$Transition == "Enter"]
+
+zone_effects |>
+  pivot_wider(names_from = c(Effect, Transition, Model), values_from = value, names_sep = " | ") |>
+  rename(`AE zone` = ae_zone) |>
   gt::gt() |>
-  gt::fmt_number(columns = c(Supervised, Unsupervised), decimals = 3) |>
-  gt::tab_options(table.font.size = "0.8em") |>
-  gt::tab_header(title = "Transition model fixed-effect coefficients (logit scale), by model -- zone deviations shown separately below")
+  gt::fmt_number(columns = -`AE zone`, decimals = 2) |>
+  gt::tab_options(table.font.size = "0.72em") |>
+  gt::tab_header(title = "AE-zone effects on the transitions (logit scale)",
+                 subtitle = "Intercept deviations from the pooled intercept, and each zone's total rainfall-whiplash slope")
 ```
 
-`rain_whiplash_trough_to_peak`'s own row is its coefficient in the reference zone (`NSW Central`, the level mgcv's interaction coding omits) -- see [Zone-specific deviations] for every zone's own slope. `gpp_rolling6` points the same direction for both transitions (higher 6-month GPP makes entering plague more likely, leaving it less likely). `soil_moisture` and `min_temp` are both treated as untested hypotheses, not yet checked against real plague-occurrence data the way `rain_whiplash_trough_to_peak` was (`quarto_reports/covariate_summary.qmd`'s whiplash-validation section) -- see [Known limitations].
+The zone effects are random effects, so thinly surveyed zones are shrunk towards the pooled estimate rather than estimated on their own. Supervised intercept deviations span `r fmt2(min(zone_effects$value[zone_effects$Model == "Supervised" & zone_effects$Effect == "Intercept deviation"]))` to `r fmt2(max(zone_effects$value[zone_effects$Model == "Supervised" & zone_effects$Effect == "Intercept deviation"]))`, and the entering-plague whiplash slope is positive in `r sum(sup_enter_slopes > 0)` of `r length(sup_enter_slopes)` zones (`r fmt2(min(sup_enter_slopes))` to `r fmt2(max(sup_enter_slopes))`).
 
-### Zone-specific deviations
-
-Two zone random effects sit on the transition probabilities -- an intercept (`s(ae_zone, bs = "re")`) and, since 2026-09, `rain_whiplash_trough_to_peak`'s own zone-varying slope (`s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re")`, replacing an earlier fixed `rain_whiplash_trough_to_peak:ae_zone` interaction -- see [Known limitations] and `r/d_fit_plague_hmm.R`'s header for why). Both do double duty: partial pooling for estimation (each zone's own deviation is shrunk toward the pooled/global value, not estimated as if it were its own independent model), and a diagnostic for whether the covariate-risk relationship is transportable to un-monitored zones -- homogeneous deviations support applying the pooled relationship nationally, substantial zone-to-zone spread is a warning against it. This section stays supervised-only (unlike most of this report) -- the zone random effect's own regional (NSW-vs-SA) split was validated against real plague-occurrence data specifically for the anchored model, and tripling these already-dense per-zone tables with a third dimension traded more clutter than insight; the unsupervised model's own version is one `model_variants$Unsupervised$hmm` swap away if needed later.
+### Covariate effects
 
 ```{r}
-#| label: tbl-zone-deviations
+#| label: covariate-effects-data
 
-## re_coeff's own rownames mix TWO random effects (the intercept and rain_whiplash_trough_to_peak's
-## own slope, both s(ae_zone, ...) terms) under the same "<Transition>.s(ae_zone)[...].{zone index}"
-## naming -- distinguished here by whether the term itself carries ":rain_whiplash_trough_to_peak"
-## (the slope) or not (the plain intercept), not just by trailing index, which both share.
-zone_levels <- levels(hmm_data$ae_zone)
-re_coeff <- plague_hmm$hid()$coeff_re()
-re_rownames <- rownames(re_coeff)
-intercept_rows <- grepl("s\\(ae_zone\\)\\.[0-9]+$", re_rownames)
-zone_idx <- as.integer(sub(".*\\.", "", re_rownames[intercept_rows]))
-
-tibble::tibble(
-  Transition = sub("\\..*", "", re_rownames[intercept_rows]),
-  `AE zone`   = zone_levels[zone_idx],
-  Deviation   = round(re_coeff[intercept_rows, 1], 3)
-) |>
-  tidyr::pivot_wider(names_from = Transition, values_from = Deviation) |>
-  gt::gt() |>
-  gt::fmt_number(columns = c(`S1>S2`, `S2>S1`), decimals = 3) |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "Zone-specific logit-scale intercept deviations (random effect) from the fixed-effect coefficients above")
-```
-
-Deviations here span `r round(min(re_coeff[intercept_rows, 1]), 2)` to `r round(max(re_coeff[intercept_rows, 1]), 2)` on the logit scale -- modest, not the extreme values a thin-data or degenerate fit produces elsewhere in this project (see `r/d_fit_plague_hmm.R`'s header for those cases).
-
-```{r}
-#| label: tbl-rain-whiplash-zone-slope
-
-## rain_whiplash_trough_to_peak's own zone slope = the pooled fixed-effect coefficient (below, its
-## row in coeff_fe()) PLUS each zone's own random-effect deviation (coeff_re(), the slope rows
-## excluded from tbl-zone-deviations above) -- Pedersen et al.'s (2019, PeerJ 7:e6876) own "Model
-## GS": a global slope plus group-level deviations pulled toward it by a shared penalty.
-slope_rows <- grepl("s\\(ae_zone\\):rain_whiplash_trough_to_peak\\.[0-9]+$", re_rownames)
-zone_idx_slope <- as.integer(sub(".*\\.", "", re_rownames[slope_rows]))
-
-fe_coeff <- plague_hmm$hid()$coeff_fe()
-pooled_slope <- fe_coeff[c("S1>S2.rain_whiplash_trough_to_peak", "S2>S1.rain_whiplash_trough_to_peak"), 1]
-names(pooled_slope) <- c("S1>S2", "S2>S1")
-
-whiplash_zone_tbl <- tibble::tibble(
-  Transition = sub("\\..*", "", re_rownames[slope_rows]),
-  `AE zone`   = zone_levels[zone_idx_slope],
-  Deviation   = re_coeff[slope_rows, 1]
-) |>
-  dplyr::mutate(`Total slope` = round(pooled_slope[Transition] + Deviation, 3), Deviation = round(Deviation, 3))
-
-whiplash_zone_tbl |>
-  tidyr::pivot_wider(names_from = Transition, values_from = c(Deviation, `Total slope`)) |>
-  gt::gt() |>
-  gt::fmt_number(columns = dplyr::matches("^(Deviation|Total slope)_"), decimals = 3) |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "rain_whiplash_trough_to_peak's own zone-specific slope (deviation from, and combined with, the pooled coefficient above)")
-```
-
-`rain_whiplash_trough_to_peak`'s own zone-varying slope is a hierarchical random slope (partially pooled, not a fully independent per-zone estimate -- see the header note above), which is visible directly in how modest every zone's own deviation from the pooled estimate is (`r round(min(re_coeff[slope_rows, 1]), 2)` to `r round(max(re_coeff[slope_rows, 1]), 2)` on the logit scale, vs. the earlier fixed-interaction spec's own outliers documented in [Known limitations]). The South Australian zones' own `S1>S2` total slopes cluster toward the higher end (0.78-1.06), the same broad NSW-vs-SA split `soil_moisture`'s own pooled coefficient and random-intercept deviations show independently -- though `NSW NW Qld SW` (1.44) sits higher still, so this isn't a clean two-region split. WA's own 4 zones sit `r if (any(grepl("^WA", whiplash_zone_tbl[["AE zone"]]))) "within that same overall range, no standalone outlier" else "not yet in this table (add WA to hmm_states, _targets.R, and refit if they're missing)"` -- exactly the partial-pooling behaviour that makes their own inclusion viable at all (see [Known limitations] for the earlier, fixed-interaction version's own identifiability failure on two of these same 4 zones).
-
-### Covariate effects on transition probability
-
-```{r}
-#| label: covariate-effects-by-zone-data
-
-transition_covariates <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture", "min_temp")
-covariate_labels <- c(
-  rain_whiplash_trough_to_peak = "Rainfall whiplash",
-  gpp_rolling6                 = "GPP (6-month rolling)",
-  soil_moisture                = "Soil moisture",
-  min_temp                     = "Minimum temperature"
-)
-
-## Hold every covariate except the one being varied at ITS OWN median (hmm_data, the data actually
-## fit to) -- a realistic combination of conditions, not an arbitrary reference point. season fixed
-## at "Spring" purely because $predict() validates every formula's covariates are present
-## (r/d_predict_plague_risk.R's own header explains this hmmTMB behaviour) -- season has no bearing
-## on the transition-side prediction actually being computed here.
+transition_covariates <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp")
+covariate_labels <- c(rain_whiplash_trough_to_peak = "Rainfall whiplash", gpp_rolling6 = "GPP (6-month rolling)",
+                      soil_moisture_anomaly = "Soil moisture anomaly", min_temp = "Minimum temperature")
 covariate_medians <- sapply(transition_covariates, function(cv) median(hmm_data[[cv]], na.rm = TRUE))
 
-## One curve per covariate x zone combination -- ae_zone genuinely affects this prediction (zone
-## random intercept), so a single "representative" zone would hide real regional variation
-## ([Zone-specific deviations] above). n_post draws hmmTMB's own posterior samples of the
-## fixed+random-effect coefficients (HMM$predict()'s own mechanism) for a genuine (not delta-method)
-## 95% CI -- seeded once so bands are reproducible across re-renders.
-set.seed(20260807)
+## Placeholder values for every observation-formula covariate (they don't affect transition predictions).
+fill_obs_placeholders <- function(nd, hmm) {
+  obs_data <- hmm$obs()$data()
+  obs_vars <- unique(unlist(lapply(hmm$obs()$formulas(), function(p) unlist(lapply(p, function(s) unlist(lapply(s, all.vars)))))))
+  for (v in setdiff(obs_vars, names(nd))) {
+    nd[[v]] <- if (is.factor(obs_data[[v]])) factor(levels(obs_data[[v]])[1], levels = levels(obs_data[[v]])) else mean(obs_data[[v]], na.rm = TRUE)
+  }
+  nd
+}
 
-## Every observation-formula covariate NOT already a real per-cell column below (season, ae_zone)
-## is auto-filled from the fitted model's own training mean/reference level -- same introspection-
-## based mechanism as r/d_predict_plague_risk.R (its own header explains why this replaced a hand-
-## maintained placeholder list: it silently fell out of sync once burrow_count's formula grew
-## gpp_finescale/summer_zone_ne, confirmed live to break this exact $predict() call with "object
-## 'gpp_finescale' not found" -- caught by actually rendering this report, not just parsing it).
-## None of this affects the "tpm" quantity actually being predicted here.
-obs_training_data <- plague_hmm$obs()$data()
-obs_vars <- unique(unlist(lapply(plague_hmm$obs()$formulas(), function(param_list) {
-  unlist(lapply(param_list, function(state_list) unlist(lapply(state_list, all.vars))))
-})))
-
-covariate_effects_by_zone <- purrr::map_dfr(transition_covariates, function(cv) {
-  qs <- quantile(hmm_data[[cv]], probs = c(0.05, 0.95), na.rm = TRUE)
-  seq_vals <- seq(qs[1], qs[2], length.out = 60)
-
-  purrr::map_dfr(zone_levels, function(zn) {
-    nd <- as.data.frame(matrix(rep(covariate_medians, each = length(seq_vals)),
-                                nrow = length(seq_vals), dimnames = list(NULL, transition_covariates)))
-    nd[[cv]] <- seq_vals
-    nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
-    nd$ae_zone <- factor(zn, levels = zone_levels)
-    for (v in setdiff(obs_vars, names(nd))) {
-      nd[[v]] <- if (is.factor(obs_training_data[[v]])) {
-        factor(levels(obs_training_data[[v]])[1], levels = levels(obs_training_data[[v]]))
-      } else {
-        mean(obs_training_data[[v]], na.rm = TRUE)
-      }
-    }
-
-    tpm_pred <- plague_hmm$predict(what = "tpm", newdata = nd, n_post = 500, level = 0.95)
-    tibble::tibble(
-      covariate   = cv,
-      ae_zone     = zn,
-      value       = rep(seq_vals, 2),
-      transition  = rep(c("Entering plague", "Leaving plague"), each = length(seq_vals)),
-      probability = c(tpm_pred$mle["state 1", "state 2", ], tpm_pred$mle["state 2", "state 1", ]),
-      ci_low      = c(tpm_pred$lcl["state 1", "state 2", ], tpm_pred$lcl["state 2", "state 1", ]),
-      ci_high     = c(tpm_pred$ucl["state 1", "state 2", ], tpm_pred$ucl["state 2", "state 1", ])
-    )
+## Each covariate varied over its 5th-95th percentile with the others at their median, in every AE
+## zone.
+covariate_effects_by_zone <- purrr::imap_dfr(model_variants, function(m, label) {
+  purrr::map_dfr(transition_covariates, function(cv) {
+    seq_vals <- seq(quantile(hmm_data[[cv]], 0.05, na.rm = TRUE), quantile(hmm_data[[cv]], 0.95, na.rm = TRUE), length.out = 50)
+    purrr::map_dfr(zone_levels, function(zn) {
+      nd <- as.data.frame(matrix(rep(covariate_medians, each = length(seq_vals)), nrow = length(seq_vals),
+                                 dimnames = list(NULL, transition_covariates)))
+      nd[[cv]] <- seq_vals
+      nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
+      nd$ae_zone <- factor(zn, levels = zone_levels)
+      nd <- fill_obs_placeholders(nd, m$hmm)
+      tpm <- m$hmm$predict(what = "tpm", newdata = nd)
+      tibble::tibble(Model = label, covariate = cv, ae_zone = zn, value = rep(seq_vals, 2),
+                     transition = rep(c("Entering plague", "Leaving plague"), each = length(seq_vals)),
+                     probability = c(tpm["state 1", "state 2", ], tpm["state 2", "state 1", ]))
+    })
   })
-}) |>
-  dplyr::mutate(covariate_label = factor(covariate_labels[covariate], levels = covariate_labels))
+})
 
-covariate_rug <- purrr::map_dfr(transition_covariates, function(cv) {
-  tibble::tibble(covariate_label = covariate_labels[cv], value = hmm_data[[cv]])
-}) |>
-  dplyr::mutate(covariate_label = factor(covariate_label, levels = covariate_labels))
-
-## RColorBrewer's "Dark2" qualitative palette caps at 8 distinct colours -- 11 zones since WA joined
-## the fit (2026-09) exceeds that, so colorRampPalette() interpolates the extra colours needed from
-## Dark2's own 8-colour base rather than switching palettes entirely (confirmed live: brewer.pal()
-## itself silently returns only 8 colours past its own max, with no error, which is what broke
-## setNames() below with a length-8-vs-11 mismatch).
-zone_colours <- setNames(
-  grDevices::colorRampPalette(RColorBrewer::brewer.pal(8, "Dark2"))(length(zone_levels)),
-  zone_levels
-)
+## Summarised per model as the mean across zones and the range between zones.
+covariate_effects <- covariate_effects_by_zone |>
+  group_by(Model, covariate, transition, value) |>
+  summarise(mean = mean(probability), lo = min(probability), hi = max(probability), .groups = "drop") |>
+  mutate(covariate_label = factor(covariate_labels[covariate], levels = covariate_labels))
 ```
 
 ```{r}
-#| label: fig-covariate-effects-entering
-#| fig-cap: "Predicted Pr(state 1 -> state 2), \"entering plague\", as each transition covariate varies across its own 5th-95th percentile range, holding the other three at their own median -- one line per AE zone, using that zone's own fitted random-intercept deviation. Shaded bands are 95% CIs from 500 posterior draws. Rug marks show observed data density -- sparser regions are more extrapolated."
-#| fig-asp: 0.45
+#| label: fig-covariate-effects
+#| fig-cap: "Transition probabilities as each covariate varies over its 5th-95th percentile, others held at their median. Lines: mean across AE zones; bands: range between zones. Supervised and unsupervised models together."
+#| fig-asp: 0.7
 
-ggplot(dplyr::filter(covariate_effects_by_zone, transition == "Entering plague"),
-       aes(value, probability, colour = ae_zone, fill = ae_zone)) +
-  geom_ribbon(aes(ymin = ci_low, ymax = ci_high), colour = NA, alpha = 0.15) +
-  geom_line(linewidth = 0.7) +
-  geom_rug(data = covariate_rug, aes(x = value), inherit.aes = FALSE, sides = "b", alpha = 0.05) +
-  facet_wrap(~covariate_label, scales = "free_x") +
-  scale_colour_manual(values = zone_colours, name = "AE zone") +
-  scale_fill_manual(values = zone_colours, name = "AE zone") +
+ggplot(covariate_effects, aes(value, mean, colour = Model, fill = Model)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), colour = NA, alpha = 0.15) +
+  geom_line(linewidth = 0.8) +
+  facet_grid(transition ~ covariate_label, scales = "free") +
+  scale_colour_manual(values = model_colours, name = NULL) +
+  scale_fill_manual(values = model_colours, name = NULL) +
   scale_y_continuous(labels = scales::percent) +
-  labs(x = NULL, y = "Pr(entering plague)") +
-  theme(legend.position = "bottom") +
-  guides(colour = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+  labs(x = NULL, y = "Probability per season") +
+  theme(legend.position = "top", strip.text = element_text(size = 9))
 ```
 
 ```{r}
-#| label: fig-covariate-effects-leaving
-#| fig-cap: "Predicted Pr(state 2 -> state 1), \"leaving plague\", same covariate ranges, zone colours and CI construction as the entering-plague panel above."
-#| fig-asp: 0.45
+#| label: fig-whiplash-by-zone
+#| fig-cap: "Transition probabilities as rainfall whiplash varies over its 5th-95th percentile in each AE zone (its zone-varying random slope), other covariates held at their median."
+#| fig-asp: 0.8
 
-ggplot(dplyr::filter(covariate_effects_by_zone, transition == "Leaving plague"),
-       aes(value, probability, colour = ae_zone, fill = ae_zone)) +
-  geom_ribbon(aes(ymin = ci_low, ymax = ci_high), colour = NA, alpha = 0.15) +
+covariate_effects_by_zone |>
+  filter(covariate == "rain_whiplash_trough_to_peak") |>
+  ggplot(aes(value, probability, colour = ae_zone)) +
   geom_line(linewidth = 0.7) +
-  geom_rug(data = covariate_rug, aes(x = value), inherit.aes = FALSE, sides = "b", alpha = 0.05) +
-  facet_wrap(~covariate_label, scales = "free_x") +
-  scale_colour_manual(values = zone_colours, name = "AE zone") +
-  scale_fill_manual(values = zone_colours, name = "AE zone") +
+  facet_grid(transition ~ Model, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", name = "AE zone") +
   scale_y_continuous(labels = scales::percent) +
-  labs(x = NULL, y = "Pr(leaving plague)") +
-  theme(legend.position = "bottom") +
-  guides(colour = guide_legend(nrow = 2), fill = guide_legend(nrow = 2))
+  labs(x = covariate_labels[["rain_whiplash_trough_to_peak"]], y = "Probability per season") +
+  theme(legend.position = "right", legend.text = element_text(size = 8))
 ```
 
-Each panel isolates one covariate's own marginal effect, everything else held fixed -- these read the fitted coefficients above directly as probabilities, but don't capture interactions between the four covariates. CI bands widen toward each covariate's own extremes (fewer observations that far from the median) and differ by zone, tracking each zone's own data volume. The South Australian zones sit visibly higher on entering-plague risk and lower on leaving-plague probability than the NSW zones across every covariate -- the same regional split [Zone-specific deviations] shows in coefficient form. `rain_whiplash_trough_to_peak` and `gpp_rolling6` show the expected monotonic pattern (entering-plague risk rises, leaving-plague risk falls, as each increases); `soil_moisture`'s entering-plague curve now rises too (consistent with its coefficient's own sign, [Fit diagnostics]), though its leaving-plague curve still rises with wetter conditions; `min_temp` shows both curves falling as temperature rises.
+In both models, state 2 is the high-activity state (higher trap, burrow and chew-card levels; @tbl-obspar), so the curves describe the same kind of transition. Without anchors, the second state is rarer and more extreme, so the unsupervised model's entry probabilities read as "entering high activity" rather than the mapped plague definition. Both models agree on the direction of the rainfall-whiplash effect: a sharp swing from dry to wet raises the chance of entering the high state and lowers the chance of leaving it.
 
-## Observation model
+### Observation model
 
 ```{r}
 #| label: tbl-obspar
 
-obs_par <- plague_hmm$obs()$par(t = 1)[, , 1]
-keep_rows <- !grepl(paste(chewcard_streams[-1], collapse = "|"), rownames(obs_par))
-as.data.frame(obs_par[keep_rows, , drop = FALSE]) |>
-  tibble::rownames_to_column("Parameter") |>
+## Observation parameters at the first row of hmm_data (a snapshot: means and probabilities also
+## vary with season, effort, crop and zone), both models.
+purrr::imap_dfr(model_variants, function(m, label) {
+  p <- m$hmm$obs()$par(t = 1)[, , 1]
+  keep <- !grepl(paste(chewcard_streams[-1], collapse = "|"), rownames(p)) & !grepl("size", rownames(p))
+  tibble::tibble(Model = label, Parameter = rownames(p)[keep], `State 1` = p[keep, 1], `State 2` = p[keep, 2])
+}) |>
+  pivot_wider(names_from = Model, values_from = c(`State 1`, `State 2`), names_sep = " | ") |>
   gt::gt() |>
-  gt::fmt_number(columns = c(`state 1`, `state 2`), decimals = 3) |>
+  gt::fmt_number(columns = -Parameter, decimals = 3) |>
   gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "Observation distribution parameters (row 1 of hmm_data -- mean/prob also vary by season and search effort, this is one snapshot)")
+  gt::tab_header(title = "Observation parameters by state (one snapshot)")
 ```
-
-`chewcard_block2/3/4` are omitted from the table above -- every one of their own parameters is numerically identical to `chewcard_count`'s by construction (tied, see [Model specification]), so showing all four would only repeat the same row three times. `chewcard_count.size` stays fixed at 10 in every block (the trials parameter isn't estimated); `chewcard_count.prob` shows a large, well-separated state contrast, a strong signal.
 
 ```{r}
 #| label: fig-season-effects
-#| fig-cap: "Fitted mean (trap_count, burrow_count) or detection probability (chewcard_count) by season and state -- the detection-side ~season formula each stream carries, not a plague-risk signal."
+#| fig-cap: "Supervised model: fitted trap mean, burrow mean and chew-card probability by season and state, at otherwise fixed conditions. The season effect is shared by both states, so the lines differ in level but not in shape."
+#| fig-asp: 0.4
 
-season_levels_obs <- levels(hmm_data$season)
-season_row_idx <- sapply(season_levels_obs, function(s) which(hmm_data$season == s)[1])
-obs_par_by_season <- plague_hmm$obs()$par(t = season_row_idx)
-
-season_effects <- purrr::map_dfr(seq_along(season_levels_obs), function(i) {
-  tibble::tibble(
-    season = season_levels_obs[i],
-    stream = c("trap_count", "trap_count", "burrow_count", "burrow_count", "chewcard_count", "chewcard_count"),
-    state  = rep(c("state 1", "state 2"), 3),
-    value  = c(
-      obs_par_by_season["trap_count.mean", , i],
-      obs_par_by_season["burrow_count.mean", , i],
-      obs_par_by_season["chewcard_count.prob", , i]
-    )
-  )
+season_rows <- sapply(levels(hmm_data$season), function(s) which(hmm_data$season == s)[1])
+par_by_season <- plague_hmm$obs()$par(t = season_rows)
+season_effects <- purrr::map_dfr(seq_along(season_rows), function(i) {
+  tibble::tibble(season = names(season_rows)[i],
+                 stream = rep(c("Trap mean", "Burrow mean", "Chew-card probability"), each = 2),
+                 state  = rep(c("State 1", "State 2"), 3),
+                 value  = c(par_by_season["trap_count.mean", , i], par_by_season["burrow_count.mean", , i],
+                            par_by_season["chewcard_count.prob", , i]))
 })
 
-stream_labels <- c(trap_count = "trap_count.mean", burrow_count = "burrow_count.mean", chewcard_count = "chewcard_count.prob")
-
-ggplot(season_effects, aes(factor(season, levels = season_levels_obs), value, colour = state, group = state)) +
+ggplot(season_effects, aes(factor(season, levels = names(season_rows)), value, colour = state, group = state)) +
   geom_line(linewidth = 0.8) +
   geom_point(size = 1.8) +
-  facet_wrap(~stream, scales = "free_y", labeller = as_labeller(stream_labels)) +
-  scale_colour_manual(values = c(`state 1` = "#2166ac", `state 2` = hazard_colors[5]), name = NULL) +
+  facet_wrap(~stream, scales = "free_y") +
+  scale_colour_manual(values = c(`State 1` = "#2166ac", `State 2` = hazard_colors[5]), name = NULL) +
   labs(x = NULL, y = "Fitted value") +
   theme(legend.position = "top")
 ```
 
-`burrow_count.mean` shows the clearest, most biologically legible pattern -- lowest in Spring, highest in Autumn (post-harvest bare ground vs. dense winter-crop cover near flowering). Note the season effect is tied across states by design (see [Model specification]) -- the lines differ in *level* (the state-specific intercept) but trace an identical seasonal *shape*.
+## Model checks
 
-### Distribution family review
-
-`nbinom2` (mean/shape) is used for `trap_count`/`burrow_count`; alternatives better suited to genuinely proportional data (`beta`/`zoibeta` on the capped success rate, hurdle negative binomial) were tried and rejected -- either non-functional in the installed hmmTMB build or numerically incompatible with the search-effort offset both streams need. `chewcard_count`'s varying card counts (10/20/40 depending on transects deployed) are handled with 4 tied beta-binomial(10) streams rather than one variable-trials stream, since hmmTMB's own trials parameter can't vary by covariate -- confirmed against the package's own `crossbill_occupancy.R` case study as its documented pattern for this exact problem, not a workaround. The beta-binomial (`betabinom`, the family `chewcard_count_exploration.qmd` recommends) lets the chew probability vary between sessions, so cards within a session are chewed together more often than independent binomial trials allow; it isn't in CRAN hmmTMB 1.1.2 and comes from the patched build pinned in `renv.lock` (github.com/matt-w-rees/hmmTMB, branch `betabinom-dev`: hmmTMB's development version plus the family). Full investigation, including every family/distribution ruled out and why: `r/d_fit_plague_hmm.R`'s header.
-
-## Pseudo-residuals
+### Residuals
 
 ```{r}
-#| label: pseudores
+#| label: tbl-residuals
 
-## Randomised pseudo-residuals (r/d_randomised_pseudores.R), computed once as their own target.
-pr <- plague_hmm_pseudores
-pr_summary <- purrr::imap_dfr(pr, function(x, nm) {
-  x <- x[is.finite(x)]
-  tibble::tibble(Stream = nm, n = length(x), Mean = mean(x), SD = sd(x),
-                 `% |z|>2` = 100*mean(abs(x) > 2))
-})
 pr_summary |>
   gt::gt() |>
   gt::fmt_number(columns = c(Mean, SD, `% |z|>2`), decimals = 2) |>
-  gt::tab_options(table.font.size = "0.85em")
+  gt::fmt_integer(columns = n) |>
+  gt::tab_options(table.font.size = "0.85em") |>
+  gt::tab_header(title = "Randomised quantile pseudo-residuals, supervised model")
 ```
 
-These are randomised quantile pseudo-residuals (`r/d_randomised_pseudores.R`): hmmTMB's own `pseudores()` evaluates the forecast CDF at the observation itself, which for count data shifts residuals upward and compresses them even when the model is correct (mean ~0.5, SD ~0.7 on simulated, correctly specified data), so it can't be read against the usual standard-normal target. A well-fit stream should show mean &asymp; 0, SD &asymp; 1 and about 5% beyond ±2. `r calibrated <- pr_summary$Stream[abs(pr_summary$Mean) < 0.1 & abs(pr_summary$SD - 1) < 0.1]; miscal <- setdiff(pr_summary$Stream, calibrated); paste0(if (length(calibrated)) paste0("Well calibrated: ", paste0("\x60", calibrated, "\x60", collapse = ", "), ". ") else "", if (length(miscal)) paste0("Not well calibrated: ", paste0("\x60", miscal, "\x60", collapse = ", "), " -- SD ", paste(sprintf("%.2f", pr_summary$SD[pr_summary$Stream %in% miscal]), collapse = "/"), ", i.e. more spread than the family allows.") else "")`
+Randomised quantile residuals (`r/d_randomised_pseudores.R`) compare each observation with the model's one-season-ahead forecast of it; for a well-specified model they are standard normal (mean 0, SD 1, about 5% beyond ±2). hmmTMB's built-in version is biased for count data, so it is not used.
 
-### Posterior-predictive check
-
-The pseudo-residuals above are a per-row diagnostic. This section (2026-09, following a review of the HMM-diagnostics literature -- Glennie et al. 2023, *Methods in Ecology and Evolution*, "Hidden Markov models: pitfalls and opportunities in ecology") is a genuinely different lens: simulate whole replicate datasets FROM the fitted model (`hmmTMB`'s own `HMM$check()` -- a purpose-built parametric-bootstrap mechanism, confirmed via the installed package's own help pages rather than hand-rolled) and check whether basic real-data summary statistics look like a plausible draw from what the model itself actually generates, not just whether each row's own quantile residual looks standard-normal.
+### Simulated data
 
 ```{r}
-#| label: ppc-summary
-
-## plague_hmm_ppc (r/d_check_plague_hmm_fit.R, _targets.R) -- 100 replicate datasets simulated
-## from plague_hmm itself, holding every row's real covariates fixed. A real, non-obvious pitfall
-## had to be fixed before this was usable at all: HMM$simulate() fills in a value at EVERY row,
-## not just the ones with a real observation (confirmed live, r/d_check_plague_hmm_fit.R's own
-## header) -- so every statistic below is computed after masking simulated data back to the SAME
-## real missingness pattern, on both sides of the comparison.
-##
-## pctile is where the real value falls within its own 100 simulated replicates -- 0 or 1 means
-## the real data sits outside the ENTIRE simulated range, the strongest signal 100 simulations can
-## give. p_value is the usual two-sided posterior-predictive read of that (either tail is equally
-## informative -- real data running higher OR lower than every simulation both indicate
-## miscalibration), floored at 1/n_sims since 100 replicates can't resolve anything finer.
-ppc_pctile <- plague_hmm_ppc$simulated |>
-  dplyr::left_join(plague_hmm_ppc$observed, by = "statistic") |>
-  dplyr::group_by(statistic) |>
-  dplyr::summarise(pctile = mean(simulated <= observed), n_sims = dplyr::n(), .groups = "drop")
-
-ppc_summary <- plague_hmm_ppc$simulated |>
-  dplyr::group_by(statistic) |>
-  dplyr::summarise(sim_mean = mean(simulated), sim_sd = sd(simulated), .groups = "drop") |>
-  dplyr::left_join(plague_hmm_ppc$observed, by = "statistic") |>
-  dplyr::left_join(ppc_pctile, by = "statistic") |>
-  dplyr::mutate(p_value = pmax(2 * pmin(pctile, 1 - pctile), 1 / n_sims)) |>
-  dplyr::select(statistic, observed, sim_mean, sim_sd, pctile, p_value)
-
-get_stat <- function(s, col) round(ppc_summary[[col]][ppc_summary$statistic == s], 3)
-
-## n_outside_range/n_statistics computed live for the figure's own caption below (not transcribed
-## -- this project's own history has at least one caught case of a hand-typed number drifting out
-## of sync with the live table it described, quarto_reports/plague_model_summary.qmd's own
-## known-limitations-stats chunk). pctile exactly 0 or 1 means the real value sits outside the
-## ENTIRE range of 100 simulated replicates -- the strongest signal that many simulations can give.
-n_outside_range <- sum(ppc_summary$pctile %in% c(0, 1))
-n_statistics <- nrow(ppc_summary)
-ppc_histograms_caption <- paste0(
-  "Each panel: 100 values of one summary statistic, simulated from `plague_hmm` itself (grey bars), ",
-  "against the real observed value (red line) -- both computed over the identical set of genuinely-",
-  "surveyed rows (see code comment for why that match matters). The real value sits outside the ",
-  "entire simulated range for ", n_outside_range, " of ", n_statistics, " statistics here -- the ",
-  "strongest signal 100 replicates can give that the fitted model doesn't reproduce that specific ",
-  "feature of the real data."
-)
-```
-
-```{r}
-#| label: fig-ppc-histograms
-#| fig-cap: !expr ppc_histograms_caption
-#| fig-asp: 0.85
+#| label: fig-ppc
+#| fig-cap: "100 datasets simulated from the supervised model (grey), against the real value (red), for summary statistics of each stream. Simulated values are computed over the same surveyed paddock-seasons as the real data."
+#| fig-asp: 0.8
 
 ggplot(plague_hmm_ppc$simulated, aes(simulated)) +
   geom_histogram(bins = 20, fill = "grey75", colour = "white", linewidth = 0.2) +
   geom_vline(data = plague_hmm_ppc$observed, aes(xintercept = observed), colour = hazard_colors[5], linewidth = 0.9) +
   facet_wrap(~statistic, scales = "free", ncol = 3) +
-  labs(x = NULL, y = "Simulated replicates") +
+  labs(x = NULL, y = "Simulated datasets") +
   theme(strip.text = element_text(size = 8))
 ```
 
 ```{r}
-#| label: tbl-ppc-summary
+#| label: ppc-text
 
-ppc_summary |>
-  gt::gt() |>
-  gt::fmt_number(columns = c(observed, sim_mean, sim_sd), decimals = 3) |>
-  gt::fmt_number(columns = pctile, decimals = 2) |>
-  gt::fmt_scientific(columns = p_value, decimals = 1) |>
-  gt::cols_label(statistic = "Statistic", observed = "Real value", sim_mean = "Simulated mean",
-                 sim_sd = "Simulated SD", pctile = "Percentile of real value", p_value = "p-value") |>
-  gt::tab_options(table.font.size = "0.8em")
-```
-
-The check shows:
-
-- **`burrow_count`'s real mean and SD (`r get_stat("burrow_count: mean", "observed")`, `r get_stat("burrow_count: SD", "observed")`) sit BELOW every one of the 100 simulated replicates** (simulated mean `r get_stat("burrow_count: mean", "sim_mean")`, SD `r get_stat("burrow_count: SD", "sim_mean")`) -- the fitted model, actually simulated forward, generates noticeably higher and more variable burrow counts than real surveys ever show. `nbinom2`'s own `shape` parameter (overdispersion) is the natural suspect: a heavy-tailed fit lets rare, very large simulated draws inflate both the simulated mean and SD well past what real data ever produces, even though most real (and simulated) values sit near zero.
-- **`trap_count` runs the opposite way** -- the real mean (`r get_stat("trap_count: mean", "observed")` vs. a simulated mean of `r get_stat("trap_count: mean", "sim_mean")`) sits above all 100 simulated replicates (percentile `r get_stat("trap_count: mean", "pctile")`), and the real SD (`r get_stat("trap_count: SD", "observed")` vs. simulated `r get_stat("trap_count: SD", "sim_mean")`) sits above all but one (percentile `r get_stat("trap_count: SD", "pctile")`) -- the model under-predicts both the level and the spread of real trap catches. `trap_count`'s pseudo-residuals are well calibrated, so this is a whole-dataset shortfall (the largest catches) rather than a row-by-row misfit.
-- **`chewcard_count`'s boundary frequencies are reproduced** -- the real Pr(0 cards chewed) (`r get_stat("chewcard_count: Pr(0)", "observed")`) and Pr(all 10 chewed) (`r get_stat("chewcard_count: Pr(10)", "observed")`) sit at the `r round(100 * get_stat("chewcard_count: Pr(0)", "pctile"))`th and `r round(100 * get_stat("chewcard_count: Pr(10)", "pctile"))`th percentiles of the simulations (simulated means `r get_stat("chewcard_count: Pr(0)", "sim_mean")` and `r get_stat("chewcard_count: Pr(10)", "sim_mean")`). The beta-binomial's overdispersion captures sessions landing at 'nothing touched' or 'everything touched', which independent binomial trials can't.
-
-The remaining misfit is in traps and burrows: `nbinom2` can't fully represent real biological clustering (recaptures and aggregation) in the rarest, largest counts, and their pseudo-residuals are well calibrated row by row. See [Known limitations] for where this leaves the model's practical reliability.
-
-## Validation against known history
-
-This section (through [Spatial pattern in key years]), and [Observation model]/[Pseudo-residuals] above, stay supervised-only for now -- same scope decision as [Zone-specific deviations], stated once here rather than repeated at each heading. `plague_hmm`/`state_probs_df`/`by_year` thread through several paragraphs of prose with many inline computed numbers each; genuinely dualising them means rewriting that narrative, not swapping an object name, and isn't done yet while the underlying pipeline is still mid-rebuild anyway (`model_variants`'s own current numbers, `plague_hmm` included, are themselves not final -- see [Overview]). `model_variants` (setup chunk) is there to make this section's own eventual dual-model version straightforward when it's next revisited.
-
-The state anchors trivially agree with themselves once fit (hmmTMB fixes known states during estimation), so that's not a real check. The informative test is whether the model's own state estimate -- across *every* paddock-season, not just anchored ones -- lines up with genuinely declared plague years it was never directly told about at most paddocks.
-
-```{r}
-#| label: fig-viterbi-by-year
-#| fig-cap: "Mean smoothed Pr(plague state) across all paddock-seasons, by year, against calendar years yearly_plague_occurrence.csv flags for at least one state. Pre-2014 years have no anchor at all, so every bar in that range is pure free estimate."
-
-state_probs_df <- hmm_data |>
-  mutate(
-    year_adj = as.integer(sub(".*-", "", as.character(season_year_adj))),
-    state2_prob = plague_hmm$state_probs()[, "state2"]
-  )
-
-flagged_years <- yearly_plague_occurrence |>
-  tidyr::pivot_longer(-Year, names_to = "state", values_to = "flag") |>
-  filter(!is.na(flag), flag == 1) |>
-  distinct(Year) |>
-  pull(Year)
-
-by_year <- state_probs_df |>
-  group_by(year_adj) |>
-  summarise(mean_state2_prob = mean(state2_prob), .groups = "drop") |>
-  mutate(flagged = year_adj %in% flagged_years)
-
-ggplot(by_year, aes(year_adj, mean_state2_prob, fill = flagged)) +
-  geom_col() +
-  scale_fill_manual(values = c(`TRUE` = hazard_colors[5], `FALSE` = "grey75"),
-                     labels = c(`TRUE` = "Flagged plague year (≥ 1 state)", `FALSE` = "Not flagged"),
-                     name = NULL) +
-  scale_y_continuous(labels = scales::percent) +
-  labs(x = NULL, y = "Mean Pr(plague state) across all paddock-seasons") +
-  theme(legend.position = "top")
-```
-
-```{r}
-#| label: viterbi-2010-2011
-
-## Baseline and hard-decode figures for the 2010-2011 discussion below -- computed live rather
-## than transcribed, so they can't silently drift out of sync with whichever model this report
-## currently loads.
-baseline_2008 <- round(mean(state_probs_df$state2_prob[state_probs_df$year_adj == 2008]), 3)
-vit <- plague_hmm$viterbi()
-vit_2010_pct <- round(100 * mean(vit[state_probs_df$year_adj == 2010] == 2), 1)
-vit_2011_pct <- round(100 * mean(vit[state_probs_df$year_adj == 2011] == 2), 1)
-
-## Mean smoothed Pr(plague state) for every year recent_plague_maps directly anchors -- computed
-## live over mapped_years (Data and anchoring, above) rather than hard-coded to whichever specific
-## years happened to be anchored under the superseded (a)+(b) rule.
-mapped_year_probs <- state_probs_df |>
-  filter(year_adj %in% mapped_years) |>
-  group_by(year_adj) |>
-  summarise(mean_prob = mean(state2_prob), .groups = "drop")
-mapped_year_probs_str <- paste(
-  sprintf("%d (%s)", mapped_year_probs$year_adj, scales::percent(mapped_year_probs$mean_prob, accuracy = 1)),
-  collapse = ", "
-)
-```
-
-**2010-2011 is the most informative test of blind forecasting the panel offers.** Both years have **zero observation data of any kind** (`trap_count`/`burrow_count`/`chewcard_count` all completely NA across every paddock that period -- rapid assessment hadn't started, no live-trapping recorded nationally), so this is a fully blind, two-season-long forecast: nothing but the covariate-driven transition mechanism, propagated forward with no observation correction, can move the state estimate here. `rain_whiplash_trough_to_peak` spiked unusually across the four eastern states through 2010-2011 (confirmed live: NSW/QLD/SA/VIC each roughly doubled or more from 2010 to 2011 -- WA's own values don't show the same pattern, and WA wasn't part of the panel when this finding was first documented), and the mean smoothed Pr(plague state) rose accordingly -- from a `r baseline_2008` baseline in 2008 to **`r round(mean(state_probs_df$state2_prob[state_probs_df$year_adj == 2010]), 3)`** in 2010 and **`r round(mean(state_probs_df$state2_prob[state_probs_df$year_adj == 2011]), 3)`** in 2011, comparable to 2021's own `r round(mean(state_probs_df$state2_prob[state_probs_df$year_adj == 2021]), 3)`, both years the model *is* directly anchored to. The hard Viterbi decode is less convincing on its own (`r vit_2010_pct`%/`r vit_2011_pct`% for 2010/2011, since the elevated probability mostly doesn't cross the implicit 50% most-likely-state threshold) -- a real limitation of reading a hard decode alone, not a sign the underlying estimate is uninformative.
-
-The years recent_plague_maps directly anchors (see [Data and anchoring]) show mean smoothed Pr(plague state) of `r mapped_year_probs_str` -- worth reading against the whole series, not assumed elevated by construction the way a within-season anchor point trivially is (this is a year-level *average* across every paddock, most of them unanchored that year). The 1985-`r first_mapped_year - 1` stretch is entirely free-estimated (no anchor at all) and mostly shows low, plausible percentages rather than a runaway collapse -- a reassuring sign in its own right, though none of it is validated against any anchor.
-
-### Spatial pattern in key years
-
-```{r}
-#| label: fig-spatial-key-years
-#| fig-cap: !expr spatial_key_years_caption
-#| fig-asp: 0.55
-
-## "Key years" = the 8 highest mean smoothed Pr(plague state) years from by_year above -- derived
-## live from the fit itself, not cherry-picked. One point per paddock x key-year (mean state2_prob
-## across that paddock's own seasons within the year).
-key_years <- by_year |>
-  slice_max(mean_state2_prob, n = 8) |>
-  arrange(year_adj) |>
-  pull(year_adj)
-
-paddock_year_probs <- state_probs_df |>
-  filter(year_adj %in% key_years) |>
-  group_by(ID, year_adj, longitude, latitude) |>
-  summarise(mean_state2_prob = mean(state2_prob), .groups = "drop")
-
-spatial_key_years_caption <- paste0(
-  "Mean smoothed Pr(plague state) by paddock, faceted across the ", length(key_years),
-  " years with the highest national mean probability (", paste(key_years, collapse = ", "),
-  ") -- derived live from by_year above. Grey polygons are the fitted AE zones."
-)
-
-fit_zones_ll <- st_transform(fit_zones_sf, 4326)
-zones_bbox <- st_bbox(fit_zones_ll)
-
-## GRDC growing subregions (a finer grain than ae_zone, see CLAUDE.md) clipped to the fitted
-## zones' own union -- used by fig-predictor-maps below. Clipping (not just filtering by
-## st_intersects()) matters here: several national subregion polygons extend well beyond the
-## fitted zones (e.g. into WA or the desert interior), and an unclipped polygon would paint that
-## entire unmonitored area with whatever mean value its own small overlapping sliver produced --
-## confirmed live, a real visual bug on the first attempt, not a hypothetical one. sf_use_s2(FALSE)
-## for the intersection matches attach_grdc_subregion()'s own convention (r/a_attach_grdc_subregion.R).
-s2_was_on <- sf::sf_use_s2()
-suppressMessages(sf::sf_use_s2(FALSE))
-grdc_subregion_ll <- st_transform(grdc_subregion_adj, 4326) |>
-  sf::st_intersection(sf::st_union(fit_zones_ll)) |>
-  suppressMessages() |>
-  suppressWarnings()
-suppressMessages(sf::sf_use_s2(s2_was_on))
-
-ggplot() +
-  geom_sf(data = fit_zones_ll, fill = "grey95", colour = "grey70", linewidth = 0.2) +
-  geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-  geom_point(data = paddock_year_probs, aes(longitude, latitude, colour = mean_state2_prob),
-             size = 1.1, alpha = 0.85) +
-  scale_colour_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
-                          name = "Mean Pr(plague state)") +
-  facet_wrap(~year_adj, ncol = 4) +
-  coord_sf(xlim = c(zones_bbox["xmin"], zones_bbox["xmax"]),
-           ylim = c(zones_bbox["ymin"], zones_bbox["ymax"]), expand = FALSE) +
-  theme_void(base_size = 11) +
-  theme(legend.position = "bottom", legend.key.width = unit(1.4, "cm"),
-        strip.text = element_text(face = "bold"))
-```
-
-Coverage matters as much as risk here: earlier key years have fewer, more scattered points -- fewer paddocks had panel presence that far back. Where recent_plague_maps' own mapped years (`r paste(mapped_years, collapse = ", ")`) appear among these facets, elevated colour is partly anchor pull by construction; a non-anchored year showing elevated, spatially-clustered colour (rather than diffuse noise) is the more informative signal.
-
-### Full-model onset skill
-
-Everything above shows the model's own state estimate tracking real plague evidence *qualitatively* (the anchor-vs-model line chart, the 2010-2011 blind-forecast narrative, the by-year bar chart). This section turns that into single numbers -- does the model's own predicted Pr(entering plague) actually discriminate a real subsequent onset from a real non-onset, and how does that compare to the individual-covariate AUCs `covariate_summary.qmd`'s own [whiplash validation](covariate_summary.html#sec-whiplash-validation) already established (rain whiplash 0.717, soil moisture whiplash 0.714)? Added 2026-09, following a review of the forecasting-verification literature -- no equivalent existed for the full fitted model before this, only for individual raw covariates.
-
-```{r}
-#| label: onset-skill-data
-
-## plague_hmm$predict(what = "tpm", newdata = hmm_data), evaluated at hmm_data's OWN rows (its own
-## training data, so every covariate/factor level is already present -- unlike r/d_predict_plague_
-## risk.R's grid prediction, no placeholder-filling is needed here), gives each paddock-season's own
-## predicted Pr(state 1 -> state 2) -- exactly the quantity the risk map itself reports, evaluated
-## where a real subsequent outcome is actually known. Two grains below, both computed for both
-## models (model_variants) -- they answer genuinely different questions and are NOT meant to agree:
-##
-## (1) Paddock-season grain, matched to this project's OWN anchor rule (r/c_anchor_plague_state.R).
-## For each paddock-season row NOT itself already anchored to the plague state (state != 2 -- i.e.
-## genuinely "eligible to enter"; a row already anchored plague is a persistence continuation, which
-## the LEAVING-plague transition governs, not this one, so including it here would test the wrong
-## direction), does its predicted Pr(enter) discriminate whether the very next row for that same
-## paddock (chronologically, hmmTMB's own unit of time -- not necessarily the immediately following
-## calendar season, if a paddock wasn't surveyed every season) was itself anchored plague or not?
-## This tests the model against the same evidentiary standard the whole report's anchoring already
-## rests on, so strong separation here mostly confirms internal consistency (the model was fit to
-## reproduce these same anchors, not a genuine held-out sample) rather than proving out-of-sample
-## skill -- still informative (the unsupervised comparison below shows this is a real, non-trivial
-## bar to clear), just not a substitute for grain (2).
-##
-## (2) State x calendar-year grain, deliberately reusing covariate_summary.qmd's own
-## evaluate_onset() methodology (an eligible, non-refractory year predicting a NEW onset the
-## FOLLOWING year, per raw yearly_plague_occurrence.csv alone -- condition (a), not this project's
-## own stricter (a)+(b) anchor rule) so the resulting AUC is directly comparable to the 0.717/0.714
-## already reported there for rain/soil-moisture whiplash alone. value_max is the model's own
-## predicted Pr(enter), maximised across every paddock-season in that state-year (mirroring the
-## covariate test's own "annual max" aggregation of a single raw covariate). This grain has a real
-## limit worth stating plainly, not just the small onset count: it's restricted to state-years where
-## hmm_data actually has paddock coverage at all -- a real, disclosed difference from the covariate-
-## level test, which used the raw national covariate raster's own full 1983-2024 coverage with no
-## such gap. See "State x calendar-year onset skill" below for the actual results and how to read
-## them alongside the covariate-level benchmark.
-##
-## eligible_by_model (not just its own summary) is kept, not discarded after onset_skill_by_model is
-## built -- "Translating risk into an operational threshold" (Prediction: current risk map, below)
-## reuses model_variants$Supervised's own eligible/p_enter pairs directly, rather than recomputing
-## the same $predict() call a second time.
-auc_fn <- function(yes, no) {
-  r <- rank(c(yes, no))
-  (sum(r[seq_along(yes)]) - length(yes) * (length(yes) + 1) / 2) / (length(yes) * length(no))
+ppc_line <- function(s) {
+  r <- ppc_summary[ppc_summary$statistic == s, ]
+  sprintf("%s real %.3f, simulated 95%% range %.3f-%.3f", tools::toTitleCase(ppc_label(s)), r$observed, r$sim_lo, r$sim_hi)
 }
-
-eligible_by_model <- purrr::imap(model_variants, function(m, label) {
-  p_enter <- m$hmm$predict(what = "tpm", newdata = hmm_data)["state 1", "state 2", ]
-  hmm_data |>
-    dplyr::mutate(p_enter = p_enter) |>
-    dplyr::arrange(ID, season_year_adj) |>
-    dplyr::group_by(ID) |>
-    dplyr::mutate(next_state = dplyr::lead(state)) |>
-    dplyr::ungroup() |>
-    dplyr::filter(!is.na(next_state), is.na(state) | state != 2)
-})
-
-onset_skill_by_model <- purrr::imap_dfr(eligible_by_model, function(eligible, label) {
-  yes <- eligible$p_enter[eligible$next_state == 2]
-  no  <- eligible$p_enter[eligible$next_state == 1]
-  tibble::tibble(
-    Model = label, `n (onset)` = length(yes), `n (stayed clear)` = length(no),
-    `Median Pr(enter) | onset` = median(yes), `Median Pr(enter) | stayed clear` = median(no),
-    AUC = auc_fn(yes, no), `p-value` = t.test(yes, no)$p.value
-  )
-})
-
-## Plain, syntactic scalar names for the inline prose below -- markdown's own single-backtick
-## inline-code delimiter can't contain a literal backtick, so a non-syntactic column name (e.g.
-## `n (onset)`) can never be referenced directly inside a `r ...` inline span; extracting into a
-## bare variable here, once, is the fix (same convention baseline_2008/vit_2010_pct etc. already
-## use elsewhere in this document for the identical reason).
-sup_auc_paddock      <- onset_skill_by_model$AUC[1]
-unsup_auc_paddock    <- onset_skill_by_model$AUC[2]
-sup_n_onset_paddock  <- onset_skill_by_model$`n (onset)`[1]
-sup_n_clear_paddock  <- onset_skill_by_model$`n (stayed clear)`[1]
-sup_median_onset     <- onset_skill_by_model$`Median Pr(enter) | onset`[1]
-sup_median_clear     <- onset_skill_by_model$`Median Pr(enter) | stayed clear`[1]
-unsup_median_onset   <- onset_skill_by_model$`Median Pr(enter) | onset`[2]
-unsup_median_clear   <- onset_skill_by_model$`Median Pr(enter) | stayed clear`[2]
-unsup_p_paddock      <- onset_skill_by_model$`p-value`[2]
 ```
 
-```{r}
-#| label: tbl-onset-skill
+- **Chew cards.** `r ppc_line("chewcard_count: Pr(0)")`; `r ppc_line("chewcard_count: Pr(10)")`. `r if (length(chew_freq_ok) == 2) "Both lie inside the simulated ranges: the beta-binomial reproduces sessions where cards are chewed together." else if (length(chew_freq_ok) == 1) paste0("The ", ppc_label(chew_freq_ok), " is reproduced; the other lies just outside its simulated range.") else "Both lie outside the simulated ranges."`
+- **Traps and burrows.** `r if (length(grep("trap|burrow", ppc_outside)) > 0) paste0("Outside the simulated range: ", paste(sapply(grep("trap|burrow", ppc_outside, value = TRUE), ppc_line), collapse = "; "), ". The negative binomial does not fully capture how trap and burrow counts cluster, although the residuals are calibrated row by row.") else "All trap and burrow statistics lie inside the simulated ranges."`
 
-onset_skill_by_model |>
-  gt::gt() |>
-  gt::fmt_number(columns = c(`Median Pr(enter) | onset`, `Median Pr(enter) | stayed clear`, AUC), decimals = 3) |>
-  gt::fmt_scientific(columns = `p-value`, decimals = 2) |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "Paddock-season onset discrimination: predicted Pr(enter) vs. the very next season's real anchor")
-```
-
-The supervised model's own predicted Pr(entering plague) is a real, substantial discriminator of the very next season's anchored outcome (AUC = **`r round(sup_auc_paddock, 3)`**, `r sup_n_onset_paddock` real onsets vs. `r sup_n_clear_paddock` seasons that stayed clear, median predicted risk `r scales::percent(sup_median_onset, accuracy = 0.1)` before a real onset vs. `r scales::percent(sup_median_clear, accuracy = 0.1)` before one that stayed clear). The unsupervised model, evaluated exactly the same way, does not (AUC = **`r round(unsup_auc_paddock, 3)`**) -- its own median predicted risk actually runs the *wrong* way (`r scales::percent(unsup_median_onset, accuracy = 0.1)` before onset vs. `r scales::percent(unsup_median_clear, accuracy = 0.1)` before staying clear), a real, statistically significant reversal (p = `r formatC(unsup_p_paddock, format = "e", digits = 2)`), not noise scattered around 0.5. Read together with [Overview]'s own framing: the unsupervised model's freely-discovered 2-state split reflects *some* real structure in the trap/burrow/chewcard data, but not specifically "plague or not" -- it takes the anchors to align state 2 with genuine plague risk at all, a sharper, quantified version of the qualitative gap [Anchored states vs. the model's own estimate, by state] already shows.
-
-```{r}
-#| label: annual-skill-data
-
-## Same evaluate_onset() methodology as covariate_summary.qmd's own whiplash-plague-validation-table
-## chunk, reused here (not sourced -- this document stays self-contained, same convention as every
-## other quarto report in this project) so the resulting AUC sits on the identical scale as the
-## 0.717/0.714 already reported there. plague_long/recent_plague are rebuilt from yearly_plague_
-## occurrence (already tar_load()'d, setup chunk) rather than tar_load()'d themselves, since
-## covariate_summary.qmd computes them from the raw CSV directly too, not as their own targets.
-state_lookup <- c("South Australia" = "SA", "Victoria" = "VIC", "New South Wales" = "NSW", "Queensland" = "QLD")
-plague_long <- yearly_plague_occurrence |>
-  tidyr::pivot_longer(-Year, names_to = "state_full", values_to = "flag") |>
-  dplyr::mutate(state = state_lookup[state_full], plague = !is.na(flag) & flag == 1) |>
-  dplyr::filter(!is.na(state)) |>
-  dplyr::select(year = Year, state, plague) |>
-  dplyr::filter(year >= 1983, year <= 2024)
-
-plague_years_by_state <- plague_long |> dplyr::filter(plague) |> dplyr::select(state, plague_year = year)
-all_state_years <- tidyr::expand_grid(state = unique(hmm_data$aus_state), year = 1983:2024)
-recent_plague <- all_state_years |>
-  dplyr::left_join(plague_years_by_state, by = "state", relationship = "many-to-many") |>
-  dplyr::mutate(years_since = year - plague_year) |>
-  dplyr::group_by(state, year) |>
-  dplyr::summarise(in_refractory_window = any(years_since %in% 1:2, na.rm = TRUE), .groups = "drop")
-
-annual_skill_by_model <- purrr::imap_dfr(model_variants, function(m, label) {
-  p_enter <- m$hmm$predict(what = "tpm", newdata = hmm_data)["state 1", "state 2", ]
-  annual_model <- hmm_data |>
-    dplyr::mutate(p_enter = p_enter) |>
-    dplyr::group_by(state = aus_state, year = year_adj) |>
-    dplyr::summarise(value_max = max(p_enter, na.rm = TRUE), .groups = "drop")
-  onset_test <- annual_model |>
-    dplyr::inner_join(plague_long, by = c("state", "year")) |> dplyr::filter(!plague) |>
-    dplyr::inner_join(recent_plague, by = c("state", "year")) |> dplyr::filter(!in_refractory_window) |>
-    dplyr::mutate(match_year = year + 1) |>
-    dplyr::inner_join(plague_long, by = c("state", "match_year" = "year"), suffix = c("_this", "_next")) |>
-    dplyr::filter(!is.na(value_max))
-  yes <- onset_test$value_max[onset_test$plague_next]
-  no  <- onset_test$value_max[!onset_test$plague_next]
-  tibble::tibble(Model = label, `n (onset)` = length(yes), `n (no onset)` = length(no),
-                 AUC = auc_fn(yes, no), `p-value` = t.test(yes, no)$p.value)
-})
-
-## Plain scalar names again, same reason as onset-skill-data's own note above.
-sup_auc_annual     <- annual_skill_by_model$AUC[1]
-unsup_auc_annual   <- annual_skill_by_model$AUC[2]
-sup_n_onset_annual <- annual_skill_by_model$`n (onset)`[1]
-sup_n_no_annual    <- annual_skill_by_model$`n (no onset)`[1]
-sup_p_annual       <- annual_skill_by_model$`p-value`[1]
-```
-
-```{r}
-#| label: tbl-annual-skill
-
-annual_skill_by_model |>
-  gt::gt() |>
-  gt::fmt_number(columns = AUC, decimals = 3) |>
-  gt::fmt_scientific(columns = `p-value`, decimals = 2) |>
-  gt::tab_options(table.font.size = "0.85em") |>
-  gt::tab_header(title = "State x calendar-year onset AUC -- same methodology as covariate_summary.qmd's own single-covariate benchmark")
-```
-
-At this coarser, externally-benchmarked grain, the supervised model's own AUC (**`r round(sup_auc_annual, 3)`**, n = `r sup_n_onset_annual` onset / `r sup_n_no_annual` no-onset state-years) sits *below* both single covariates' own individually-validated AUCs (0.717 rain whiplash, 0.714 soil moisture whiplash, `covariate_summary.qmd`) -- not what a reader might expect from a model combining all four covariates plus zone effects. With only `r sup_n_onset_annual` onset examples feeding this specific test (a real, disclosed sample-size limit inherited from how few state-years `hmm_data` actually covers, not a flaw in the covariate-level tests), this is not a statistically confirmed difference either way (p = `r formatC(sup_p_annual, format = "e", digits = 2)`) -- but it's a genuine, honest finding worth flagging rather than assuming the more complex model must dominate a simpler, already-validated one. The comparison also *reverses* at this grain: the unsupervised model actually scores marginally higher here (AUC = `r round(unsup_auc_annual, 3)`) than the supervised one, the opposite of the paddock-season result above -- suggesting the annual-max aggregation this test needs (to stay comparable with the covariate-level benchmark) may itself be too coarse to capture what anchoring actually buys (paddock/zone-specific calibration, [Zone-specific deviations]), rather than anchoring providing no real value at the grain the model actually operates at.
+## Forecast skill
 
 ### Hindcast against recorded plague years
 
 ```{r}
-#| label: hindcast-scores
+#| label: hindcast-prep
 
-## Both models' scores, for the state-mean summary (the 90th-percentile summary gives similar
-## results, see plague_hindcast_scores_*). Each model's pre-2013 hindcast is out-of-sample; from 2013
-## the flags are in-sample for the supervised model (anchored) but still held out for the unsupervised one.
-hindcast_scores <- dplyr::bind_rows(
-  dplyr::mutate(plague_hindcast_scores_supervised$scores, Model = "Supervised"),
-  dplyr::mutate(plague_hindcast_scores_unsupervised$scores, Model = "Unsupervised")
-) |>
-  dplyr::filter(stat == "mean") |>
-  dplyr::mutate(
-    Predictor = dplyr::recode(predictor, occupancy = "Occupancy", onset = "Onset (same year)",
-                              onset_lead = "Onset (previous year)", rain_whiplash = "Rain whiplash alone"),
-    Era = dplyr::recode(era, hindcast = "Before 2013 (hindcast)", `anchored era` = "2013 on (anchored era)"),
-    Era = factor(Era, levels = c("Before 2013 (hindcast)", "2013 on (anchored era)"))
-  )
-
-## The first hindcast season, for the text below.
 hindcast_first <- plague_hindcast_supervised |>
-  dplyr::filter(!is.na(onset)) |>
-  dplyr::distinct(period, year_adj, season) |>
-  dplyr::arrange(year_adj, match(season, c("Summer", "Autumn", "Winter", "Spring"))) |>
-  dplyr::slice(1)
-hindcast_first_label <- paste(hindcast_first$season, hindcast_first$year_adj)
-
-## Numbers quoted in the text below.
-get_hindcast <- function(model, predictor_name, era_name, col) {
-  hindcast_scores[[col]][hindcast_scores$Model == model & hindcast_scores$predictor == predictor_name & hindcast_scores$era == era_name]
-}
-hindcast_n <- get_hindcast("Supervised", "onset", "hindcast", "n")
+  filter(!is.na(onset)) |>
+  distinct(year_adj, season) |>
+  arrange(year_adj, match(season, c("Summer", "Autumn", "Winter", "Spring"))) |>
+  slice(1)
+hindcast_n         <- get_hindcast("Supervised", "onset", "hindcast", "n")
 hindcast_n_flagged <- get_hindcast("Supervised", "onset", "hindcast", "n_flagged")
-anchored_n <- get_hindcast("Supervised", "onset", "anchored era", "n")
+anchored_n         <- get_hindcast("Supervised", "onset", "anchored era", "n")
 anchored_n_flagged <- get_hindcast("Supervised", "onset", "anchored era", "n_flagged")
 ```
 
-Plague anchors start in Summer 2013, and before 2013 there are almost no surveys (none in 2010-2011), so the plague years recorded in `yearly_plague_occurrence.csv` before 2013 are labels the model never saw. The hindcast (`r/d_hindcast_plague_occurrence.R`) runs the transition model over every 0.1 degree grain-zone cell from `r hindcast_first_label` onwards. It gives two quantities per cell and season: **onset**, the risk map's Pr(not-plague → plague), and **occupancy**, Pr(plague), propagated from season to season through each season's transitions. These are averaged over each state's cells, and the highest season in each year is scored against that state-year's flag (`r/d_score_plague_hindcast.R`).
-
+Before 2013 there are no anchors and almost no surveys, so plague years recorded by state in `yearly_plague_occurrence.csv` are labels the model never saw. The hindcast (`r/d_hindcast_plague_occurrence.R`) runs the transition model over every grain-zone grid cell from `r hindcast_first$season` `r hindcast_first$year_adj`, giving each cell's **onset** risk, Pr(not-plague → plague), and **occupancy**, Pr(plague), carried forward season to season through the transitions. Each state's cells are averaged, and the highest season in each year is scored against that state-year's record (`r/d_score_plague_hindcast.R`).
 
 ```{r}
 #| label: tbl-hindcast-scores
 
-## Rain whiplash is a covariate, identical for both models, so it is shown once.
 hindcast_scores |>
-  dplyr::filter(!(Model == "Unsupervised" & predictor == "rain_whiplash")) |>
-  dplyr::mutate(Model = ifelse(predictor == "rain_whiplash", "(covariate only)", Model),
-                `Within-state AUC (95% interval)` = sprintf("%.2f (%.2f-%.2f)", auc_within, auc_within_lcl, auc_within_ucl),
-                `Pooled AUC` = sprintf("%.2f", auc)) |>
-  dplyr::arrange(Era, Predictor, Model) |>
-  dplyr::select(Era, Predictor, Model, `Within-state AUC (95% interval)`, `Pooled AUC`) |>
+  filter(!(Model == "Unsupervised" & predictor == "rain_whiplash")) |>
+  mutate(Model = ifelse(predictor == "rain_whiplash", "(covariate only)", Model),
+         Predictor = recode(predictor, occupancy = "Occupancy", onset = "Onset, same year",
+                            onset_lead = "Onset, one year ahead", rain_whiplash = "Rainfall whiplash alone"),
+         Era = factor(recode(era, hindcast = "Before 2013 (unanchored)", `anchored era` = "2013 onwards (anchored)"),
+                      levels = c("Before 2013 (unanchored)", "2013 onwards (anchored)")),
+         `Within-state AUC (95% interval)` = sprintf("%.2f (%.2f-%.2f)", auc_within, auc_within_lcl, auc_within_ucl),
+         `Pooled AUC` = sprintf("%.2f", auc)) |>
+  arrange(Era, Predictor, Model) |>
+  select(Era, Predictor, Model, `Within-state AUC (95% interval)`, `Pooled AUC`) |>
   gt::gt(groupname_col = "Era") |>
   gt::tab_options(table.font.size = "0.85em") |>
   gt::tab_header(title = "Hindcast skill against recorded plague state-years",
-                 subtitle = "State-mean of each season, highest season per year; intervals resample whole years")
+                 subtitle = "Intervals resample whole years")
 ```
 
-- **Within-state AUC is the main score.** It compares flagged and unflagged years of the same state only; the pooled AUC also compares across states, where each state's baseline risk differs (e.g. Queensland's summer-cropping zone) for reasons unrelated to plague years.
-- **Before 2013** there are `r hindcast_n_flagged` flagged out of `r hindcast_n` state-years. Same-year onset scores `r sprintf("%.2f", get_hindcast("Supervised", "onset", "hindcast", "auc_within"))` (supervised) and `r sprintf("%.2f", get_hindcast("Unsupervised", "onset", "hindcast", "auc_within"))` (unsupervised), against `r sprintf("%.2f", get_hindcast("Supervised", "rain_whiplash", "hindcast", "auc_within"))` for rain whiplash alone. The one-year-ahead onset scores `r sprintf("%.2f", get_hindcast("Supervised", "onset_lead", "hindcast", "auc_within"))` and `r sprintf("%.2f", get_hindcast("Unsupervised", "onset_lead", "hindcast", "auc_within"))`.
-- **From 2013** only `r anchored_n_flagged` of `r anchored_n` state-years are flagged, so the intervals are too wide to separate the models. The unsupervised model's scores here are still out-of-sample.
-- **Caveats.** The flags are coarse (a whole state, a whole calendar year, no WA). Rain whiplash's definition was chosen partly by checking it against these same flags (`r/b_compute_whiplash_raster.R`), so its score, and the models' use of it, are not fully blind. Occupancy is a per-paddock probability rather than the probability a plague is recorded somewhere in a state, so its Brier score (in `plague_hindcast_scores_*`) is only a coarse check.
+- **Within-state AUC is the main score**: flagged and unflagged years compared within the same state, so differences in baseline risk between states don't count.
+- **Before 2013** (`r hindcast_n_flagged` flagged of `r hindcast_n` state-years), one-year-ahead onset scores `r fmt2(get_hindcast("Supervised", "onset_lead", "hindcast"))` (supervised) and `r fmt2(get_hindcast("Unsupervised", "onset_lead", "hindcast"))` (unsupervised), against `r fmt2(get_hindcast("Supervised", "rain_whiplash", "hindcast"))` for rainfall whiplash alone.
+- **From 2013** only `r anchored_n_flagged` of `r anchored_n` state-years are flagged, too few to separate the models; these years are anchored in the supervised model but not in the unsupervised one.
+- **Caveats.** The records are coarse (a whole state, a calendar year, no WA), and the rainfall-whiplash definition was chosen partly against the same records, so its score and the models' use of it are not fully blind.
 
 ```{r}
 #| label: fig-hindcast-timeseries
-#| fig-cap: "State-mean onset risk (highest season per year) from each model, with recorded plague years shaded. Dashed line: start of plague anchoring (2013)."
+#| fig-cap: "State-mean onset risk (highest season each year), with recorded plague years shaded. Dashed line: start of anchoring (2013)."
 #| fig-height: 7
 
-hindcast_series <- dplyr::bind_rows(
-  dplyr::mutate(plague_hindcast_scores_supervised$state_year, Model = "Supervised"),
-  dplyr::mutate(plague_hindcast_scores_unsupervised$state_year, Model = "Unsupervised")
+hindcast_series <- bind_rows(
+  mutate(plague_hindcast_scores_supervised$state_year, Model = "Supervised"),
+  mutate(plague_hindcast_scores_unsupervised$state_year, Model = "Unsupervised")
 )
-flagged_years <- dplyr::distinct(dplyr::filter(hindcast_series, flag == 1), state, year_adj)
+flagged_years <- distinct(filter(hindcast_series, flag == 1), state, year_adj)
 
 ggplot(hindcast_series, aes(year_adj, onset_mean, colour = Model)) +
   geom_rect(data = flagged_years, aes(xmin = year_adj - 0.5, xmax = year_adj + 0.5, ymin = -Inf, ymax = Inf),
@@ -1130,700 +728,276 @@ ggplot(hindcast_series, aes(year_adj, onset_mean, colour = Model)) +
   geom_vline(xintercept = 2012.5, linetype = "dashed", colour = "grey40") +
   geom_line() +
   geom_point(size = 0.8) +
-  facet_wrap(~ state, ncol = 1, scales = "free_y") +
-  labs(x = NULL, y = "Pr(not-plague → plague), state mean", colour = NULL) +
+  facet_wrap(~state, ncol = 1, scales = "free_y") +
+  scale_colour_manual(values = model_colours, name = NULL) +
+  labs(x = NULL, y = "Pr(not-plague → plague), state mean") +
   theme(legend.position = "top")
 ```
 
 ```{r}
 #| label: mutze-1984
 
-## Mutze (1989) mapped one SA plague extent within the covariate record (1984). Cell-level check:
-## do SA cells inside the mapped extent get higher 1984 onset/occupancy than SA cells outside it?
-mutze_1984 <- sf::st_union(sf::st_make_valid(dplyr::filter(mutze_plague_maps, year == 1984)))
-sa_outline <- dplyr::filter(aus_shp, ST_NAME == "SA")
+## Spot check against Mutze's (1989) mapped 1984 SA plague extent: do SA cells inside it get higher
+## 1984 onset risk than SA cells outside it?
+mutze_1984 <- sf::st_union(sf::st_make_valid(filter(mutze_plague_maps, year == 1984)))
+sa_outline <- filter(aus_shp, ST_NAME == "SA")
 mutze_check <- purrr::imap_dfr(list(Supervised = plague_hindcast_supervised, Unsupervised = plague_hindcast_unsupervised), function(h, model) {
-  cells_1984 <- h |>
-    dplyr::filter(year_adj == 1984, !is.na(onset)) |>
-    dplyr::group_by(cell, x, y) |>
-    dplyr::summarise(onset = max(onset), occupancy = max(occupancy), .groups = "drop")
-  if (nrow(cells_1984) == 0) return(tibble::tibble())
-  pts <- sf::st_as_sf(cells_1984, coords = c("x", "y"), crs = sf::st_crs(aus_shp))
+  cells <- h |>
+    filter(year_adj == 1984, !is.na(onset)) |>
+    group_by(cell, x, y) |>
+    summarise(onset = max(onset), .groups = "drop")
+  if (nrow(cells) == 0) return(tibble::tibble())
+  pts <- sf::st_as_sf(cells, coords = c("x", "y"), crs = sf::st_crs(aus_shp))
   in_sa <- lengths(sf::st_intersects(pts, sa_outline)) > 0
   inside <- lengths(sf::st_intersects(pts, sf::st_transform(mutze_1984, sf::st_crs(pts)))) > 0
-  d <- cells_1984[in_sa, ]
+  d <- cells[in_sa, ]
   d$inside <- inside[in_sa]
-  tibble::tibble(Model = model, `Cells inside` = sum(d$inside), `Cells outside` = sum(!d$inside),
-                 `Onset inside` = mean(d$onset[d$inside]), `Onset outside` = mean(d$onset[!d$inside]),
-                 `Onset AUC` = hindcast_auc(d$onset, as.integer(d$inside)),
-                 `Occupancy AUC` = hindcast_auc(d$occupancy, as.integer(d$inside)))
+  tibble::tibble(Model = model, n_inside = sum(d$inside), onset_inside = mean(d$onset[d$inside]),
+                 onset_outside = mean(d$onset[!d$inside]), auc = hindcast_auc(d$onset, as.integer(d$inside)))
 })
-
-## Sentence for the text below (inline code can't hold the backticked column names).
 mutze_text <- if (nrow(mutze_check) > 0) {
-  paste0("**Mutze's 1984 SA extent.** ", mutze_check[["Cells inside"]][1],
-         " SA grain cells fall inside Mutze's (1989) mapped 1984 plague extent. Their 1984 onset risk averages ",
-         sprintf("%.3f", mutze_check[["Onset inside"]][1]), " against ", sprintf("%.3f", mutze_check[["Onset outside"]][1]),
-         " for the other SA cells (supervised); the cell-level AUC for inside vs outside is ",
-         sprintf("%.2f", mutze_check[["Onset AUC"]][1]), " (supervised) and ", sprintf("%.2f", mutze_check[["Onset AUC"]][2]),
-         " (unsupervised). This is a single mapped extent, so it is a spot check rather than a skill score.")
+  paste0("**Mapped 1984 SA plague (Mutze 1989).** ", mutze_check$n_inside[1],
+         " SA grain cells fall inside the mapped extent; their 1984 onset risk averages ",
+         sprintf("%.3f", mutze_check$onset_inside[1]), " against ", sprintf("%.3f", mutze_check$onset_outside[1]),
+         " elsewhere in SA (supervised), a cell-level AUC of ", fmt2(mutze_check$auc[1]),
+         " (unsupervised ", fmt2(mutze_check$auc[2]), "). One mapped extent, so a spot check rather than a skill score.")
 } else {
-  "**Mutze's 1984 SA extent** falls before the first hindcast season, so it can't be checked."
+  "**Mapped 1984 SA plague (Mutze 1989)** falls before the first hindcast season."
 }
 ```
 
 `r mutze_text`
 
-
-## Prediction: current risk map
+### Onset skill at paddock level
 
 ```{r}
-#| label: forecast-period
+#| label: onset-skill
 
-## The transition formula relates THIS season's covariates to the FOLLOWING season's state, and
-## all four transition covariates are built entirely from realised (observed) data, no forward-
-## looking forecast component in any of them, so none can ever be more current than the most
-## recently completed month of real data. The model therefore only ever forecasts ONE season ahead
-## of whatever the latest SHARED covariate period is -- rain_whiplash_trough_to_peak/
-## min_temp_raster_coarse are monthly grain but gpp_rolling_raster_6/soil_moisture_raster_coarse
-## are season-end-month grain only, so the shared period has to be found the same way
-## predict_plague_risk() itself does, computed live here so this can't drift out of sync with the
-## raster actually being predicted from.
-shared_periods <- Reduce(intersect, list(names(rain_whiplash_trough_to_peak), names(gpp_rolling_raster_6), names(soil_moisture_raster_coarse), names(min_temp_raster_coarse)))
-shared_month <- as.integer(sub("_.*", "", shared_periods))
-shared_year  <- as.integer(sub(".*_", "", shared_periods))
-predict_period <- shared_periods[order(shared_year, shared_month)][length(shared_periods)]
-predict_month <- as.integer(sub("_.*", "", predict_period))
-predict_year  <- as.integer(sub(".*_", "", predict_period))
-covariate_season_info <- season_info(as.Date(paste(predict_year, predict_month, "15", sep = "-")))
-covariate_season <- as.character(covariate_season_info$season)
-covariate_year_adj <- covariate_season_info$year_adj
+## For each paddock-season not anchored to plague, does predicted Pr(enter plague) separate paddocks
+## whose next season is anchored plague from those anchored not-plague? (The same anchors the
+## supervised model was fitted to, so a consistency check rather than an out-of-sample test.)
+eligible_by_model <- purrr::imap(model_variants, function(m, label) {
+  p_enter <- m$hmm$predict(what = "tpm", newdata = hmm_data)["state 1", "state 2", ]
+  hmm_data |>
+    mutate(p_enter = p_enter) |>
+    arrange(ID, season_year_adj) |>
+    group_by(ID) |>
+    mutate(next_state = lead(state)) |>
+    ungroup() |>
+    filter(!is.na(next_state), is.na(state) | state != 2)
+})
 
-season_order <- c("Summer", "Autumn", "Winter", "Spring")
-cur_idx <- match(covariate_season, season_order)
-target_season <- season_order[(cur_idx %% 4) + 1]
-target_year_adj <- if (target_season == "Summer") covariate_year_adj + 1 else covariate_year_adj
+onset_skill <- purrr::imap_dfr(eligible_by_model, function(eligible, label) {
+  yes <- eligible$p_enter[eligible$next_state == 2]
+  no  <- eligible$p_enter[eligible$next_state == 1]
+  tibble::tibble(Model = label, `Onsets` = length(yes), `Stayed clear` = length(no),
+                 `Median Pr(enter) before onset` = median(yes), `Median Pr(enter) before staying clear` = median(no),
+                 AUC = auc_fn(yes, no))
+})
 
-## Lead-time framing (2026-09, following a forecasting-literature review) -- translates the
-## structural one-season-ahead limit above into the actual decision calendar CLAUDE.md's own
-## stated purpose cares about (helping farmers decide when to bait), rather than leaving "one
-## season ahead" as an abstract number with no obvious practical meaning. Grounded in standard,
-## general Australian grain-cropping timing (winter cereals/canola sown roughly April-June; summer
-## crops -- sorghum, cotton, maize -- sown roughly September-December, in the one zone this
-## project's own summer_zone_ne distinguishes as having genuine summer cropping, r/d_build_hmm_
-## data.R) -- ordinary agronomic knowledge, not a date sourced from this project's own data the way
-## every other specific claim in this report is, so worded as indicative timing rather than a
-## precise, per-season guarantee (real sowing/harvest dates vary by property, year and latitude
-## within the fitted footprint).
-lead_time_note <- switch(target_season,
-  "Autumn" = "lands right in the window winter cereal/canola paddocks -- most of this model's own fitted footprint -- are typically sown in, a genuinely pre-sowing warning, timed while a bait decision can still change what goes into the ground",
-  "Spring" = "lands right in the window summer crops are typically sown in the one zone with genuine summer cropping this model fits (\"NSW NE Qld SE\") -- a pre-sowing warning there too, though most of the rest of the fitted footprint is winter-only and already mid-way through this season's sown crop",
-  "Winter" = "lands mid-way through an already-sown winter crop across most of the fitted footprint -- past the sowing decision, but still ahead of the flowering/grain-fill period baiting most needs to protect",
-  "Summer" = "lands mid-way through an already-sown summer crop in the one zone with genuine summer cropping, and in the post-harvest stubble/fallow period for winter-only paddocks elsewhere -- past this season's own sowing decision everywhere in the fitted footprint"
-)
-
-risk_map_caption <- paste0(
-  "Pr(not-plague -> plague) at every 0.1 degree cell within the fitted zones, using ",
-  covariate_season, "-", covariate_year_adj,
-  "'s rainfall whiplash, 6-month GPP, soil moisture and minimum temperature values to predict the transition into ",
-  target_season, "-", target_year_adj,
-  " -- one season ahead, the model's structural forecast limit (see below). Left: supervised (anchored) model. Right: unsupervised model, discovering its own state split with no anchors at all. Same colour scale/limits for both, so the two are directly comparable. Masked to the fitted zones only. ",
-  "Colour scale is square-root transformed, not linear -- these risk values are heavily right-skewed (most cells low risk, a long tail toward high risk), so a plain linear scale leaves most of the map reading as flat green (see prose below the map for the numbers)."
-)
+onset_skill |>
+  gt::gt() |>
+  gt::fmt_integer(columns = c(Onsets, `Stayed clear`)) |>
+  gt::fmt_percent(columns = starts_with("Median"), decimals = 1) |>
+  gt::fmt_number(columns = AUC, decimals = 3) |>
+  gt::tab_options(table.font.size = "0.85em")
 ```
 
-### Predictor values at the current season
+```{r}
+#| label: operational-threshold
+
+## The risk cutoff that best separates onsets from non-onsets (Youden's J), supervised model.
+sup_eligible <- eligible_by_model$Supervised
+roc_points <- purrr::map_dfr(sort(unique(sup_eligible$p_enter)), function(th) {
+  high <- sup_eligible$p_enter >= th
+  onset <- sup_eligible$next_state == 2
+  tibble::tibble(threshold = th, sensitivity = mean(high[onset]), specificity = mean(!high[!onset]))
+})
+best_threshold <- roc_points |>
+  mutate(youden = sensitivity + specificity - 1) |>
+  slice_max(youden, n = 1, with_ties = FALSE)
+risk_values_sup <- terra::values(plague_risk_map_supervised)
+pct_map_above <- 100 * mean(risk_values_sup[!is.na(risk_values_sup)] >= best_threshold$threshold)
+```
+
+A cutoff of **`r scales::percent(best_threshold$threshold, accuracy = 0.1)`** best separates onsets from non-onsets in the supervised model, catching `r scales::percent(best_threshold$sensitivity, accuracy = 1)` of onsets while clearing `r scales::percent(best_threshold$specificity, accuracy = 1)` of seasons that stayed clear. `r round(pct_map_above, 1)`% of the current risk map (@fig-risk-map) is at or above it. It is a rough guide to where "elevated" starts on this model's scale, not an operational rule.
+
+### Supervised vs. unsupervised
+
+```{r}
+#| label: tbl-model-comparison
+
+tibble::tibble(
+  Measure = c("Paddock-seasons decoded in state 2", "Decoded-state agreement between models",
+              "Hindcast before 2013: onset, same year", "Hindcast before 2013: onset, one year ahead",
+              "Hindcast before 2013: occupancy", "Paddock-level onset AUC"),
+  Supervised = c(scales::percent(state2_share[["Supervised"]], accuracy = 0.1), paste0(agreement_pct, "%"),
+                 fmt2(get_hindcast("Supervised", "onset", "hindcast")), fmt2(get_hindcast("Supervised", "onset_lead", "hindcast")),
+                 fmt2(get_hindcast("Supervised", "occupancy", "hindcast")), fmt2(onset_skill$AUC[1])),
+  Unsupervised = c(scales::percent(state2_share[["Unsupervised"]], accuracy = 0.1), "",
+                   fmt2(get_hindcast("Unsupervised", "onset", "hindcast")), fmt2(get_hindcast("Unsupervised", "onset_lead", "hindcast")),
+                   fmt2(get_hindcast("Unsupervised", "occupancy", "hindcast")), fmt2(onset_skill$AUC[2]))
+) |>
+  gt::gt() |>
+  gt::tab_options(table.font.size = "0.85em")
+```
+
+The anchors align the second state with mapped plague, which the paddock-level onset AUC (measured against those anchors) reflects. On the independent pre-2013 records, the two models are closer: `r if (get_hindcast("Unsupervised", "onset", "hindcast") > get_hindcast("Supervised", "onset", "hindcast")) "the unsupervised model scores higher on same-year onset and occupancy" else "the supervised model scores higher on same-year onset"`, `r if (get_hindcast("Supervised", "onset_lead", "hindcast") > get_hindcast("Unsupervised", "onset_lead", "hindcast")) "while the supervised model gives the better one-year-ahead warning" else "and the unsupervised model also gives the better one-year-ahead warning"`.
+
+## Current forecast
+
+**The maps below forecast `r forecast$target_season` `r forecast$target_year`**, from `r forecast$covariate_season` `r forecast$covariate_year` covariates (layer `r forecast$period`). The forecast reaches one season ahead only: every covariate is built from observed data, and each season's covariates set the transition into the following season.
+
+```{r}
+#| label: fig-risk-map
+#| fig-cap: !expr paste0("Pr(not-plague → plague) for ", forecast$target_season, " ", forecast$target_year, " at each 0.1 degree cell in the fitted zones. Square-root colour scale (most cells are low risk). Supervised model left, unsupervised right.")
+#| fig-width: 12
+#| fig-asp: 0.4
+
+risk_scale <- scale_fill_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
+                                   breaks = c(0, 0.05, 0.2, 0.5, 1), trans = "sqrt", name = "Plague onset risk")
+risk_maps <- purrr::imap(model_variants, function(m, label) {
+  df <- as.data.frame(m$risk_map, xy = TRUE, na.rm = TRUE)
+  names(df)[3] <- "risk"
+  risk_tile_map(df, "risk", label, risk_scale)
+})
+patchwork::wrap_plots(risk_maps, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: tbl-risk-zones
+
+risk_by_zone |>
+  pivot_wider(names_from = Model, values_from = c(mean, q90, max), names_sep = " | ") |>
+  arrange(desc(`mean | Supervised`)) |>
+  rename(`AE zone` = ae_zone) |>
+  gt::gt() |>
+  gt::fmt_percent(columns = -`AE zone`, decimals = 1) |>
+  gt::tab_options(table.font.size = "0.8em") |>
+  gt::tab_header(title = "Onset risk by AE zone", subtitle = "Mean, 90th percentile and maximum across each zone's cells")
+```
+
+### Nowcast from the latest month
+
+The map above changes only at season boundaries (February, May, August, November), because GPP and soil moisture are season-end values. The nowcast reads every covariate at the latest complete month (`r nowcast$period`, against `r forecast$period` above), forecasting `r nowcast$target_season` `r nowcast$target_year`. It has no uncertainty map.
+
+```{r}
+#| label: fig-risk-map-nowcast
+#| fig-cap: !expr paste0("Nowcast of Pr(not-plague → plague) using covariates at ", nowcast$period, ". Same scale as the forecast map.")
+#| fig-width: 12
+#| fig-asp: 0.4
+
+risk_maps_nowcast <- purrr::imap(model_variants, function(m, label) {
+  df <- as.data.frame(m$risk_map_nowcast, xy = TRUE, na.rm = TRUE)
+  names(df)[3] <- "risk"
+  risk_tile_map(df, "risk", label, risk_scale)
+})
+patchwork::wrap_plots(risk_maps_nowcast, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
+```
+
+### Uncertainty
+
+```{r}
+#| label: fig-risk-map-uncertainty
+#| fig-cap: "Width of the 95% interval for the forecast map, on the logit scale (a probability-scale width looks small whenever risk is near 0% or 100%, however uncertain the estimate). From 500 posterior draws of each model's coefficients. Darker = less certain."
+#| fig-width: 12
+#| fig-asp: 0.4
+
+.logit <- function(p) log(p / (1 - p))
+uncertainty_dfs <- purrr::imap(model_variants, function(m, label) {
+  width <- .logit(m$risk_map_uncertainty[["ucl"]]) - .logit(m$risk_map_uncertainty[["lcl"]])
+  df <- as.data.frame(width, xy = TRUE, na.rm = TRUE)
+  names(df)[3] <- "logit_width"
+  df
+})
+uncertainty_scale <- scale_fill_distiller(palette = "Purples", direction = 1,
+                                          limits = range(unlist(lapply(uncertainty_dfs, `[[`, "logit_width"))),
+                                          name = "95% interval width (logit)")
+uncertainty_maps <- purrr::imap(uncertainty_dfs, function(df, label) risk_tile_map(df, "logit_width", label, uncertainty_scale))
+patchwork::wrap_plots(uncertainty_maps, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
+```
+
+Supervised model: median interval width `r fmt2(median(uncertainty_dfs$Supervised$logit_width))` logit units, widest `r fmt2(max(uncertainty_dfs$Supervised$logit_width))`.
+
+### Covariates behind the forecast
 
 ```{r}
 #| label: fig-predictor-maps
-#| fig-cap: !expr predictor_maps_caption
+#| fig-cap: !expr paste0("Three of the transition covariates at ", forecast$period, " -- the grid, its AE-zone mean and its GRDC-subregion mean. Colour limits span each covariate's full record, so colours are comparable between forecasts.")
 #| fig-width: 12
 #| fig-asp: 0.75
 
-## The 3 headline transition covariates (min_temp omitted -- not requested here, and see
-## [Known limitations] for its own untested-hypothesis caveat alongside soil_moisture's), each
-## at the same predict_period computed above -- exactly the values fig-risk-map's own $predict()
-## call below reads. One patchwork panel per covariate, stacked (not facet_wrap) since each has
-## a very different unit/range (rain_whiplash_trough_to_peak spans negative, the other two don't)
-## and needs its own colour scale -- a single shared scale would wash out whichever covariate has
-## the smaller range. fit_zones_ll/zones_bbox/aus_sf reused from fig-spatial-key-years/setup
-## above, not rebuilt here. terra::mask() to the fitted AE zone polygons -- same treatment
-## fig-risk-map's own risk maps already get (r/d_predict_plague_risk.R) -- so cells outside
-## the fitted zones (deserts, alps, cities, un-monitored zones) don't show a value at all, rather
-## than implying a prediction-relevant covariate reading somewhere the model was never fit. Masked
-## as the FULL multi-layer stack (not just the one predict_period layer) since the fixed colour
-## limits below are computed from this same masked stack.
 predictor_stacks <- list(
   `Rainfall whiplash`     = rain_whiplash_trough_to_peak,
   `GPP (6-month rolling)` = gpp_rolling_raster_6,
-  `Soil moisture`         = soil_moisture_raster_coarse
+  `Soil moisture anomaly` = soil_moisture_anomaly_raster
 ) |>
   lapply(terra::mask, mask = terra::vect(fit_zones_ll))
-
-predictor_rasters <- lapply(predictor_stacks, `[[`, predict_period)
-
-## Colour limits fixed to each covariate's own FULL history (every season/year on record, not
-## just predict_period) -- so a given value always reads as the same colour across report
-## re-renders/seasons, rather than each render auto-rescaling to whatever period happens to be
-## current. terra::global(..., "range") is cheap even across a 500+ layer stack (~1s, confirmed
-## live) -- no need to cache/precompute outside this chunk.
+predictor_rasters <- lapply(predictor_stacks, `[[`, forecast$period)
 predictor_limits <- lapply(predictor_stacks, function(s) {
   rng <- terra::global(s, "range", na.rm = TRUE)
   c(min(rng$min, na.rm = TRUE), max(rng$max, na.rm = TRUE))
 })
 
-predictor_maps_caption <- paste0(
-  "The 3 covariates driving the transition probabilities, at ", covariate_season, "-", covariate_year_adj,
-  " (", predict_period, ") -- the same period the risk map below is predicted from. Left to right: the raw grid, its AE zone mean, its GRDC growing-subregion mean (a finer grain, clipped to the fitted zones' own footprint). Colour scales are fixed to each covariate's own full 1982+ record (not just this period), so colour is comparable across re-renders. Grey lines are the fitted AE zone borders."
+## Whiplash and the soil-moisture anomaly are z-scores, so a diverging scale with white at 0; GPP is
+## always positive, so a sequential scale.
+diverging <- function(label, low, high, title) {
+  lim <- predictor_limits[[label]]
+  scale_fill_gradientn(colors = c(low, "white", high), values = c(0, scales::rescale(0, from = lim), 1),
+                       limits = lim, name = title, guide = guide_colorbar(title.position = "top", title.hjust = 0.5))
+}
+predictor_scales <- list(
+  `Rainfall whiplash`     = diverging("Rainfall whiplash", "#2166AC", "#B2182B", "Rainfall whiplash (z-score)"),
+  `GPP (6-month rolling)` = scale_fill_viridis_c(limits = predictor_limits[["GPP (6-month rolling)"]], name = "GPP (gC/m²/day)",
+                                                 guide = guide_colorbar(title.position = "top", title.hjust = 0.5)),
+  `Soil moisture anomaly` = diverging("Soil moisture anomaly", "#8C510A", "#01665E", "Soil moisture anomaly (z-score)")
 )
 
-## rain_whiplash_trough_to_peak is a z-score-like anomaly sweep, genuinely centred on 0 (a
-## negative value is a real "wetter-getting-drier" signal, not just noise near a floor) -- white
-## needs to sit exactly AT 0, ruling out scale_fill_distiller() (tried first, centres its middle
-## colour on the midpoint of whatever LIMITS spans, not on 0). scale_fill_gradient2() (tried
-## second) gets 0 right but has its own bug for this specific asymmetric range (-1.6 to 4.3):
-## its rescale_mid() stretches the colour scale SYMMETRICALLY around the midpoint using the
-## LARGER of the two distances (here 4.3), so the shorter (negative) side never reaches full
-## colour intensity -- confirmed live, this is exactly why the blue end looked washed out/
-## "transparent" next to the fully-saturated red end, not an actual alpha/transparency setting
-## anywhere in this code. Fixed with scale_fill_gradientn()'s own `values` argument instead --
-## an explicit stop position for white at 0's own true fractional location within the real
-## (asymmetric) limits, computed live via scales::rescale() so it stays correct if the
-## full-history range itself shifts on a future re-render -- both ends now reach full colour
-## saturation at their own true data extreme. gpp_rolling6 and soil_moisture are both plain
-## continuous, always-positive covariates with no such reference point (unaffected by any of
-## this), so they share one viridis gradient -- a consistent "low = dark purple, high = yellow"
-## reading across both, rather than each getting its own unrelated hue (Greens vs. Blues, tried
-## first) that implies a difference in kind that isn't really there. guide_colorbar()'s own
-## title.position = "top" puts each legend's title above its bar rather than ggplot's own
-## default of squeezed to the left -- confirmed live this also fixes a real overlap bug: the
-## left-aligned title's own box height wasn't reserved consistently once these panels got narrower
-## (3 columns, below), so the title text crept up into the map above it in some panels.
-rain_whiplash_limits <- predictor_limits[["Rainfall whiplash"]]
-rain_whiplash_zero_stop <- scales::rescale(0, from = rain_whiplash_limits) # 0's own fractional position within the (asymmetric) limits
-predictor_guide <- guide_colorbar(title.position = "top", title.hjust = 0.5)
-predictor_palettes <- list(
-  `Rainfall whiplash`     = function(p) p + scale_fill_gradientn(colors = c("#2166AC", "white", "#B2182B"), values = c(0, rain_whiplash_zero_stop, 1), limits = rain_whiplash_limits, name = "Rainfall whiplash (z-score)", guide = predictor_guide),
-  `GPP (6-month rolling)` = function(p) p + scale_fill_viridis_c(limits = predictor_limits[["GPP (6-month rolling)"]], name = "GPP (gC/m²/day)", guide = predictor_guide),
-  `Soil moisture`         = function(p) p + scale_fill_viridis_c(limits = predictor_limits[["Soil moisture"]], name = "Soil moisture (%)", labels = scales::percent, guide = predictor_guide)
-)
-
-## Zone-mean/subregion-mean versions (2nd/3rd columns below) -- one value per polygon
-## (terra::extract()'s own zonal mean, not a per-cell operation, so this is cheap even for the
-## 29 subregions -- confirmed live ~0.5s), on the SAME colour scale/limits as the raw map (1st
-## column) for a direct read of how much detail each level of aggregation throws away.
-## grdc_subregion_ll is already clipped to the fitted zones' own footprint (fig-spatial-key-years
-## above) -- no further filtering needed here.
-predictor_zone_sf <- purrr::imap(predictor_rasters, function(r, label) {
-  zone_mean <- terra::extract(r, terra::vect(fit_zones_ll), fun = mean, na.rm = TRUE, ID = FALSE)[[1]]
-  dplyr::mutate(fit_zones_ll, value = zone_mean)
-})
-predictor_subregion_sf <- purrr::imap(predictor_rasters, function(r, label) {
-  subregion_mean <- terra::extract(r, terra::vect(grdc_subregion_ll), fun = mean, na.rm = TRUE, ID = FALSE)[[1]]
-  dplyr::mutate(grdc_subregion_ll, value = subregion_mean) |>
-    dplyr::filter(!is.na(value)) # subregions with no real overlap with the masked raster at all
-})
-
-base_map_theme <- theme_void(base_size = 11) +
+map_theme <- theme_void(base_size = 11) +
   theme(legend.position = "bottom", legend.key.width = unit(0.8, "cm"), legend.key.height = unit(0.3, "cm"),
         legend.title = element_text(size = 9), legend.text = element_text(size = 8),
         plot.title = element_text(size = 10.5, face = "bold", hjust = 0.5))
+map_coords <- coord_sf(xlim = c(zones_bbox["xmin"], zones_bbox["xmax"]),
+                       ylim = c(zones_bbox["ymin"], zones_bbox["ymax"]), expand = FALSE)
 
 predictor_maps <- purrr::imap(predictor_rasters, function(r, label) {
   df <- as.data.frame(r, xy = TRUE, na.rm = TRUE)
   names(df)[3] <- "value"
-
-  raw_map <- ggplot() +
-    geom_tile(data = df, aes(x, y, fill = value)) +
-    geom_sf(data = fit_zones_ll, fill = NA, colour = "grey30", linewidth = 0.2) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    coord_sf(xlim = c(zones_bbox["xmin"], zones_bbox["xmax"]),
-             ylim = c(zones_bbox["ymin"], zones_bbox["ymax"]), expand = FALSE) +
-    labs(title = label) +
-    base_map_theme
-
-  zone_map <- ggplot() +
-    geom_sf(data = predictor_zone_sf[[label]], aes(fill = value), colour = "grey30", linewidth = 0.2) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    coord_sf(xlim = c(zones_bbox["xmin"], zones_bbox["xmax"]),
-             ylim = c(zones_bbox["ymin"], zones_bbox["ymax"]), expand = FALSE) +
-    labs(title = paste(label, "– AE zone mean")) +
-    base_map_theme
-
-  subregion_map <- ggplot() +
-    geom_sf(data = predictor_subregion_sf[[label]], aes(fill = value), colour = "grey30", linewidth = 0.15) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    coord_sf(xlim = c(zones_bbox["xmin"], zones_bbox["xmax"]),
-             ylim = c(zones_bbox["ymin"], zones_bbox["ymax"]), expand = FALSE) +
-    labs(title = paste(label, "– GRDC subregion mean")) +
-    base_map_theme
-
-  ## Three elements per covariate (raw, zone mean, subregion mean), not one -- purrr::flatten()
-  ## below unnests this one level so wrap_plots(ncol = 3) fills each triple row-by-row, one
-  ## row/covariate.
-  list(predictor_palettes[[label]](raw_map), predictor_palettes[[label]](zone_map), predictor_palettes[[label]](subregion_map))
+  zone_sf <- mutate(fit_zones_ll, value = terra::extract(r, terra::vect(fit_zones_ll), fun = mean, na.rm = TRUE, ID = FALSE)[[1]])
+  sub_sf <- mutate(grdc_subregion_ll, value = terra::extract(r, terra::vect(grdc_subregion_ll), fun = mean, na.rm = TRUE, ID = FALSE)[[1]]) |>
+    filter(!is.na(value))
+  outline <- geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6)
+  list(
+    ggplot() + geom_tile(data = df, aes(x, y, fill = value)) +
+      geom_sf(data = fit_zones_ll, fill = NA, colour = "grey30", linewidth = 0.2) + outline + map_coords +
+      labs(title = label) + map_theme + predictor_scales[[label]],
+    ggplot() + geom_sf(data = zone_sf, aes(fill = value), colour = "grey30", linewidth = 0.2) + outline + map_coords +
+      labs(title = paste(label, "- AE zone mean")) + map_theme + predictor_scales[[label]],
+    ggplot() + geom_sf(data = sub_sf, aes(fill = value), colour = "grey30", linewidth = 0.15) + outline + map_coords +
+      labs(title = paste(label, "- GRDC subregion mean")) + map_theme + predictor_scales[[label]]
+  )
 })
-
 patchwork::wrap_plots(purrr::flatten(predictor_maps), ncol = 3)
 ```
 
-Left to right: the raw grid, its AE-zone mean, its GRDC-subregion mean (roughly 4x finer-grained than AE zone) -- same colour scale across all three so the loss of detail at each level of aggregation is directly comparable, masked to the fitted AE zones' own footprint throughout, same as the risk map below. `rain_whiplash_trough_to_peak` shows the clearest regional structure this season, with the elevated (red) band in South Australia's mid-north visible against the calmer (blue) NSW zones -- coarse enough on its own that even the AE-zone mean keeps most of that signal; `soil_moisture` and `gpp_rolling6` vary more gradually across the fitted region, so aggregating either loses more genuine within-zone/within-subregion variation.
+## Limitations
 
 ```{r}
-#| label: fig-risk-map
-#| fig-cap: !expr risk_map_caption
-#| fig-width: 12
-#| fig-asp: 0.4
+#| label: limitations-stats
 
-## Side by side, one panel per model_variants entry (setup chunk) -- both models' own risk maps
-## are real, cached _targets.R targets (tar_map() over model variant), not derived from one
-## another, so this is a genuine comparison, not a duplicate view. risk_df_by_model keeps every
-## model's own data frame (not just the combined plot) since risk-stats below needs each one
-## separately.
-risk_df_by_model <- purrr::imap(model_variants, function(m, label) {
-  df <- as.data.frame(m$risk_map, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- "risk"
-  df
-})
-pad <- 0.6
-xr <- range(risk_df_by_model[[1]]$x); yr <- range(risk_df_by_model[[1]]$y) # same fit_zones_sf mask for both models, so either's own extent works
-
-## Genuinely right-skewed (confirmed live: median 7%, 90th percentile 37%, max 98%) -- a plain
-## linear 0-1 colour scale spends almost its entire visual range on the rare >90% tail, so the
-## ecologically real, actionable structure sitting in the 20-70% band (most of NSW, this season)
-## reads as flat, undifferentiated green, masking exactly the signal a farmer deciding whether to
-## bait most needs to see. trans = "sqrt" fixes this WITHOUT changing the underlying data, limits,
-## or losing any information at the top (max 0.98 still reads as essentially full red) -- it just
-## redistributes visual colour-space toward the low/mid range where the actual data lives.
-## Confirmed live as a real, substantial difference, not a marginal tweak -- see this report's own
-## revision history/commit for a side-by-side. breaks chosen to read naturally on a sqrt axis
-## (roughly even spacing after the transform, not raw 0/25/50/75/100). One shared scale/limits
-## across both panels (not each auto-scaling to its own model's own range) so colour is directly
-## comparable model to model, not just within one.
-risk_maps <- purrr::imap(risk_df_by_model, function(df, label) {
-  ggplot() +
-    geom_tile(data = df, aes(x, y, fill = risk), width = 0.1, height = 0.1) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    scale_fill_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
-                          breaks = c(0, 0.05, 0.2, 0.5, 1), trans = "sqrt",
-                          name = "Plague transition risk") +
-    coord_sf(xlim = c(xr[1]-pad, xr[2]+pad), ylim = c(yr[1]-pad, yr[2]+pad), expand = FALSE) +
-    labs(title = label) +
-    theme_void(base_size = 12) +
-    theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
-          plot.title = element_text(hjust = 0.5, face = "bold"))
-})
-
-patchwork::wrap_plots(risk_maps, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
-```
-
-**This map predicts risk for `r target_season`-`r target_year_adj`**, using `r covariate_season`-`r covariate_year_adj`'s own covariate values (the most recent period shared by all four, `r predict_period`). One season ahead is the structural limit of the current design -- all four transition covariates are built purely from realised observations, so none can be computed past the most recently completed month of real data, and the transition formula always relates one season's covariates to the *following* season's state. Forecasting further out would require forecasting the covariates themselves, which this model doesn't do.
-
-In practical terms, that one-season structural limit isn't a fixed amount of lead time against the farming calendar it's meant to inform -- it depends on which season the forecast happens to land on. This particular `r target_season` forecast `r lead_time_note`. (General agronomic timing, not sourced from this project's own data -- offered as context for reading the map, not a claim this report can verify the way its other numbers are.)
-
-```{r}
-#| label: risk-stats
-
-## median converted to a percentage too (100*), matching pct_gt50/pct_gt20 -- a real bug caught
-## live on the real render (2026-09): the raw proportion was slipping through unconverted
-## (rounding e.g. 0.071 to "0.1") while the column header already said "Median risk (%)".
-risk_stats_by_model <- purrr::imap_dfr(risk_df_by_model, function(df, label) {
-  df |> summarise(Model = label, median = 100*median(risk), pct_gt50 = 100*mean(risk > 0.5), pct_gt20 = 100*mean(risk > 0.2), n = n())
+## Near-singular joint precision (from collinear terms) makes the uncertainty sampling fall back to a
+## generalised inverse; reported only if it occurs.
+cond_numbers <- sapply(model_variants, function(m) {
+  ev <- eigen(as.matrix(m$hmm$tmb_rep()$jointPrecision), symmetric = TRUE, only.values = TRUE)$values
+  max(ev) / min(ev)
 })
 ```
 
-```{r}
-#| label: tbl-risk-stats
-
-risk_stats_by_model |>
-  gt::gt() |>
-  gt::fmt_number(columns = c(median, pct_gt50, pct_gt20), decimals = 1) |>
-  gt::cols_label(median = "Median risk (%)", pct_gt50 = "Cells > 50% risk", pct_gt20 = "Cells > 20% risk", n = "Valid cells") |>
-  gt::tab_options(table.font.size = "0.85em")
-```
-
-The highest-risk band runs along South Australia's western coastline near the Eyre Peninsula, with a smaller hotspot in central-east New South Wales, for both models (though the unsupervised model's own numbers should stay stable as the anchoring pipeline's own upstream data is mid-rebuild, unlike the supervised model's -- see [Overview]). Masked to the `r n_distinct(hmm_data$ae_zone)` fitted zones only -- nothing is extrapolated beyond those, e.g. to `"Qld Central"` or any other untrained zone (WA's own 4 zones joined the fit itself 2026-09, so are no longer a blanket exclusion here -- see [Data and anchoring]). The colour scale above is square-root transformed (not linear), since both models' own risk values are heavily right-skewed -- a plain linear scale would leave most of the map reading as flat, uninformative green, masking real structure in the 20-50% band that matters for an early-warning use case.
-
-### Translating risk into an operational threshold
-
-The map above reports Pr(entering plague) as a raw percentage. CLAUDE.md's own stated purpose is more specific than that: giving farmers useful early warning of *moderate-high or increasing* mouse activity so they can decide when to bait -- the same kind of categorical language recent_plague_maps' own severity field (minor/moderate/severe) and MouseAlert both already use. This section calibrates one concrete cutoff on the model's own probability scale against that same real anchor data (2026-09, following the same literature review as [Full-model onset skill] above), rather than leaving every reader to guess what a given percentage means operationally.
-
-```{r}
-#| label: operational-threshold
-
-## Youden's J statistic (sensitivity + specificity - 1, maximised over every observed threshold) is
-## the standard, textbook way to pick one operating point from a continuous predictor against a
-## known binary outcome -- used here as-is, not a project-specific invention. Supervised model only
-## -- matching every other supervised-only section built on this same evidentiary standard ([Zone-
-## specific deviations], [Validation against known history]) -- since [Full-model onset skill]
-## above already shows the unsupervised model's own predicted Pr(enter) doesn't discriminate real
-## onsets at all (in fact runs slightly backwards), so a threshold calibrated against it would be
-## meaningless. Reuses eligible_by_model$Supervised (onset-skill-data, above) directly rather than
-## recomputing the same $predict() call a second time.
-supervised_eligible <- eligible_by_model$Supervised
-threshold_candidates <- sort(unique(supervised_eligible$p_enter))
-roc_points <- purrr::map_dfr(threshold_candidates, function(th) {
-  predicted_high <- supervised_eligible$p_enter >= th
-  actual_onset   <- supervised_eligible$next_state == 2
-  tibble::tibble(
-    threshold   = th,
-    sensitivity = mean(predicted_high[actual_onset]),
-    specificity = mean(!predicted_high[!actual_onset])
-  )
-})
-best_threshold <- roc_points |>
-  dplyr::mutate(youden = sensitivity + specificity - 1) |>
-  dplyr::slice_max(youden, n = 1, with_ties = FALSE)
-
-## What fraction of THIS season's own risk map (fig-risk-map above) already sits at or above that
-## cutoff -- ties the abstract threshold back to the actual current map, not just the historical
-## calibration sample.
-pct_current_map_above <- 100 * mean(risk_df_by_model$Supervised$risk >= best_threshold$threshold)
-```
-
-A risk cutoff of **`r scales::percent(best_threshold$threshold, accuracy = 0.1)`** best separates real onsets from real non-onsets in the paddock-season anchor data above (Youden's J = `r round(best_threshold$youden, 2)`), catching **`r scales::percent(best_threshold$sensitivity, accuracy = 1)`** of real onsets while correctly clearing **`r scales::percent(best_threshold$specificity, accuracy = 1)`** of seasons that stayed clear. Read this as roughly where a MouseAlert-style "Moderate-High" reading sits on this model's own probability scale, not a precise operational rule -- the underlying calibration sample (`r nrow(supervised_eligible)` eligible paddock-seasons, `r sum(supervised_eligible$next_state == 2)` real onsets) is still thin, the same small-N caveat [Data and anchoring] and [Full-model onset skill] both already carry. **`r round(pct_current_map_above, 1)`%** of this season's own risk map (@fig-risk-map) already sits at or above that cutoff.
-
-### Nowcast: latest available covariates
-
-```{r}
-#| label: forecast-period-nowcast
-
-## Same shared-period logic as the forecast-period chunk above, but over the nowcast rasters
-## (gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast in place of their season-end-
-## trimmed namesakes -- rain_whiplash_trough_to_peak/min_temp_raster_coarse are unchanged, already
-## full monthly grain) -- see _targets.R's own plague_risk_map_nowcast comment and
-## r/d_predict_plague_risk.R's header for why this can land on a later period than the main map
-## above: it isn't held back to the next Feb/May/Aug/Nov boundary.
-shared_periods_nowcast <- Reduce(intersect, list(names(rain_whiplash_trough_to_peak), names(gpp_rolling_raster_6_nowcast), names(soil_moisture_raster_coarse_nowcast), names(min_temp_raster_coarse)))
-shared_month_nowcast <- as.integer(sub("_.*", "", shared_periods_nowcast))
-shared_year_nowcast  <- as.integer(sub(".*_", "", shared_periods_nowcast))
-predict_period_nowcast <- shared_periods_nowcast[order(shared_year_nowcast, shared_month_nowcast)][length(shared_periods_nowcast)]
-predict_month_nowcast <- as.integer(sub("_.*", "", predict_period_nowcast))
-predict_year_nowcast  <- as.integer(sub(".*_", "", predict_period_nowcast))
-covariate_season_info_nowcast <- season_info(as.Date(paste(predict_year_nowcast, predict_month_nowcast, "15", sep = "-")))
-covariate_season_nowcast <- as.character(covariate_season_info_nowcast$season)
-covariate_year_adj_nowcast <- covariate_season_info_nowcast$year_adj
-
-cur_idx_nowcast <- match(covariate_season_nowcast, season_order)
-target_season_nowcast <- season_order[(cur_idx_nowcast %% 4) + 1]
-target_year_adj_nowcast <- if (target_season_nowcast == "Summer") covariate_year_adj_nowcast + 1 else covariate_year_adj_nowcast
-
-risk_map_nowcast_caption <- paste0(
-  "Pr(not-plague -> plague) at every 0.1 degree cell within the fitted zones, using ",
-  covariate_season_nowcast, "-", covariate_year_adj_nowcast,
-  "'s rainfall whiplash, 6-month GPP, soil moisture and minimum temperature values to predict the transition into ",
-  target_season_nowcast, "-", target_year_adj_nowcast,
-  " -- same model and covariates as the map above, but read off the latest complete calendar month (",
-  predict_period_nowcast, ") rather than the last season-end boundary (", predict_period, "), so this map is current even mid-season. No uncertainty variant yet (see prose below)."
-)
-```
-
-The map above updates only at the Feb/May/Aug/Nov season boundary, because `gpp_rolling6`/`soil_moisture` are season-end-aligned covariates -- so for part of every season it is necessarily predicting off the *previous* season's covariates. This nowcast map instead uses the latest complete calendar month for every covariate (`r predict_period_nowcast` here, vs. `r predict_period` above), so it can move from `r covariate_season`-`r covariate_year_adj` to `r covariate_season_nowcast`-`r covariate_year_adj_nowcast` as soon as real data allows, rather than waiting for the next season-end. It is still 100% real, complete-month data -- no partial-month averaging, no trend extrapolation -- just a relaxed alignment requirement (see `_targets.R`'s own `plague_risk_map_nowcast` comment and r/d_predict_plague_risk.R's header). Added 2026-09 to unblock a real Spring-2026 request; no posterior-uncertainty variant exists for it yet (deliberately deferred, not an oversight -- see the TO-DO note at the top of `_targets.R`), so treat this map as a point estimate only, without the [Prediction uncertainty] section's own confidence bands.
-
-```{r}
-#| label: fig-risk-map-nowcast
-#| fig-cap: !expr risk_map_nowcast_caption
-#| fig-width: 12
-#| fig-asp: 0.4
-
-## Same construction as fig-risk-map above, just reading risk_map_nowcast instead of risk_map from
-## each model_variants entry -- kept as its own chunk (not folded into fig-risk-map) since the two
-## maps have their own distinct captions/periods and this way each can be skipped independently if
-## one target isn't built yet.
-risk_df_by_model_nowcast <- purrr::imap(model_variants, function(m, label) {
-  df <- as.data.frame(m$risk_map_nowcast, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- "risk"
-  df
-})
-
-risk_maps_nowcast <- purrr::imap(risk_df_by_model_nowcast, function(df, label) {
-  ggplot() +
-    geom_tile(data = df, aes(x, y, fill = risk), width = 0.1, height = 0.1) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    scale_fill_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
-                          breaks = c(0, 0.05, 0.2, 0.5, 1), trans = "sqrt",
-                          name = "Plague transition risk") +
-    coord_sf(xlim = c(xr[1]-pad, xr[2]+pad), ylim = c(yr[1]-pad, yr[2]+pad), expand = FALSE) +
-    labs(title = label) +
-    theme_void(base_size = 12) +
-    theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
-          plot.title = element_text(hjust = 0.5, face = "bold"))
-})
-
-patchwork::wrap_plots(risk_maps_nowcast, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
-```
-
-```{r}
-#| label: risk-stats-nowcast
-
-risk_stats_by_model_nowcast <- purrr::imap_dfr(risk_df_by_model_nowcast, function(df, label) {
-  df |> summarise(Model = label, median = 100*median(risk), pct_gt50 = 100*mean(risk > 0.5), pct_gt20 = 100*mean(risk > 0.2), n = n())
-})
-```
-
-```{r}
-#| label: tbl-risk-stats-nowcast
-
-risk_stats_by_model_nowcast |>
-  gt::gt() |>
-  gt::fmt_number(columns = c(median, pct_gt50, pct_gt20), decimals = 1) |>
-  gt::cols_label(median = "Median risk (%)", pct_gt50 = "Cells > 50% risk", pct_gt20 = "Cells > 20% risk", n = "Valid cells") |>
-  gt::tab_options(table.font.size = "0.85em")
-```
-
-### Prediction uncertainty
-
-```{r}
-#| label: fig-risk-map-uncertainty
-#| fig-cap: !expr risk_uncertainty_caption
-#| fig-width: 12
-#| fig-asp: 0.4
-
-## Uncertainty on the RAW PROBABILITY scale (ucl - lcl) is a misleading measure here -- confirmed
-## live (2026-08): it's compressed by the logit link whenever the point estimate itself sits near
-## 0 or 1, so the far-west SA cluster driving the supervised model's own most extreme risk values
-## (see [Known limitations]) -- exactly the cells with the least real evidence behind them --
-## shows a deceptively NARROW probability-scale CI (0.09) despite a genuinely enormous LOGIT-scale
-## CI (3.16, the widest of any cell in the whole grid). Plotting logit(ucl) - logit(lcl) instead
-## reveals this correctly -- direct visual confirmation of the [Known limitations] finding, not
-## just a caveat in prose. Purple palette (not hazard_colors or viridis) deliberately -- this is a
-## different KIND of quantity (confidence, not risk itself or a raw covariate), so it gets its own
-## visual identity rather than implying it's directly comparable to either. See
-## plague_risk_map_uncertainty_* (_targets.R, r/d_predict_plague_risk.R) for how mle/lcl/ucl are
-## computed -- 500 posterior draws of each model's own fixed+random-effect coefficients, the same
-## mechanism this report's own [Covariate effects on transition probability] curves already use.
-##
-## Side by side, same pattern as fig-risk-map above -- both models' own uncertainty is a real,
-## separately-computed quantity, not derived from one another. risk_df/uncertainty_df (singular,
-## the supervised model's own version) kept below for the two trial figures further down, which
-## stay single-model -- see their own comments for why.
-.logit <- function(p) log(p / (1 - p))
-uncertainty_df_by_model <- purrr::imap(model_variants, function(m, label) {
-  rast_width <- .logit(m$risk_map_uncertainty[["ucl"]]) - .logit(m$risk_map_uncertainty[["lcl"]])
-  df <- as.data.frame(rast_width, xy = TRUE, na.rm = TRUE)
-  names(df)[3] <- "logit_width"
-  df
-})
-risk_df <- risk_df_by_model$Supervised
-uncertainty_df <- uncertainty_df_by_model$Supervised
-
-## One shared scale across both panels (not each auto-scaling to its own model's own range) so
-## uncertainty is directly comparable model to model, matching the risk map's own treatment above.
-uncertainty_shared_limits <- range(unlist(lapply(uncertainty_df_by_model, `[[`, "logit_width")))
-
-risk_uncertainty_caption <- "95% CI width for the risk map above, on the logit (log-odds) scale, not the raw probability scale -- a probability-scale width looks small whenever the point estimate itself sits near 0% or 100%, regardless of how wide the underlying uncertainty really is, so it would hide exactly the cells most worth distrusting. Left/right match the risk map above. Same colour scale/limits for both panels. Same period/extent/mask as the risk map. Darker purple = wider CI = less certain."
-
-uncertainty_maps <- purrr::imap(uncertainty_df_by_model, function(df, label) {
-  ggplot() +
-    geom_tile(data = df, aes(x, y, fill = logit_width), width = 0.1, height = 0.1) +
-    geom_sf(data = aus_sf, fill = NA, colour = "grey20", linewidth = 0.25, alpha = 0.6) +
-    scale_fill_distiller(palette = "Purples", direction = 1, limits = uncertainty_shared_limits, name = "95% CI width (logit scale)") +
-    coord_sf(xlim = c(xr[1]-pad, xr[2]+pad), ylim = c(yr[1]-pad, yr[2]+pad), expand = FALSE) +
-    labs(title = label) +
-    theme_void(base_size = 12) +
-    theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
-          plot.title = element_text(hjust = 0.5, face = "bold"))
-})
-
-patchwork::wrap_plots(uncertainty_maps, ncol = 2, guides = "collect") & theme(legend.position = "bottom")
-```
-
-```{r}
-#| label: uncertainty-stats
-
-## Supervised model only below (matching [Known limitations]'s own SA Vic Mallee finding, which is
-## specific to the anchored model's own poorly-identified coefficient) -- the figure above shows
-## both, but this specific numeric drill-down is about the supervised model's own known issue.
-uncertainty_stats <- uncertainty_df |>
-  summarise(median = median(logit_width), max = max(logit_width))
-top_uncertain <- uncertainty_df |> slice_max(logit_width, n = 1)
-top_risk_cell <- risk_df |> slice_max(risk, n = 1)
-```
-
-Supervised model: median 95% CI width across the grid: **`r round(uncertainty_stats$median, 2)`** logit units; the single widest is **`r round(uncertainty_stats$max, 2)`**, at (`r round(top_uncertain$x, 1)`, `r round(top_uncertain$y, 1)`) -- `r cell_distance <- round(sqrt((top_uncertain$x - top_risk_cell$x)^2 + (top_uncertain$y - top_risk_cell$y)^2), 2); if (cell_distance == 0) "the exact same cell as" else paste("within", cell_distance, "degrees of")` the risk map's own single highest-risk cell. That's not a coincidence: hmmTMB itself already flags this model's own posterior covariance as ill-conditioned (`Inversion of precision matrix... using 'MASS::ginv' instead`, this report's own render log) -- a further reason to treat the far-west SA cluster's extreme risk values as an open question, not a confirmed reading, until the [Known limitations] finding is resolved.
-
-### Trial: risk and uncertainty in one map
-
-```{r}
-#| label: fig-risk-map-combined-trial
-#| fig-cap: !expr risk_combined_caption
-
-## TRIAL, not adopted -- kept alongside (not replacing) the two-panel risk/uncertainty maps
-## above, per request, so the two approaches can be compared directly. Same risk raster/colour
-## scale as the risk map, with alpha (transparency) additionally encoding confidence -- more
-## transparent = wider (less certain) CI, so an over-confident-looking red cell with a bad CI
-## fades rather than reading as solidly alarming.
-##
-## alpha mapped from logit_width's own RANK (percentile), not its raw value -- confirmed live the
-## raw value has the exact same right-skew problem the risk colour scale itself had (median CI
-## width 0.83 logit units, only the top handful of cells reach anywhere near the max of 3.16), so
-## a plain linear rescale left >97% of cells within a narrow near-opaque alpha band and the fade
-## effect was barely visible. Percentile rank spreads it out properly, same fix in spirit as the
-## colour scale's own sqrt transform above. Floor of 0.15 (not 0) so no cell disappears entirely
-## -- it's still a real prediction, just a low-confidence one. scale_alpha_identity() (no legend)
-## since a continuous fill legend AND a continuous alpha legend together read as cluttered for a
-## trial figure -- the caption explains the encoding instead. grey40 plot background (not white)
-## so faded cells are visibly faded rather than blending into a white page.
-##
-## Real reservation, stated plainly rather than glossed over: risk and uncertainty are strongly
-## correlated in this specific dataset (r = 0.84 on the raw probability scale) -- confirmed live
-## -- so colour and alpha move together more than a clean bivariate encoding really wants. That
-## makes it genuinely harder to tell "muted because uncertain" apart from "just less risky" than
-## the two separate panels above manage. This isn't a fixable choice-of-statistic problem, checked
-## live using hmmTMB's own return_post = TRUE (raw posterior draws, not just mle/lcl/ucl): the
-## posterior SD on the SAME (probability) scale correlates with risk just as strongly (r = 0.91,
-## essentially identical to CI width, as expected -- they're both just summaries of the same
-## spread) and even the logit-scale SD -- a genuinely different scale -- only softens it to
-## r = 0.71/0.60. The correlation is real and substantive: the SAME poorly-identified
-## `SA Vic Mallee` zone slope ([Known limitations]) drives both the extreme point estimate AND the
-## wide uncertainty together, by construction, not an artefact of measuring "width" specifically.
-## See the distance-based trial below for an alpha channel that turned out to be much less
-## entangled with risk. Not a reason to rule this one out, but a real trade-off to weigh before
-## adopting it over the clearer (if less compact) two-panel version.
-##
-## Supervised model only -- both trial figures stayed single-model when the risk/uncertainty maps
-## above became a dual-model comparison (2026-08): they're both explicitly experimental, and
-## doubling an unadopted technique to 4 panels traded clarity for a comparison nobody's asked for
-## yet. model_variants$Supervised (setup chunk) is the one place this would need to change if that
-## scope decision is ever revisited.
-combined_df <- as.data.frame(c(model_variants$Supervised$risk_map, .logit(model_variants$Supervised$risk_map_uncertainty[["ucl"]]) - .logit(model_variants$Supervised$risk_map_uncertainty[["lcl"]])),
-                              xy = TRUE, na.rm = TRUE)
-names(combined_df) <- c("x", "y", "risk", "logit_width")
-combined_df$confidence_alpha <- scales::rescale(-rank(combined_df$logit_width), to = c(0.15, 1))
-
-risk_combined_caption <- "TRIAL -- same risk values as the map above, with transparency additionally encoding confidence (more transparent = wider, less certain CI, ranked so the fade is visible across the full range, not just the extreme tail). Not adopted over the two-panel version above -- see the caveat in the code comments about risk and uncertainty being correlated in this dataset, which makes the two channels harder to read apart than they would be if independent."
-
-ggplot() +
-  geom_tile(data = combined_df, aes(x, y, fill = risk, alpha = confidence_alpha), width = 0.1, height = 0.1) +
-  geom_sf(data = aus_sf, fill = NA, colour = "grey80", linewidth = 0.25, alpha = 0.6) +
-  scale_fill_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
-                        breaks = c(0, 0.05, 0.2, 0.5, 1), trans = "sqrt", name = "Plague transition risk\n(more transparent = less certain)") +
-  scale_alpha_identity() +
-  coord_sf(xlim = c(xr[1]-pad, xr[2]+pad), ylim = c(yr[1]-pad, yr[2]+pad), expand = FALSE) +
-  theme_void(base_size = 12) +
-  theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
-        plot.background = element_rect(fill = "grey40", colour = NA),
-        legend.background = element_rect(fill = "grey40", colour = NA),
-        legend.text = element_text(colour = "white"), legend.title = element_text(colour = "white"))
-```
-
-### Trial: risk and distance-from-survey-data in one map
-
-```{r}
-#| label: fig-risk-map-distance-trial
-#| fig-cap: !expr risk_distance_caption
-
-## Second trial alpha channel, tried after the uncertainty one above turned out too entangled with
-## risk to read cleanly (r = 0.84-0.91 confirmed live, see that trial's own caveat). This one
-## targets the OTHER half of the [Known limitations] finding directly -- not "is this zone's own
-## slope poorly identified" but "is this specific cell geographically far from any real paddock
-## that trained it" -- a purely geometric quantity, computed independently of the fitted
-## coefficients entirely, so there's no structural reason it should correlate with risk the way
-## posterior spread did. Confirmed live: it doesn't (r = 0.065, essentially uncorrelated) -- a
-## genuinely cleaner bivariate encoding than the uncertainty trial above.
-##
-## Distance is to the nearest survey paddock WITHIN THE SAME ae_zone as each cell, not the nearest
-## paddock anywhere -- tried the simpler "nearest any paddock" version first and reverted it same
-## session: it produced a real, backwards-looking artefact (confirmed live) where sparsely-sampled
-## NSW zones (few paddocks spread across a huge area) faded MORE than the far-west SA cluster
-## actually driving this report's own overconfidence finding, simply because some OTHER zone's
-## paddock happened to sit geographically nearby -- a different zone's paddock is irrelevant here,
-## since it trained a different zone's own coefficients entirely. Restricting to same-zone
-## paddocks fixes this and, for the specific cluster this report is actually worried about,
-## reproduces the exact 202km figure already documented in [Known limitations] -- not a
-## coincidence, the same real gap measured two different ways.
-##
-## Implementation: one terra::distance() call per zone (fast -- confirmed live ~3-5s total for all
-## 7 zones, unlike the uncertainty trial's 500-posterior-draw mechanism, so this is computed
-## directly here rather than needing its own cached _targets.R target. Supervised model only, same
-## scope decision as the uncertainty trial above -- see its own comment for why.
-paddocks_by_zone <- hmm_data |>
-  distinct(ID, longitude, latitude, ae_zone) |>
-  filter(!is.na(longitude), !is.na(latitude))
-
-zone_rast <- terra::rasterize(terra::vect(sf::st_transform(fit_zones_sf, terra::crs(model_variants$Supervised$risk_map))), model_variants$Supervised$risk_map[[1]], field = "ae_zone")
-distance_cell_df <- as.data.frame(c(model_variants$Supervised$risk_map, zone_rast), xy = TRUE, na.rm = FALSE)
-names(distance_cell_df) <- c("x", "y", "risk", "ae_zone")
-
-zone_levels <- sort(unique(paddocks_by_zone$ae_zone))
-dist_by_zone <- rast(lapply(zone_levels, function(z) {
-  zone_pts <- terra::vect(dplyr::filter(paddocks_by_zone, ae_zone == z), geom = c("longitude", "latitude"), crs = "EPSG:4326")
-  terra::distance(model_variants$Supervised$risk_map[[1]], zone_pts, unit = "km")
-}))
-names(dist_by_zone) <- zone_levels
-dist_by_zone_df <- as.data.frame(dist_by_zone, xy = TRUE, na.rm = FALSE)
-
-distance_cell_df$dist_km <- NA_real_
-for (z in zone_levels) {
-  idx <- which(distance_cell_df$ae_zone == z)
-  distance_cell_df$dist_km[idx] <- dist_by_zone_df[[z]][idx]
-}
-distance_cell_df <- dplyr::filter(distance_cell_df, !is.na(risk), !is.na(dist_km))
-
-## Rank-based alpha again -- same reasoning as the uncertainty trial's own sqrt/rank fixes above,
-## though this distance distribution is less pathologically skewed to begin with.
-distance_cell_df$distance_alpha <- scales::rescale(-rank(distance_cell_df$dist_km), to = c(0.15, 1))
-
-risk_distance_caption <- "TRIAL -- same risk values as the map above, with transparency instead encoding distance to the nearest real survey paddock WITHIN THE SAME AE zone (more transparent = further from any paddock that actually trained that zone's own coefficients). Unlike the uncertainty trial above, this channel is only weakly correlated with risk (r = 0.065, confirmed live) -- so it reads as a genuinely separate piece of information, not a re-statement of the colour scale wearing a different name."
-
-ggplot() +
-  geom_tile(data = distance_cell_df, aes(x, y, fill = risk, alpha = distance_alpha), width = 0.1, height = 0.1) +
-  geom_sf(data = aus_sf, fill = NA, colour = "grey80", linewidth = 0.25, alpha = 0.6) +
-  scale_fill_gradientn(colors = hazard_colors, limits = c(0, 1), labels = scales::percent,
-                        breaks = c(0, 0.05, 0.2, 0.5, 1), trans = "sqrt", name = "Plague transition risk\n(more transparent = further from own-zone survey data)") +
-  scale_alpha_identity() +
-  coord_sf(xlim = c(xr[1]-pad, xr[2]+pad), ylim = c(yr[1]-pad, yr[2]+pad), expand = FALSE) +
-  theme_void(base_size = 12) +
-  theme(legend.position = "bottom", legend.key.width = unit(1.6, "cm"),
-        plot.background = element_rect(fill = "grey40", colour = NA),
-        legend.background = element_rect(fill = "grey40", colour = NA),
-        legend.text = element_text(colour = "white"), legend.title = element_text(colour = "white"))
-```
-
-Of the two trial encodings, this one seems the more promising candidate if a single combined map is wanted over the clearer two-panel version -- the alpha channel here carries real, largely independent information (spatial coverage) rather than substantially re-stating the colour channel (statistical confidence, itself driven by the same coefficients as risk). Still a trial, not adopted as the primary view; the two-panel risk/uncertainty maps above remain the clearest communication of the [Known limitations] finding on their own.
-
-## Known limitations
-
-Full investigation history for every item below -- what was tried, what failed and why -- lives in `r/d_fit_plague_hmm.R`'s and `r/c_anchor_plague_state.R`'s own headers, not repeated here.
-
-```{r}
-#| label: known-limitations-stats
-
-## Live-computed from whiplash_zone_tbl ([Zone-specific deviations] above, already in scope by this
-## point in the render), not transcribed -- a hardcoded figure here drifted out of sync with the
-## live table on a real re-render once already (2026-09, confirmed live: table showed 2.353, this
-## bullet still said 2.344 from when the finding was first written), exactly the staleness this
-## project's own convention of computing numbers live elsewhere is meant to avoid. Since the
-## 2026-09 move to a hierarchical (partially-pooled) zone slope, "Total slope" (pooled fixed effect
-## + that zone's own random-effect deviation) is the modern equivalent of the old fixed-interaction
-## spec's own per-zone coefficient -- see that section's header for the full mechanism. S1>S2 only
-## (entering plague) -- the transition the risk map itself maps (Pr(not-plague -> plague)); S2>S1's
-## own zone slopes are a different coefficient set entirely, not part of this finding.
-mallee_slope <- whiplash_zone_tbl$`Total slope`[whiplash_zone_tbl$Transition == "S1>S2" & whiplash_zone_tbl$`AE zone` == "SA Vic Mallee"]
-other_slopes <- whiplash_zone_tbl$`Total slope`[whiplash_zone_tbl$Transition == "S1>S2" & whiplash_zone_tbl$`AE zone` != "SA Vic Mallee"]
-
-## burrow_count.mean's joint-precision near-singularity (found 2026-09 investigating a real
-## solve()-failed warning from plague_risk_map_uncertainty_*'s own n_post = 500 posterior sampling,
-## hmmTMB's HMM$predict() -> prec_to_cov() -> MASS::ginv() fallback path, r/utility.R). Condition
-## number computed live from each fitted model's own TMB joint precision matrix -- not transcribed,
-## same reasoning as mallee_slope above. Root cause: summer_zone_ne (r/d_build_hmm_data.R) is
-## defined as exactly ae_zone == "NSW NE Qld SE", so burrow_count.mean's season:summer_zone_ne
-## detection term and its own free-per-state ae_zone term are collinear for that one zone's rows --
-## confirmed by eigen-decomposing jointPrecision and reading off the near-null eigenvector's
-## loadings, which land almost entirely on burrow_count.mean's state1/state2 intercepts, its
-## ae_zoneNSW NE Qld SE dummy, and all four season:summer_zone_ne levels.
-cond_number_sup   <- { ev <- eigen(as.matrix(plague_hmm$tmb_rep()$jointPrecision), symmetric = TRUE, only.values = TRUE)$values; max(ev) / min(ev) }
-cond_number_unsup <- { ev <- eigen(as.matrix(plague_hmm_unsupervised$tmb_rep()$jointPrecision), symmetric = TRUE, only.values = TRUE)$values; max(ev) / min(ev) }
-```
-
-- **The chew-card family depends on a patched hmmTMB** -- `betabinom` isn't in CRAN hmmTMB 1.1.2, so `renv.lock` pins github.com/matt-w-rees/hmmTMB (branch `betabinom-dev`: hmmTMB's development version plus the family). Upstream hmmTMB fixes only arrive if merged into that branch, until the family is accepted upstream.
-- **Only `r n_plague` independent anchored events, across `r length(mapped_years)` mapped seasons,** underlie the entire onset (not-plague → plague) transition coefficient -- see [Data and anchoring]. Grows only as more seasons get hand-digitised into `recent_plague_maps`, not a code change.
-- **The 1985-`r first_mapped_year - 1` historic gap is fully unanchored** -- two fallback anchoring rules were tried and reverted under the superseded (a)+(b) rule (`r/c_anchor_plague_state.R`), and the current rule doesn't reattempt them. 2010-2011's blind recovery ([Validation against known history]) is a genuine, partial positive signal, but any specific historic-year read should be treated as unconfirmed.
-- **`soil_moisture` and `min_temp` are untested hypotheses** -- plausible signs, not yet checked against real plague-occurrence data the way `rain_whiplash_trough_to_peak` was.
-- **`burrow_count`'s `ae_zoneNSW NW Qld SW` term is a known complete-separation artefact** (that zone's state-2 cell has 12 rows, all zero) -- a targeted exclusion (mirroring `"Qld Central"`'s own panel-wide exclusion) is the natural next fix if pursued.
-- **`burrow_count.mean`'s `ae_zoneNSW NE Qld SE` and `season:summer_zone_ne` terms are exactly collinear for that one zone**, since `summer_zone_ne` (`r/d_build_hmm_data.R`) is itself defined as `ae_zone == "NSW NE Qld SE"` -- confirmed live via the fitted model's own joint precision matrix (condition number **`r formatC(cond_number_sup, format = "e", digits = 1)`** supervised / **`r formatC(cond_number_unsup, format = "e", digits = 1)`** unsupervised, both effectively singular at double precision), which is what triggers the `"Inversion of precision matrix using 'solve' failed"` warning seen when [Prediction uncertainty]'s `n_post = 500` sampling runs (hmmTMB's own `prec_to_cov()` catches it and falls back to `MASS::ginv()`, so this doesn't halt anything). `season:summer_zone_ne` was kept rather than removed -- it's a deliberately adopted term with a real, independently-confirmed AIC gain (`r/d_fit_plague_hmm.R`), and the collinearity only degrades `n_post`-based CI width for `burrow_count.mean` quantities tied to this one zone (likely understating rather than inflating that uncertainty, since `ginv` assigns near-zero variance along a flat direction rather than blowing up) -- point estimates, Viterbi decoding, and every AIC comparison are unaffected.
-- **RESOLVED AT THE SOURCE (2026-09), was "MASKED, not fixed" (2026-09 earlier this same period)** -- the risk map's own most extreme cells (far-west SA coast) were overconfident, traced live (2026-08) to `rain_whiplash_trough_to_peak:ae_zoneSA Vic Mallee`, by far the steepest zone slope in the model under the then-current FIXED (fully independent, no pooling) per-zone interaction spec -- 2.344, vs. 0.25-1.15 for every other zone -- estimated with ZERO anchored or even raw observation data at the covariate range (`rain_whiplash_trough_to_peak > 2`) actually driving those predictions. `r/d_predict_plague_risk.R`'s `mask_zone_extrapolation` guard (still in place, default `TRUE`) fixed the SYMPTOM at the time (masking cells whose zone-interacted covariate value falls outside that zone's own evidence-bearing training range), but not the cause. The transition formula's own zone slope has since moved to a hierarchical (partially-pooled) random slope, `s(ae_zone, by = rain_whiplash_trough_to_peak, bs = "re")` -- Pedersen et al.'s (2019, PeerJ 7:e6876) "Model GS" -- which fixes the cause directly: SA Vic Mallee's own `S1>S2` slope is now **`r round(mallee_slope, 3)`** (pooled estimate plus its own, now-modest, shrunk deviation), squarely inside every other zone's own `r round(min(other_slopes), 2)`-`r round(max(other_slopes), 2)` range, not a standalone outlier any more -- see [Zone-specific deviations]. `mask_zone_extrapolation` is kept regardless, as a general safety net against any future zone-and-covariate-range combination extrapolating past its own training data, not specifically for this case -- and `aez_adj`'s own geometry for `"SA Vic Mallee"` (which still extends past its real training-data footprint, the other half of the original finding) remains a separate, still-open item.
-- **`ae_zone` was not added to `trap_count`** -- tried as a random effect, failed on a genuine data-volume ceiling (very thin zone x state cells), not a specification problem.
-- **`bait_history` (recent poison-baiting) was tried as an observation-side covariate and parked**, not adopted -- a real AIC gain, but coefficients that don't survive scrutiny given how few confirmed-baited rows exist in the fitted panel yet. Revisit once more accumulate.
-- **The full model doesn't yet demonstrably beat its own best single covariate on an externally-benchmarked skill test** -- at the state x calendar-year grain `covariate_summary.qmd`'s whiplash-validation section uses (2026-09, [Full-model onset skill]), the supervised model's own onset AUC (`r round(sup_auc_annual, 3)`) sits below rain whiplash alone (0.717). Not statistically confirmed either way given only `r sup_n_onset_annual` onset examples at that grain, and the model clearly does discriminate real onsets at its own native paddock-season grain (AUC `r round(sup_auc_paddock, 3)`, same section) -- but a genuine, disclosed open question rather than an assumed win from combining more covariates.
-- **One-season-ahead forecast horizon is structural**, not a current limitation -- see [Prediction: current risk map].
+- **Few independent plague events.** The plague transition rests on `r nrow(mapped_seasons)` mapped plague seasons; it improves only as more seasons are mapped.
+- **One season ahead.** The covariates are observed data, so the forecast cannot extend beyond the season after the latest complete covariate period.
+- **Coarse validation before 2013.** The hindcast is scored against state-by-year records with no WA coverage, and no anchors exist before `r first_mapped_year`.
+- **Weak warning for some plagues.** Onset risk rises well ahead of the 2010-11 plague but only weakly ahead of the 2020-21 NSW plague (@fig-hindcast-timeseries), a limit of the current covariates.
+- **Imperfect count distributions.** `r if (length(ppc_outside) > 0) paste0("Simulated data miss the ", and_join(ppc_label(ppc_outside)), " (Model checks), so the count families don't capture every feature of the data.") else "Simulated data match the checked statistics (Model checks)."`
+- **Survey grids sharing coordinates.** Some sites surveyed two grids or transects on the same dates under one set of coordinates (e.g. crop and pasture pairs); cleaning keeps one of each pair, which can favour the busier grid (`r/a_clean_deduplicate_surveys.R`).
+- **Patched hmmTMB.** The beta-binomial family comes from a patched hmmTMB (github.com/matt-w-rees/hmmTMB, pinned in `renv.lock`); upstream fixes arrive only when merged into it.
+- `r if (any(cond_numbers > 1e12)) paste0("**Near-singular precision matrix** (condition number ", formatC(max(cond_numbers), format = "e", digits = 1), "): the uncertainty sampling falls back to a generalised inverse, which can understate interval widths along the affected directions.") else "**Uncertainty sampling** uses a well-conditioned precision matrix in both models."`
