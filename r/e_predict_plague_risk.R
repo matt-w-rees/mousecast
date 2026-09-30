@@ -59,20 +59,12 @@
 # period" below has to be found across all three rasters' own layer name
 # sets, not just assumed to be rain_whiplash's own latest month.
 #
-# min_temp_raster added 2026-08 (plague_hmm_fourth_pass, r/e_fit_plague_hmm.R) -- uses
-# min_temp_raster_coarse (_targets.R), NOT min_temp_seasonal_raster, even though the latter is what
-# the training covariate ("min_temp" column, r/e_build_hmm_data.R via paddock_season_covs) actually
-# is (a genuine 3-month within-season mean, build_seasonal_raster()). min_temp_seasonal_raster's own
-# layer names are season-grain ("Winter-2025", period_col = "season_year_adj" in _targets.R's own
-# attach_raster_covs() call) -- incompatible with the "<month>_<year>" naming every other raster
-# here uses, which the shared-period intersection below depends on. min_temp_raster_coarse instead
-# gives the single raw month's own mean-minimum-temperature value at whichever month prediction
-# lands on (matching rain_whiplash_raster's own monthly grain), a real but minor definitional
-# mismatch from the true 3-month seasonal mean it's standing in for -- accepted rather than solved
-# properly (e.g. building a genuine min_temp rolling-3-month-then-season-end-trimmed raster,
-# mirroring gpp_rolling6's own construction) because minimum temperature changes smoothly across a
-# season (unlike rainfall or GPP), so one month's own value is a reasonable proxy for that season's
-# mean, not a materially different quantity.
+# min_temp is the seasonal mean of monthly minimum temperature, both in fitting and here: the
+# covariate_rasters entry is min_temp_seasonal_raster relabelled to season-end months
+# (r/e_relabel_seasonal_raster.R). Until 2026-09-30 prediction read the single season-end month from
+# min_temp_raster_coarse instead, on the assumption that one month is a fair proxy for its season --
+# checked and wrong: over the prediction region it ran -3.4 degC in Autumn (May vs Mar-May) and
+# +3.0 degC in Spring (Nov vs Sep-Nov), about 0.7 SD in the model's scaled units.
 #
 # newdata also needs log_burrow_metres_searched and log_trap_effort (2026-08, once burrow_count's
 # and trap_count's own search-effort offsets went in, r/e_fit_plague_hmm.R) for the same "every
@@ -150,8 +142,8 @@
 #                          rain_whiplash_trough_to_peak, gpp_rolling6 (gpp_rolling_raster_6,
 #                          season-end months only), soil_moisture_anomaly (soil_moisture_anomaly_raster,
 #                          each season-end month's z-score against the same month in other years)
-#                          and min_temp (min_temp_raster_coarse, full monthly grain; see header for
-#                          why this, not min_temp_seasonal_raster)
+#                          and min_temp (min_temp_seasonal_end_month, the seasonal mean relabelled
+#                          to season-end months; see header)
 #   fit_zones_sf           sf polygons of exactly the ae_zone(s) the model
 #                          was fit to -- prediction is masked to this extent,
 #                          nothing extrapolated beyond it

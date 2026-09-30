@@ -52,7 +52,7 @@ tar_load(
     rain_whiplash_trough_to_peak, gpp_rolling_raster_6, soil_moisture_anomaly_raster, min_temp_raster_coarse,
     gpp_rolling_raster_6_nowcast, soil_moisture_anomaly_raster_nowcast,
     gpp_rolling_anomaly_raster_12, gpp_rolling_anomaly_raster_3, min_temp_rolling_anomaly_raster_3,
-    prediction_region_sf,
+    prediction_region_sf, min_temp_seasonal_end_month,
     plague_hindcast_supervised, plague_hindcast_unsupervised,
     plague_hindcast_scores_supervised, plague_hindcast_scores_unsupervised
   ),
@@ -155,10 +155,10 @@ period_seasons <- function(period) {
        target_season = target, target_year = if (target == "Summer") info$year_adj + 1 else info$year_adj)
 }
 forecast <- period_seasons(latest_shared_period(list(rain_whiplash_trough_to_peak, gpp_rolling_anomaly_raster_12, gpp_rolling_raster_6,
-                                                     min_temp_raster_coarse, gpp_rolling_anomaly_raster_3, soil_moisture_anomaly_raster,
+                                                     min_temp_seasonal_end_month, gpp_rolling_anomaly_raster_3, soil_moisture_anomaly_raster,
                                                      min_temp_rolling_anomaly_raster_3)))
 nowcast  <- period_seasons(latest_shared_period(list(rain_whiplash_trough_to_peak, gpp_rolling_anomaly_raster_12, gpp_rolling_raster_6_nowcast,
-                                                     min_temp_raster_coarse, gpp_rolling_anomaly_raster_3, soil_moisture_anomaly_raster_nowcast,
+                                                     min_temp_seasonal_end_month, gpp_rolling_anomaly_raster_3, soil_moisture_anomaly_raster_nowcast,
                                                      min_temp_rolling_anomaly_raster_3)))
 
 ## Current risk by AE zone, for both models: mean, 90th percentile and maximum across each zone's cells.
@@ -603,7 +603,7 @@ covariate_effects_by_zone <- purrr::imap_dfr(model_variants, function(m, label) 
                                  dimnames = list(NULL, numeric_covariates)))
       nd[[cv]] <- seq_vals
       nd$soil_group <- factor(common_soil_group, levels = levels(hmm_data$soil_group))
-      nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
+      nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"))
       nd$ae_zone <- factor(zn, levels = zone_levels)
       nd <- fill_obs_placeholders(nd, m$hmm)
       tpm <- m$hmm$predict(what = "tpm", newdata = nd)
@@ -670,7 +670,7 @@ exit_by_soil <- purrr::map_dfr(exit_soil_covariates, function(cv) {
                                  dimnames = list(NULL, numeric_covariates)))
       nd[[cv]] <- seq_vals
       nd$soil_group <- factor(sg, levels = levels(hmm_data$soil_group))
-      nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
+      nd$season <- factor("Spring", levels = c("Summer", "Autumn", "Winter", "Spring"))
       nd$ae_zone <- factor(zn, levels = zone_levels)
       nd <- fill_obs_placeholders(nd, plague_hmm)
       tpm <- plague_hmm$predict(what = "tpm", newdata = nd)

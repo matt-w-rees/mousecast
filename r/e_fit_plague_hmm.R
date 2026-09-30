@@ -888,6 +888,13 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     Levels are centred and scaled in the formula (the uncentred levels confounded the intercepts);
 #     the supervised fit is unchanged by this. The unsupervised fit omits the exit soil-group terms,
 #     which it can't identify without anchors (false convergence at every start with them).
+#   Burrow soil-moisture detection, ADOPTED (2026-09-30), from the Section D burrow report (pooled
+#     soil-moisture level shrunk out, soil-group-specific curves kept): soil_moisture_anomaly +
+#     soil_moisture:soil_group on burrow_count's mean, tied across states. AIC -7.2 (the anomaly
+#     alone: -0.2), hindcast unchanged; kept subject to plausible coefficient directions.
+#   Season unordered, ADOPTED (2026-09-30): season enters the observation formulas as four separate
+#     effects against Summer (treatment contrasts) rather than the ordered factor's polynomial
+#     contrasts; the ties above name seasonAutumn/Winter/Spring accordingly.
 #   Cropping system, ADOPTED (2026-09-30): summer_zone_ne (NSW NE Qld SE = summer cropping, from
 #     the AE zone) replaced by cropping_system (sorghum / winter_cereal, each paddock's SA2 cropping
 #     region, r/a_attach_cropping_system.R; winter_cereal the reference level) in the trap and burrow
@@ -1065,12 +1072,12 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     # burrow_count only): detection-side terms (ground cover/crop growth stage obscuring signs,
     # CLAUDE.md), tied across states on the view that visibility mechanisms shouldn't depend on
     # which state is true.
-    tie(paste0("trap_count.mean.state", 1:2, ".season.L")),
-    tie(paste0("trap_count.mean.state", 1:2, ".season.Q")),
-    tie(paste0("trap_count.mean.state", 1:2, ".season.C")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".season.L")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".season.Q")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".season.C")),
+    tie(paste0("trap_count.mean.state", 1:2, ".seasonAutumn")),
+    tie(paste0("trap_count.mean.state", 1:2, ".seasonWinter")),
+    tie(paste0("trap_count.mean.state", 1:2, ".seasonSpring")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonWinter")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSpring")),
     tie(paste0("burrow_count.mean.state", 1:2, ".gpp_finescale")),
     tie(paste0("burrow_count.mean.state", 1:2, ".seasonSummer:cropping_systemsorghum")),
     tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn:cropping_systemsorghum")),
@@ -1080,7 +1087,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     # chewcard_count/block2/3/4: season tied across BOTH states (same detection-invariance argument
     # as above) AND all four blocks at once (one shared "how does season affect the chew rate"
     # curve, not four independent ones) -- 8 rows per season term (4 blocks x 2 states).
-    do.call(c, lapply(c("season.L", "season.Q", "season.C"), function(term) {
+    do.call(c, lapply(c("seasonAutumn", "seasonWinter", "seasonSpring"), function(term) {
       tie(paste0(chewcard_streams, ".prob.state", rep(1:2, each = length(chewcard_streams)), ".", term))
     })),
 

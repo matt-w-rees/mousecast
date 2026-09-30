@@ -68,7 +68,7 @@ build_risk_grid_newdata <- function(plague_hmm, covariate_rasters, fit_zones_sf,
   period_month <- as.integer(sub("_.*", "", period))
   period_year  <- as.integer(sub(".*_", "", period))
   period_season <- season_info(as.Date(paste(period_year, period_month, "15", sep = "-")))$season
-  cell_df$season <- factor(period_season, levels = c("Summer", "Autumn", "Winter", "Spring"), ordered = TRUE)
+  cell_df$season <- factor(period_season, levels = c("Summer", "Autumn", "Winter", "Spring"))
 
   # per-cell ae_zone, see header -- rasterized onto covariate_stack's own template so its
   # as.data.frame() row order matches cell_df's exactly, then set to the model's own training levels.

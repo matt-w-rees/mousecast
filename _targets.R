@@ -1201,9 +1201,10 @@ tar_plan(
   # offsets). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, s(ae_zone, by = ..., bs = "re") -- not a fixed
   # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/e_fit_plague_hmm.R's header for why.
   # Detection covariates on the trap, burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/e_fit_plague_hmm.R.
+  # Burrow detection includes soil moisture by soil group (wet clays collapse burrows, dry clays crack) -- see r/e_fit_plague_hmm.R.
   # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/e_fit_plague_hmm_subprocess.R.
   hmm_detection_terms = list(trap_count   = c("season:cropping_system", "crop_group_trap_det"),
-                             burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det"),
+                             burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det", "soil_moisture_anomaly", "soil_moisture:soil_group"),
                              chewcard     = c("crop_group_det", "crop_stage_det", "soil_type_det")),
 
   # Transition formulas: entering plague [1, 2] and leaving plague [2, 1], chosen by the transition search -- see r/e_fit_plague_hmm.R's header.
@@ -1251,6 +1252,8 @@ tar_plan(
   # Soil group on the covariate grid, for the exit transition's soil-group terms -- see r/e_build_soil_group_raster.R.
   tar_file(soil_type_raster_file, "raw_data/predictor_variables/soil_type/ASC_EV_C_P_AU_TRN_N.cog.tif"),
   tar_terra_rast(soil_group_raster, build_soil_group_raster(soil_type_raster_file, rain_whiplash_trough_to_peak), gdal = covariate_gdal_options),
+  # Seasonal-mean min temp relabelled to season-end months, so predictions use the same values the model was fitted on -- see r/e_relabel_seasonal_raster.R.
+  tar_terra_rast(min_temp_seasonal_end_month, relabel_seasonal_raster(min_temp_seasonal_raster), gdal = covariate_gdal_options),
 
   # Each transition covariate's raster, named by its hmm_data column -- extend these lists when the transition formulas gain a covariate (see r/e_build_risk_grid_newdata.R).
 
@@ -1267,7 +1270,7 @@ tar_plan(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
         gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
         gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_raster_coarse,
+        min_temp                     = min_temp_seasonal_end_month,
         gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
         soil_moisture_anomaly        = soil_moisture_anomaly_raster,
         min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
@@ -1281,7 +1284,7 @@ tar_plan(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
         gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
         gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_raster_coarse,
+        min_temp                     = min_temp_seasonal_end_month,
         gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
         soil_moisture_anomaly        = soil_moisture_anomaly_raster,
         min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
@@ -1293,8 +1296,8 @@ tar_plan(
 
     # "Nowcast" variant -- same prediction, but using gpp_rolling_raster_6_nowcast/soil_moisture_anomaly_raster_nowcast (2.xii-b/4.iv above) in place of
     # their season-end-trimmed counterparts, so predict_plague_risk()'s own shared-period auto-detection can land on the latest complete calendar month
-    # (whatever it is) instead of being held back to the last Feb/May/Aug/Nov boundary. rain_whiplash_trough_to_peak/min_temp_raster_coarse are unchanged --
-    # already full monthly grain, never season-end-trimmed to begin with (see rain_whiplash_source_raster's own comment above). Real, complete-month data
+    # (whatever it is) instead of being held back to the last Feb/May/Aug/Nov boundary. rain_whiplash_trough_to_peak is unchanged --
+    # already full monthly grain (see rain_whiplash_source_raster's own comment above). Real, complete-month data
     # only, no extrapolation -- kept as a separate target rather than changing plague_risk_map itself, so the primary map's own definition never silently
     # shifts. Point estimate only, no uncertainty variant yet (2026-09) -- deliberately deferred, not an oversight, see the TO-DO note at the top of this
     # file. See r/e_predict_plague_risk.R's header.
@@ -1303,7 +1306,7 @@ tar_plan(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
         gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
         gpp_rolling6                 = gpp_rolling_raster_6_nowcast,
-        min_temp                     = min_temp_raster_coarse,
+        min_temp                     = min_temp_seasonal_end_month,
         gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
         soil_moisture_anomaly        = soil_moisture_anomaly_raster_nowcast,
         min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
@@ -1331,7 +1334,7 @@ tar_plan(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
         gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
         gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_raster_coarse,
+        min_temp                     = min_temp_seasonal_end_month,
         gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
         soil_moisture_anomaly        = soil_moisture_anomaly_raster,
         min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,

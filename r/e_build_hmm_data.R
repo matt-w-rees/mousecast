@@ -199,7 +199,10 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # the grouping variable depending on how many groups a given fit needs.
     dplyr::mutate(
       ae_zone = factor(ae_zone),
-      grdc_subregion = factor(grdc_subregion)
+      grdc_subregion = factor(grdc_subregion),
+      # season unordered (it's ordered upstream): four separate season effects against Summer, rather
+      # than polynomial trend contrasts, which don't suit a cyclic factor.
+      season = factor(as.character(season), levels = c("Summer", "Autumn", "Winter", "Spring"))
     ) |>
     # cropping_system: sorghum (summer + winter cropping) or winter_cereal (winter-only), the
     # paddock's SA2 cropping region (r/a_attach_cropping_system.R), used for the trap and burrow
