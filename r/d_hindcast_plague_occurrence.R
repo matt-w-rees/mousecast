@@ -19,7 +19,8 @@
 #              since hmmTMB's transition matrix at row t links season t to season t + 1 (CLAUDE.md).
 #              A cell starts (and restarts after any season with a missing covariate) at the
 #              stationary Pr(plague) of that season's transition matrix, onset / (onset + 1 - persist).
-# rain_whiplash_trough_to_peak is kept too, as a single-covariate baseline for the scoring.
+# rain_whiplash_trough_to_peak is kept too (when the model uses it), as a single-covariate baseline
+# for the scoring.
 #
 # mask_zone_extrapolation defaults to FALSE here (unlike predict_plague_risk()): the guard masks cells
 # whose zone-interacted covariate lies outside that zone's evidence-bearing training range, and
@@ -28,21 +29,23 @@
 # season-to-season propagation.
 #
 # Arguments:
-#   plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster, min_temp_raster, fit_zones_sf
-#                            as predict_plague_risk() (r/d_predict_plague_risk.R)
-#   start_period             first "<month>_<year>" period to hindcast (default "2_1983", Summer 1983)
+#   plague_hmm, covariate_rasters, fit_zones_sf
+#                            as build_risk_grid_newdata() (r/d_build_risk_grid_newdata.R)
+#   start_period             first "<month>_<year>" period to hindcast (default "2_1983", Summer 1983);
+#                            the hindcast starts later if a covariate's record does
 #   mask_zone_extrapolation  passed to build_risk_grid_newdata() (default FALSE, see above)
 #
 # Returns a data frame with one row per grid cell (inside fit_zones_sf) and season: period,
 # year_adj, season, cell, x, y, ae_zone, rain_whiplash_trough_to_peak, onset, persist, occupancy.
 
-hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
-                                       min_temp_raster, fit_zones_sf, start_period = "2_1983",
+hindcast_plague_occurrence <- function(plague_hmm, covariate_rasters, fit_zones_sf, start_period = "2_1983",
                                        mask_zone_extrapolation = FALSE) {
 
-  # Every period shared by all four covariate rasters, in chronological order, from start_period on.
-  shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster),
-                                           names(soil_moisture_anomaly_raster), names(min_temp_raster)))
+  # Every period shared by the model's time-varying covariate rasters (static single-layer ones don't
+  # restrict it), in chronological order, from start_period on.
+  used_rasters <- covariate_rasters[intersect(transition_covariates(plague_hmm), names(covariate_rasters))]
+  time_varying <- used_rasters[vapply(used_rasters, terra::nlyr, numeric(1)) > 1]
+  shared_periods <- Reduce(intersect, lapply(time_varying, names))
   period_key <- function(p) as.integer(sub(".*_", "", p)) * 100 + as.integer(sub("_.*", "", p))
   shared_periods <- shared_periods[order(period_key(shared_periods))]
   periods <- shared_periods[period_key(shared_periods) >= period_key(start_period)]
@@ -57,8 +60,7 @@ hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_ras
     period <- periods[i]
 
     # This season's covariate table and transition matrices at every valid cell.
-    grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
-                                    min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation)
+    grid <- build_risk_grid_newdata(plague_hmm, covariate_rasters, fit_zones_sf, period, mask_zone_extrapolation)
     tpm <- plague_hmm$predict(what = "tpm", newdata = grid$newdata)
     onset <- persist <- rep(NA_real_, nrow(grid$cell_df))
     onset[grid$has_covariates]   <- tpm["state 1", "state 2", ]
@@ -87,7 +89,7 @@ hindcast_plague_occurrence <- function(plague_hmm, rain_whiplash_raster, gpp_ras
       x        = grid$cell_df$x[in_zones],
       y        = grid$cell_df$y[in_zones],
       ae_zone  = grid$cell_df$ae_zone[in_zones],
-      rain_whiplash_trough_to_peak = grid$cell_df$rain_whiplash_trough_to_peak[in_zones],
+      rain_whiplash_trough_to_peak = if (is.null(grid$cell_df$rain_whiplash_trough_to_peak)) NA_real_ else grid$cell_df$rain_whiplash_trough_to_peak[in_zones],
       onset     = onset[in_zones],
       persist   = persist[in_zones],
       occupancy = occupancy[in_zones]

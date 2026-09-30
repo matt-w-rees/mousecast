@@ -42,7 +42,9 @@ build_survey_model_data <- function(survey_visit_grid, paddock_season_covs_lagge
   # this join only needs the attribute table, not the paddock polygons.
   static_covs <- paddocks_sf_with_soil_type |>
     sf::st_drop_geometry() |>
-    dplyr::select(paddock_id, ae_zone, grdc_subregion, soil_type, state)
+    # soil_group: the soil order's broader group (r/a_attach_soil_type.R's soil_group_of()).
+    dplyr::mutate(soil_group = soil_group_of(soil_type)) |>
+    dplyr::select(paddock_id, ae_zone, grdc_subregion, soil_type, soil_group, cropping_system, state)
 
   # Every column in paddock_season_covs_lagged except the identifying/key
   # ones -- i.e. every covariate (current + lagged) to carry across.
@@ -74,7 +76,7 @@ build_survey_model_data <- function(survey_visit_grid, paddock_season_covs_lagge
       by = c("paddock_id", ".season_year_adj_chr" = "season_year_adj")
     ) |>
     dplyr::select(-.season_year_adj_chr) |>            # drop the now-redundant join helper column
-    dplyr::left_join(static_covs, by = "paddock_id") |> # attach ae_zone/grdc_subregion/soil_type/state
+    dplyr::left_join(static_covs, by = "paddock_id") |> # attach ae_zone/grdc_subregion/soil_type/soil_group/cropping_system/state
     dplyr::mutate(obs_weight = obs_weight_value)        # constant reliability weight for this whole survey type
 
   # ---- 3. Validate every paddock spans the same number of season time steps ----

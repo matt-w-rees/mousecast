@@ -201,13 +201,11 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
       ae_zone = factor(ae_zone),
       grdc_subregion = factor(grdc_subregion)
     ) |>
-    # summer_zone_ne: 2-level split of ae_zone reflecting the real summer- vs winter-only cropping
-    # calendar distinction (CLAUDE.md), used for burrow_count's own season:summer_zone_ne detection
-    # formula (r/d_fit_plague_hmm.R) -- "NSW NE Qld SE" is the one zone with genuine summer + winter
-    # cropping (CLAUDE.md's "north, in the eastern states"), every other zone is winter-only.
-    # "winter_only" is the reference level (factor()'s own alphabetical default), matching every other
-    # covariate's own convention in this file of not hand-picking level order.
-    dplyr::mutate(summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only"))) |>
+    # cropping_system: sorghum (summer + winter cropping) or winter_cereal (winter-only), the
+    # paddock's SA2 cropping region (r/a_attach_cropping_system.R), used for the trap and burrow
+    # season x cropping-system detection terms (r/d_fit_plague_hmm.R). Winter cereal (winter-only)
+    # is the reference level, so the coefficients read as the sorghum regions' difference from it.
+    dplyr::mutate(cropping_system = factor(cropping_system, levels = c("winter_cereal", "sorghum"))) |>
     # ae_zone_adj: adjusted AE zone (r/a_adjust_aez.R's ae_zone_adj_of(), the same rule as the aez_adj
     # polygons), used for the burrow and chew-card zone effects (r/d_fit_plague_hmm.R's obs_zone
     # argument) -- with the 11 original zones several plague-state zone effects had no data behind them
@@ -236,7 +234,12 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     dplyr::mutate(
       crop_group_det = stats::relevel(factor(dplyr::if_else(is.na(crop_group_rapid) | crop_group_rapid == "unknown", "not recorded", crop_group_rapid)), ref = "winter_cereals"),
       crop_stage_det = factor(dplyr::if_else(is.na(crop_stage_rapid), "not recorded", crop_stage_rapid)),
-      soil_type_det  = factor(soil_type),
+      # The most common soil order (Vertosol) as the reference level, so each soil order's detection
+      # coefficient reads as a contrast against it.
+      soil_type_det  = stats::relevel(factor(soil_type), ref = names(which.max(table(soil_type)))),
+      # soil_group: the soil order's broader group (r/a_attach_soil_type.R's soil_group_of(), attached
+      # in Section C), used in the exit transition. Cracking clay is the reference level.
+      soil_group     = factor(soil_group, levels = c("cracking clay", "duplex/calcareous loam", "sandy earth")),
       # The trap survey's own crop fields, the same way (for trap-stream covariates).
       crop_group_trap_det = stats::relevel(factor(dplyr::if_else(is.na(crop_group_traps) | crop_group_traps == "unknown", "not recorded", crop_group_traps)), ref = "winter_cereals"),
       crop_stage_trap_det = factor(dplyr::if_else(is.na(crop_stage_traps), "not recorded", crop_stage_traps))

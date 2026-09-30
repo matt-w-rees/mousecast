@@ -46,11 +46,6 @@
 # observation-formula covariate too -- no more manual updates needed here when fit_plague_hmm()'s
 # own formulas change, since there is no separate list left to fall out of sync.
 #
-# summer_zone_ne is the one exception handled explicitly rather than via the generic auto-fill --
-# cheap to derive for real from the per-cell ae_zone already computed below (identical logic to
-# r/d_build_hmm_data.R's own construction), so there's no reason to settle for a placeholder when
-# the real value is already implied by data already in hand.
-#
 # A real (not placeholder) covariate genuinely missing after all this -- e.g. a transition-formula
 # covariate whose raster argument was simply never supplied -- now fails loudly and specifically
 # right here, rather than several layers down inside hmmTMB's own internal mgcv refit with an opaque
@@ -147,34 +142,27 @@
 # distribution (a longer-run equilibrium quantity, a different question).
 #
 # Arguments:
-#   plague_hmm            a fitted HMM object (r/d_fit_plague_hmm.R) whose
-#                          transition formula uses exactly rain_whiplash_trough_to_peak
-#                          (+ its own ae_zone interaction) + gpp_rolling6 +
-#                          soil_moisture_anomaly + min_temp -- rename the raster
-#                          arguments below if a differently-specified model
-#                          is ever passed in
-#   rain_whiplash_raster   rain_whiplash_trough_to_peak (_targets.R) -- one
-#                          layer per period, named "<month>_<year>"
-#   gpp_raster             gpp_rolling_raster_6 (_targets.R) -- season-end-month
-#                          grain only, same "<month>_<year>" layer naming
-#   soil_moisture_anomaly_raster  soil_moisture_anomaly_raster (_targets.R) -- each season-end
-#                          month's soil moisture as a z-score against the same month in every other
-#                          year (seasonal cycle removed), same "<month>_<year>" layer naming
-#   min_temp_raster        min_temp_raster_coarse (_targets.R) -- full monthly
-#                          grain, same "<month>_<year>" layer naming; see
-#                          header for why this (not min_temp_seasonal_raster)
+#   plague_hmm            a fitted HMM object (r/d_fit_plague_hmm.R), with any transition formula(s)
+#   covariate_rasters      named list of SpatRasters, one per transition covariate, named by its
+#                          hmm_data column (build_risk_grid_newdata(), r/d_build_risk_grid_newdata.R).
+#                          Time-varying rasters have one layer per period, named "<month>_<year>";
+#                          a single-layer raster is a static covariate. For the current model:
+#                          rain_whiplash_trough_to_peak, gpp_rolling6 (gpp_rolling_raster_6,
+#                          season-end months only), soil_moisture_anomaly (soil_moisture_anomaly_raster,
+#                          each season-end month's z-score against the same month in other years)
+#                          and min_temp (min_temp_raster_coarse, full monthly grain; see header for
+#                          why this, not min_temp_seasonal_raster)
 #   fit_zones_sf           sf polygons of exactly the ae_zone(s) the model
 #                          was fit to -- prediction is masked to this extent,
 #                          nothing extrapolated beyond it
 #   period                 which layer to predict for, e.g. "5_2026"; NULL
 #                          (default) uses the chronologically latest period
-#                          common to all four rasters, for a "current risk"
-#                          snapshot -- see gpp_raster/soil_moisture_anomaly_raster's
-#                          own "nowcast" note just below for how this
-#                          auto-detection is used to reach the true latest
+#                          common to the time-varying rasters, for a "current risk"
+#                          snapshot -- see the "nowcast rasters" note
+#                          just below for how this auto-detection is used to reach the true latest
 #                          complete month, not just the latest season-end one
-#   gpp_raster/            (2026-09) plague_risk_map_nowcast (_targets.R)
-#   soil_moisture_anomaly_raster passes gpp_rolling_raster_6_nowcast/
+#   nowcast rasters        (2026-09) plague_risk_map_nowcast (_targets.R)
+#                          passes gpp_rolling_raster_6_nowcast/
 #                          soil_moisture_anomaly_raster_nowcast here instead of
 #                          their season-end-trimmed namesakes -- same
 #                          underlying computation, just without the trim to
@@ -228,12 +216,15 @@
 # (mask_zone_extrapolation, default TRUE) a zone-interacted covariate value
 # there falls outside that zone's own training range.
 
-predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
-                                 min_temp_raster, fit_zones_sf, period = NULL,
+predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, period = NULL,
                                  mask_zone_extrapolation = TRUE, n_post = NULL, level = 0.95, seed = 20260807) {
 
   if (is.null(period)) {
-    shared_periods <- Reduce(intersect, list(names(rain_whiplash_raster), names(gpp_raster), names(soil_moisture_anomaly_raster), names(min_temp_raster)))
+    # Latest period shared by the model's time-varying covariate rasters (static single-layer ones
+    # don't restrict it).
+    used_rasters <- covariate_rasters[intersect(transition_covariates(plague_hmm), names(covariate_rasters))]
+    time_varying <- used_rasters[vapply(used_rasters, terra::nlyr, numeric(1)) > 1]
+    shared_periods <- Reduce(intersect, lapply(time_varying, names))
     period_month <- as.integer(sub("_.*", "", shared_periods))
     period_year  <- as.integer(sub(".*_", "", shared_periods))
     period <- shared_periods[order(period_year, period_month)][length(shared_periods)]
@@ -241,8 +232,7 @@ predict_plague_risk <- function(plague_hmm, rain_whiplash_raster, gpp_raster, so
 
   # Per-cell covariate table for this period (r/d_build_risk_grid_newdata.R) -- see header above for
   # what each step does and why.
-  grid <- build_risk_grid_newdata(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
-                                  min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation)
+  grid <- build_risk_grid_newdata(plague_hmm, covariate_rasters, fit_zones_sf, period, mask_zone_extrapolation)
   cell_df <- grid$cell_df
   has_covariates <- grid$has_covariates
   newdata <- grid$newdata

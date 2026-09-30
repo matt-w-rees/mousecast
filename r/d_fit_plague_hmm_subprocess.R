@@ -15,7 +15,8 @@
 # subprocess and attached to the returned model as attr(hmm, "fit_stats"), for downstream use.
 #
 # A fit counts as valid when the optimiser reports convergence (code 0), the objective and AIC are
-# both finite and below `max_objective` (screens out the garbage-objective case), and the second
+# both finite, the objective is positive and below `max_objective` and the edf is positive (screens
+# out the garbage-objective case, which can be hugely positive or hugely negative), and the second
 # state holds a plausible share of paddock-seasons (between `min_state_share` and 50%) -- a fit can
 # report convergence while collapsing to one state (seen with an unanchored model, 0.1% in state 2).
 #
@@ -74,7 +75,8 @@ fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6
     valid <- is.null(result$error) &&
       stats$convergence == 0 &&
       is.finite(stats$objective) && is.finite(stats$aic) &&
-      stats$objective < max_objective &&
+      stats$objective > 0 && stats$objective < max_objective &&
+      stats$edf > 0 &&
       stats$state2_share > min_state_share && stats$state2_share < 0.5
 
     if (valid) {

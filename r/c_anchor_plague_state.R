@@ -14,6 +14,8 @@
 #                       as a complete census of plague activity, see decision (3) below
 #   lookback_seasons   seasons before each plague anchor that are un-anchored, see "BACKWARD
 #                       un-anchoring" below
+#   map_season_absence TRUE (default): not-plague anchors only in seasons with no plague mapped
+#                       anywhere, see decision (4) below
 #
 # Rule, decided directly with the project owner (2026-09) rather than re-derived from first
 # principles (unlike the (a)+(b) rule's own iterative history) -- see chat for the 3 explicit calls
@@ -38,6 +40,18 @@
 #      every eastern state) that a blanket plague_state = 1 would directly contradict. After the
 #      latest mapped season everything also stays NA, since a season not yet mapped (or not yet
 #      happened -- the panel runs past the current date) isn't evidence of no plague.
+#   4) MAP-SEASON ABSENCE (2026-09-30, decided with the project owner): in a season with a plague
+#      mapped ANYWHERE in Australia, only the plague_state = 2 anchors inside the mapped extents are
+#      kept; every other paddock that season is left unanchored (NA), for the model to estimate,
+#      since hand-drawn extents are least reliable about absence while a plague is under way
+#      (edges, unmapped smaller outbreaks). Seasons with no plague mapped anywhere keep their
+#      plague_state = 1 anchors. Tested against full absence anchoring on the adopted transition
+#      formula: the plague state grew only slightly (6.1% to 7.5% of paddock-seasons, Viterbi) and
+#      the pre-2013 hindcast was similar (same-season onset AUC 0.69 vs 0.63, one-season-ahead
+#      0.72 vs 0.76, occupancy 0.68 vs 0.67). Dropping absence anchors altogether let the plague
+#      state take over (88%), and keeping them only where surveyed wasn't enough either (47%) --
+#      absence anchors on unsurveyed paddocks are what hold "plague" to its mapped meaning.
+#      map_season_absence = FALSE restores decision (3) alone.
 #
 # No multi-season FORWARD persistence/propagation (unlike the old rule's propagate_seasons): the
 # old rule's propagation was anchored to a real, documented signal (yearly_plague_occurrence.csv's
@@ -73,7 +87,7 @@
 # to change.
 
 anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_start = "Summer 2013",
-                                lookback_seasons = 2) {
+                                lookback_seasons = 2, map_season_absence = TRUE) {
 
   # Summer/Autumn/Winter/Spring as one steadily-increasing integer ("quarter"), so "N seasons
   # before" is just subtraction -- Summer's own rank (0) means a Summer 2018 quarter number is
@@ -115,6 +129,13 @@ anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_st
   )
 
   anchored <- tibble::tibble(.row_id = candidate_points$.row_id, plague_state = ifelse(is_inside, 2L, 1L))
+
+  # Decision (4): in a season with a plague mapped anywhere, not-plague anchors are left unanchored.
+  if (map_season_absence) {
+    mapped_seasons <- unique(paste(poly_season, poly_year))
+    in_mapped_season <- paste(candidate_points$season, candidate_points$year_adj) %in% mapped_seasons
+    anchored$plague_state[in_mapped_season & anchored$plague_state == 1L] <- NA_integer_
+  }
 
   result <- dplyr::left_join(result, anchored, by = ".row_id")
 

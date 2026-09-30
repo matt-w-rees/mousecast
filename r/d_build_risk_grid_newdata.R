@@ -1,28 +1,63 @@
-# Builds the per-cell covariate table predict_plague_risk() and hindcast_plague_occurrence() feed to
-# HMM$predict(what = "tpm", newdata = ...), for one "<month>_<year>" period: the four transition
-# covariates read off their rasters (masked to fit_zones_sf), each cell's own ae_zone, season and
-# summer_zone_ne, placeholder values for every observation-formula covariate, and the zone-
-# extrapolation guard. Split out of predict_plague_risk() unchanged so the published risk maps and
-# the historic hindcast use exactly the same construction -- see r/d_predict_plague_risk.R's header
-# for the rationale behind each step.
+# transition_covariates(): the covariates a fitted HMM's transition formulas need real per-cell
+# values for -- every variable in either transition's formula (entering [1, 2], leaving [2, 1]),
+# except the ones build_risk_grid_newdata() derives for each cell itself (ae_zone, season). These
+# are the names covariate_rasters must supply.
 #
-# Arguments: as predict_plague_risk() (r/d_predict_plague_risk.R), with period required.
+# Arguments:
+#   plague_hmm  a fitted HMM object (r/d_fit_plague_hmm.R)
+#
+# Returns a character vector of covariate names.
+transition_covariates <- function(plague_hmm) {
+  formulas <- unique(as.vector(plague_hmm$hid()$formula()))
+  formula_vars <- unlist(lapply(formulas[formulas != "."], function(f) all.vars(stats::as.formula(f))))
+  setdiff(unique(formula_vars), c("ae_zone", "season"))
+}
+
+# Builds the per-cell covariate table predict_plague_risk() and hindcast_plague_occurrence() feed to
+# HMM$predict(what = "tpm", newdata = ...), for one "<month>_<year>" period: every transition
+# covariate read off its raster (masked to fit_zones_sf), each cell's own ae_zone and season,
+# placeholder values for every observation-formula covariate, and the zone-
+# extrapolation guard. Shared by predict_plague_risk() and hindcast_plague_occurrence() so the
+# published risk maps and the historic hindcast use exactly the same construction -- see
+# r/d_predict_plague_risk.R's header for the rationale behind each step.
+#
+# The transition covariates are whatever the fitted formulas use (transition_covariates() above),
+# so any formula can be mapped without changing this function: covariate_rasters supplies one
+# raster per covariate, named by its hmm_data column. A multi-layer raster is read at period; a
+# single-layer raster is a static covariate (the same value every period).
+#
+# Arguments:
+#   plague_hmm               a fitted HMM object (r/d_fit_plague_hmm.R)
+#   covariate_rasters        named list of SpatRasters, one per transition covariate (names = the
+#                            hmm_data columns, e.g. list(rain_whiplash_trough_to_peak = ...,
+#                            gpp_rolling6 = ...)); multi-layer rasters have "<month>_<year>" layer
+#                            names. A factor covariate's raster holds its level labels or level
+#                            positions. Extra entries are ignored.
+#   fit_zones_sf             sf polygons of the ae_zone(s) the model was fit to
+#   period                   which "<month>_<year>" layer to build, e.g. "5_2026"
+#   mask_zone_extrapolation  see predict_plague_risk()
 #
 # Returns a list: cell_df (one row per grid cell, stable cell order, x/y plus every newdata column),
 # has_covariates (logical, which rows are valid to predict), newdata (cell_df[has_covariates, ]) and
 # crs (the covariate grid's CRS, for rebuilding a raster from cell_df's x/y).
 
-build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster, soil_moisture_anomaly_raster,
-                                    min_temp_raster, fit_zones_sf, period, mask_zone_extrapolation = TRUE) {
+build_risk_grid_newdata <- function(plague_hmm, covariate_rasters, fit_zones_sf, period, mask_zone_extrapolation = TRUE) {
 
+  # Fail loudly if a transition covariate has no raster -- these need real per-cell values, so a
+  # placeholder can't stand in for one (unlike the observation covariates below).
+  needed_covariates <- transition_covariates(plague_hmm)
+  missing_covariates <- setdiff(needed_covariates, names(covariate_rasters))
+  if (length(missing_covariates) > 0) {
+    stop("build_risk_grid_newdata(): no raster supplied for transition covariate(s): ",
+         paste(missing_covariates, collapse = ", "))
+  }
 
-  covariate_stack <- c(
-    rain_whiplash_raster[[period]],
-    gpp_raster[[period]],
-    soil_moisture_anomaly_raster[[period]],
-    min_temp_raster[[period]]
-  )
-  names(covariate_stack) <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp")
+  # One layer per transition covariate: this period's layer, or the single layer of a static covariate.
+  covariate_stack <- terra::rast(lapply(needed_covariates, function(cv) {
+    r <- covariate_rasters[[cv]]
+    if (terra::nlyr(r) == 1) r else r[[period]]
+  }))
+  names(covariate_stack) <- needed_covariates
   covariate_stack <- terra::mask(covariate_stack, terra::vect(fit_zones_sf))
 
   # one row per grid cell, in stable cell order, for rast(..., type = "xyz") below
@@ -45,13 +80,8 @@ build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster
   cell_df$ae_zone <- terra::as.data.frame(zone_rast, xy = TRUE, na.rm = FALSE)[[3]]
   cell_df$ae_zone <- factor(cell_df$ae_zone, levels = sort(unique(fit_zones_sf$ae_zone)))
 
-  # summer_zone_ne: real, not a placeholder -- identical derivation to r/d_build_hmm_data.R's own,
-  # cheap given ae_zone is already in hand (see header).
+  # The fitted model's training data, for the observation-covariate placeholders below.
   training_data <- plague_hmm$obs()$data()
-  cell_df$summer_zone_ne <- factor(
-    ifelse(cell_df$ae_zone == "NSW NE Qld SE", "summer", "winter_only"),
-    levels = levels(training_data$summer_zone_ne)
-  )
 
   # Every remaining observation-formula covariate (see header -- introspected from the fitted model
   # itself, not hand-maintained): each one's own training mean (numeric) or reference factor level
@@ -68,15 +98,15 @@ build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster
     }
   }
 
-  # Fail loudly and specifically here if a TRANSITION covariate is genuinely missing (its own raster
-  # argument never supplied) -- unlike the observation-side covariates above, these DO need real
-  # per-cell values, so a placeholder can't safely paper over a missing one (see header).
-  transition_terms <- unique(as.vector(plague_hmm$hid()$formula()))
-  transition_formula <- stats::as.formula(transition_terms[transition_terms != "."][1])
-  missing_transition_vars <- setdiff(all.vars(transition_formula), names(cell_df))
-  if (length(missing_transition_vars) > 0) {
-    stop("build_risk_grid_newdata(): missing required transition covariate(s), no raster supplied: ",
-         paste(missing_transition_vars, collapse = ", "))
+  # A transition covariate that is a factor in the training data (e.g. the static soil group) takes
+  # the training levels. Its raster holds either the level labels (a categorical raster) or each
+  # level's position in those levels (1, 2, ...) -- GeoTIFF storage can drop category labels.
+  for (cv in needed_covariates) {
+    if (is.factor(training_data[[cv]])) {
+      values <- cell_df[[cv]]
+      if (is.numeric(values)) values <- levels(training_data[[cv]])[values]
+      cell_df[[cv]] <- factor(as.character(values), levels = levels(training_data[[cv]]))
+    }
   }
 
   # Zone-extrapolation guard (see header's own "mask_zone_extrapolation" note for the full
@@ -104,7 +134,10 @@ build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster
   # cluster, while the evidence-only range (-0.63 to 1.80, zero evidence rows above 2) does not.
   # Using the unrestricted range here would silently let exactly this case through unmasked --
   # confirmed live before adopting the has_evidence restriction, not assumed.
-  all_terms <- attr(stats::terms(transition_formula), "term.labels")
+  # Term labels from both transitions' formulas, so a zone-varying slope on either one is guarded.
+  transition_terms <- unique(as.vector(plague_hmm$hid()$formula()))
+  all_terms <- unique(unlist(lapply(transition_terms[transition_terms != "."],
+                                    function(f) attr(stats::terms(stats::as.formula(f)), "term.labels"))))
 
   fixed_interaction_terms <- all_terms[grepl(":", all_terms) & grepl("ae_zone", all_terms) & !grepl("^s\\(", all_terms)]
   fixed_interaction_covariates <- sub(":ae_zone$|^ae_zone:", "", fixed_interaction_terms)
@@ -135,13 +168,13 @@ build_risk_grid_newdata <- function(plague_hmm, rain_whiplash_raster, gpp_raster
     }
   }
 
-  # ae_zone included alongside the three real transition covariates -- a cell that fell inside
+  # ae_zone included alongside the transition covariates -- a cell that fell inside
   # covariate_stack's mask but outside every zone polygon (a rare boundary/rounding case, mask and
   # rasterize aren't guaranteed pixel-identical) has no valid zone for the random effect either, so
-  # it's excluded here the same way a missing rain_whiplash/gpp/soil_moisture_anomaly value would be.
+  # it's excluded here the same way a missing covariate value would be.
   # in_zone_range is TRUE everywhere when mask_zone_extrapolation = FALSE or no covariate has a
   # zone interaction, so this line is a pure no-op extension in either of those cases.
-  covariate_cols <- c("rain_whiplash_trough_to_peak", "gpp_rolling6", "soil_moisture_anomaly", "min_temp", "ae_zone")
+  covariate_cols <- c(needed_covariates, "ae_zone")
   has_covariates <- stats::complete.cases(cell_df[covariate_cols]) & in_zone_range
 
   newdata <- cell_df[has_covariates, , drop = FALSE]

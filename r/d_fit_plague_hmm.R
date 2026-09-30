@@ -11,7 +11,7 @@ append_formula_terms <- function(base, extra) {
 detection_tie_groups <- function(valid_rows, streams, param, term) {
   prefix <- paste0("^(", paste(streams, collapse = "|"), ")\\.", param, "\\.state[12]\\.")
   # Each variable in the term may be followed by its level text, so an interaction such as
-  # "season:summer_zone_ne" matches "seasonSummer:summer_zone_newinter_only"; anchored at the end so
+  # "season:cropping_system" matches "seasonSummer:cropping_systemsorghum"; anchored at the end so
   # "soil_moisture" can't also match "soil_moisture_anomaly".
   term_pattern <- paste0(paste0(strsplit(term, ":", fixed = TRUE)[[1]], "[^:]*", collapse = ":"), "$")
   rows <- grep(paste0(prefix, term_pattern), valid_rows, value = TRUE)
@@ -873,6 +873,26 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     trap_count's mean, tied across states (-62 AIC; trap-success exploration report keeps both).
 #     Extra chew-card (season:summer_zone_ne, gpp_finescale) and burrow (soil_moisture) detection terms
 #     gave no gain. detection_tie_groups() now matches interaction terms.
+#   Transition formulas, ADOPTED (2026-09-30), from a systematic search (hypotheses per transition in
+#     quarto_reports/plague_model_summary.qmd; windows screened against the state-year records; full
+#     models by AE zone vs by soil group; drop-one): separate formulas for entering and leaving plague
+#     (_targets.R). Entry: whiplash (zone slope) + 12-month GPP anomaly + 6-month GPP + min_temp +
+#     zone intercept. Exit: whiplash x soil group + 3-month GPP anomaly + soil-moisture anomaly x soil
+#     group + soil group + 3-month min-temp anomaly + min_temp + zone intercept. On the same rows:
+#     AIC -201 vs the previous formula, 268 vs 372 edf, pre-2013 hindcast unchanged (one-season-ahead
+#     onset 0.76). The levels (min_temp, gpp_rolling6) carry each region's breeding and crop timing:
+#     dropping the exit min_temp level cost 376 AIC. The 24-month rain anomaly was dropped: its link
+#     with plague starts reverses between eras (pre-2013 starts followed wetter two years, 2013+
+#     drier, driven by the 2021 drought-break plague) and it cost the pre-2013 hindcast. Zone slopes
+#     on exit overfit (edf ~1,460; exit smooths barely shrink); soil-group exit effects were preferred.
+#     Levels are centred and scaled in the formula (the uncentred levels confounded the intercepts);
+#     the supervised fit is unchanged by this. The unsupervised fit omits the exit soil-group terms,
+#     which it can't identify without anchors (false convergence at every start with them).
+#   Cropping system, ADOPTED (2026-09-30): summer_zone_ne (NSW NE Qld SE = summer cropping, from
+#     the AE zone) replaced by cropping_system (sorghum / winter_cereal, each paddock's SA2 cropping
+#     region, r/a_attach_cropping_system.R; winter_cereal the reference level) in the trap and burrow
+#     season x cropping-system terms.
+#     Earlier notes in this header refer to summer_zone_ne by its old name.
 # Fitting note: run variant fits one at a time -- several fitted at once as parallel R processes
 # stopped at a NaN likelihood while still reporting "relative convergence". Separately, hmmTMB's C++ is
 # intermittently non-deterministic for three-parameter chew-card families even in a fresh process, so
@@ -975,7 +995,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
       trap_count      = list(mean = append_formula_terms(~season + log_trap_effort, detection_terms$trap_count),
                              shape = append_formula_terms(~1, shape_terms$trap_count)),
       burrow_count    = list(mean = append_formula_terms(~season + log_burrow_metres_searched,
-                                                         c(obs_zone, "season:summer_zone_ne", "gpp_finescale", detection_terms$burrow_count)),
+                                                         c(obs_zone, "season:cropping_system", "gpp_finescale", detection_terms$burrow_count)),
                              shape = append_formula_terms(~1, shape_terms$burrow_count)),
       chewcard_count  = list(prob = chewcard_prob),
       chewcard_block2 = list(prob = chewcard_prob),
@@ -1052,10 +1072,10 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     tie(paste0("burrow_count.mean.state", 1:2, ".season.Q")),
     tie(paste0("burrow_count.mean.state", 1:2, ".season.C")),
     tie(paste0("burrow_count.mean.state", 1:2, ".gpp_finescale")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSummer:summer_zone_newinter_only")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn:summer_zone_newinter_only")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonWinter:summer_zone_newinter_only")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSpring:summer_zone_newinter_only")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSummer:cropping_systemsorghum")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn:cropping_systemsorghum")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonWinter:cropping_systemsorghum")),
+    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSpring:cropping_systemsorghum")),
 
     # chewcard_count/block2/3/4: season tied across BOTH states (same detection-invariance argument
     # as above) AND all four blocks at once (one shared "how does season affect the chew rate"
