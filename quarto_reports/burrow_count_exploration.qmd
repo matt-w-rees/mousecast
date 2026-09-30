@@ -106,7 +106,7 @@ burrow_data <- survey_model_data_rapid |>
     ## of transects are comparable.
     rate = burrow_total_count / burrow_transects_surveyed,
     month_num = as.integer(format(survey_date, "%m")),
-    summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only")),
+    cropping_system = factor(cropping_system, levels = c("winter_cereal", "sorghum")),
     year_adj = as.integer(sub(".*-", "", as.character(season_year_adj)))) |>
   ## Transform: change an existing column's representation (factor) without deriving new information.
   mutate(
@@ -114,6 +114,7 @@ burrow_data <- survey_model_data_rapid |>
     ## Ordered by crop_stage's own agronomic/phenological sequence (sown through to stubble).
     crop_stage = factor(crop_stage, levels = c("sown", "seedling", "vegetative", "flowering", "ripening", "stubble")),
     soil_type = factor(soil_type),
+    soil_group = factor(soil_group, levels = c("cracking clay", "duplex/calcareous loam", "sandy earth")),
     ae_zone = factor(ae_zone))
 ```
 
@@ -127,9 +128,10 @@ burrow_data <- survey_model_data_rapid |>
 ## cotton/unknown (too thin to model, see the covariate reference table); droplevels() removes those
 ## now-empty levels.
 burrow_data_model <- burrow_data |>
-  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type),
+  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type), !is.na(cropping_system),
          !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(rain_rolling6_lag1), !is.na(gpp_rolling6_lag1),
          !is.na(gpp_finescale), !is.na(soil_moisture), !is.na(min_temp_lag1),
+         !is.na(soil_moisture_anomaly), !is.na(gpp_rolling6_anomaly_lag1), !is.na(min_temp_rolling3_anomaly_lag1),
          !crop_group %in% c("cotton", "unknown")) |>
   mutate(crop_group = droplevels(crop_group),
     ## crop_group x crop_stage combination, for the Full model's interaction random effect.
@@ -168,7 +170,7 @@ d_cover <- burrow_data |>
 
 ```{r}
 #| label: tbl-covariate-reference
-#| tbl-cap: "Every covariate considered in this report, with its ecological hypothesis and analysis considerations. Covariates 1-11 are the candidate set for every model in section 2; 12-13 are only recorded for a subset of sessions, so are shown in the raw data plots and correlations here and modelled in ground_cover_exploration.qmd. `season` and `grdc_subregion` appear in [Correlation] only: `season` is covered by `month`, and `grdc_subregion` is largely redundant with `ae_zone` while having many more levels."
+#| tbl-cap: "Every covariate considered in this report, with its ecological hypothesis and analysis considerations. Covariates 1-16 are the candidate set for every model in section 2; 17-18 are only recorded for a subset of sessions, so are shown in the raw data plots and correlations here and modelled in ground_cover_exploration.qmd. `season` and `grdc_subregion` appear in [Correlation] only: `season` is covered by `month`, and `grdc_subregion` is largely redundant with `ae_zone` while having many more levels."
 
 covariate_reference_table <- tibble::tribble(
   ~Number, ~Variable, ~Type, ~Hypothesis, ~Considerations,
@@ -190,25 +192,40 @@ covariate_reference_table <- tibble::tribble(
   6, "`ae_zone`", "Categorical",
     "GRDC's broad-scale classification of broadacre cropping system -- should explain spatial variation in mouse abundance.",
     "Considers agricultural + ecological + climatic factors, but at a very coarse scale. Not included in the models in this report -- shown in the raw data plots and correlations only.",
-  7, "`rain_whiplash_trough_to_peak_lag1`", "Continuous",
+  7, "`cropping_system`", "Categorical",
+    "Sorghum regions (summer + winter cropping) and winter cereal regions (winter-only) have different cropping calendars, so the timing of food and shelter -- and of mouse breeding -- differs between them.",
+    "From the SA2 cropping-region layer (sorghum regions vs winter cereal regions). Enters the models as the grouping for the `month` cyclic smooth (a separate seasonal curve for each system) plus its own random effect. Closely aligned with `ae_zone` in the north (NSW NE Qld SE is almost entirely sorghum regions).",
+  8, "`rain_whiplash_trough_to_peak_lag1`", "Continuous",
     "Mouse plagues are expected to be driven by drought-breaking rains.",
     "Likely a different relationship across regions (e.g. due to soil type). Previous season's value.",
-  8, "`rain_rolling6_lag1`", "Continuous",
+  9, "`rain_rolling6_lag1`", "Continuous",
     "Rainfall affects crop yield and food availability.",
     "Doesn't account for the timing of rainfall within the window, only the total amount. Previous season's value.",
-  9, "`gpp_rolling6_lag1`", "Continuous",
+  10, "`gpp_rolling6_lag1`", "Continuous",
     "Proxy for crop yield potential, at the shared 0.1 degree covariate grid (~11km) -- a broader seasonal signal than `gpp_finescale`'s paddock-scale resolution below.",
     "Correlates only weakly with `gpp_finescale` -- different information, not a duplicate at two resolutions. Previous season's value. Also enters an interaction with rainfall (`rain_rolling6_lag1`).",
-  10, "`gpp_finescale`", "Continuous",
+  11, "`gpp_finescale`", "Continuous",
     "Native ~463m-resolution, focal-smoothed GPP around each paddock -- crop growth and ground cover around the time of survey, which may hide burrows as well as indicate food.",
     "Current season's value (not lagged).",
-  11, "`soil_moisture`", "Continuous",
+  12, "`soil_moisture`", "Continuous",
     "Affects crop yields and burrowing ability -- wet soil may collapse burrows, and dry soil cracks can obscure them.",
     "Not a rolling average -- it is already an accumulated value. Current season's value (not lagged).",
-  12, "`biomass_level`", "Categorical (ordered)",
+  13, "`soil_group`", "Categorical",
+    "Soil orders grouped by how they hold burrows and water: cracking clay (Vertosol), duplex/calcareous loam, sandy earth.",
+    "Nested within `soil_type` (both enter the models as random effects, so the model shows whether soil differences sit at the group or order level). From r/a_attach_soil_type.R's soil_group_of().",
+  14, "`soil_moisture_anomaly`", "Continuous",
+    "Unusually wet or dry soil for the time of year and place, separate from the soil-moisture level's seasonal cycle -- affects abundance (burrowing conditions) rather than visibility.",
+    "Z-score against the same calendar month in other years (seasonal cycle removed). Correlated with `soil_moisture` (r ~ 0.6), so the two smooths partly share the signal -- read their effects together. Current season's value.",
+  15, "`gpp_rolling6_anomaly_lag1`", "Continuous",
+    "An unusually good or poor season for crop growth (food), relative to that place and time of year.",
+    "Z-score version of `gpp_rolling6_lag1` (r ~ 0.5 with it). Previous season's value.",
+  16, "`min_temp_rolling3_anomaly_lag1`", "Continuous",
+    "An unusually cold or mild season, beyond the regular seasonal cycle that `min_temp_lag1` carries.",
+    "Z-score against the same calendar months in other years (r ~ 0.3 with `min_temp_lag1`). Previous season's value.",
+  17, "`biomass_level`", "Categorical (ordered)",
     "Crop biomass reflects the food and shelter resources available to mice, and denser biomass may hide burrows.",
     "Only recorded for a subset of sessions.",
-  13, "`ground_cover_percent`", "Continuous",
+  18, "`ground_cover_percent`", "Continuous",
     "Ground cover provides mice with shelter, and may hide burrows.",
     "Only recorded for a subset of sessions."
 )
@@ -272,7 +289,7 @@ cramers_v <- function(x, y) {
   k <- min(nrow(tab) - 1, ncol(tab) - 1)
   as.numeric(sqrt(chi / (sum(tab) * k)))
 }
-collinearity_vars <- c("crop_stage", "season", "ae_zone", "grdc_subregion", "soil_type", "crop_group")
+collinearity_vars <- c("crop_stage", "season", "ae_zone", "grdc_subregion", "soil_type", "soil_group", "cropping_system", "crop_group")
 collinearity_pairs <- utils::combn(collinearity_vars, 2)
 collinearity_table <- purrr::map_dfr(seq_len(ncol(collinearity_pairs)), function(i) {
   v1 <- collinearity_pairs[1, i]; v2 <- collinearity_pairs[2, i]
@@ -287,7 +304,8 @@ collinearity_table <- purrr::map_dfr(seq_len(ncol(collinearity_pairs)), function
 ## Continuous covariate correlations -- rain_whiplash_trough_to_peak_lag1, rain_rolling6_lag1,
 ## gpp_rolling6_lag1, gpp_finescale, soil_moisture, min_temp_lag1 -- whether the environmental
 ## covariates carry independent signal or a shared one.
-continuous_vars <- c("rain_whiplash_trough_to_peak_lag1", "rain_rolling6_lag1", "gpp_rolling6_lag1", "gpp_finescale", "soil_moisture", "min_temp_lag1")
+continuous_vars <- c("rain_whiplash_trough_to_peak_lag1", "rain_rolling6_lag1", "gpp_rolling6_lag1", "gpp_finescale", "soil_moisture", "min_temp_lag1",
+                     "soil_moisture_anomaly", "gpp_rolling6_anomaly_lag1", "min_temp_rolling3_anomaly_lag1")
 continuous_cor <- cor(burrow_data_model[continuous_vars]) |> round(2)
 ```
 
@@ -390,6 +408,10 @@ raw_by_season <- burrow_data |> group_by(season_year_adj, state) |> summarise(ra
 raw_month <- burrow_data |>
   dplyr::group_by(month_num, state) |>
   dplyr::summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+## The same monthly summary by cropping system (sorghum vs winter cereal regions).
+raw_month_cropping <- burrow_data |>
+  dplyr::group_by(month_num, cropping_system) |>
+  dplyr::summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
 ```
 
 ```{r}
@@ -401,6 +423,7 @@ raw_month <- burrow_data |>
 ## data looks like before any modelling choice.
 raw_season     <- burrow_data |> group_by(season, state) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
 raw_soiltype   <- burrow_data |> filter(!is.na(soil_type)) |> group_by(soil_type) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
+raw_soilgroup  <- burrow_data |> filter(!is.na(soil_group)) |> group_by(soil_group) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
 raw_crop_group <- burrow_data |> filter(!is.na(crop_group)) |> group_by(crop_group) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
 raw_ae_zone    <- burrow_data |> group_by(ae_zone) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
 raw_grdc       <- burrow_data |> filter(!is.na(grdc_subregion)) |> group_by(grdc_subregion) |> summarise(rate = mean(rate), n = dplyr::n(), .groups = "drop")
@@ -435,6 +458,9 @@ raw_rain_rolling6 <- raw_continuous_bin(burrow_data, "rain_rolling6_lag1")
 raw_gpp_rolling6  <- raw_continuous_bin(burrow_data, "gpp_rolling6_lag1")
 raw_gpp_finescale <- raw_continuous_bin(burrow_data, "gpp_finescale")
 raw_soil_moisture <- raw_continuous_bin(burrow_data, "soil_moisture")
+raw_soil_moisture_anomaly <- raw_continuous_bin(burrow_data, "soil_moisture_anomaly")
+raw_gpp_rolling6_anomaly <- raw_continuous_bin(burrow_data, "gpp_rolling6_anomaly_lag1")
+raw_min_temp_anomaly <- raw_continuous_bin(burrow_data, "min_temp_rolling3_anomaly_lag1")
 
 ## Shared plotting helper for the continuous raw plots: one line per state, plus a rug of every
 ## session's own raw value so each state's data density is visible.
@@ -512,6 +538,18 @@ ggplot(raw_month, aes(month_num, rate, colour = state, group = state)) +
 ```
 
 ```{r}
+#| label: fig-raw-month-cropping
+#| fig-cap: "Raw mean rate by calendar month of survey, for sorghum regions and winter cereal regions."
+#| fig-asp: 0.4
+
+ggplot(raw_month_cropping, aes(month_num, rate, colour = cropping_system, group = cropping_system)) +
+  geom_line(alpha = 0.8) +
+  geom_point() +
+  scale_x_continuous(breaks = 1:12, labels = month.abb) +
+  labs(x = NULL, y = "Active burrows per transect", colour = "Cropping system")
+```
+
+```{r}
 #| label: fig-raw-min-temp
 #| fig-cap: "Mean active burrows per transect by equal-width bin of min_temp_lag1 (the previous season's average daily minimum temperature), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
 #| fig-asp: 0.5
@@ -552,6 +590,14 @@ ggplot(crop_cross, aes(crop_stage, rate, colour = crop_group, group = crop_group
 #| fig-asp: 0.4
 
 raw_soiltype |> point_rate(reorder(soil_type, rate)) + coord_flip()
+```
+
+```{r}
+#| label: fig-raw-soilgroup
+#| fig-cap: "Raw mean by soil_group (soil orders grouped as cracking clay, duplex/calcareous loam and sandy earth)."
+#| fig-asp: 0.4
+
+raw_soilgroup |> point_rate(reorder(soil_group, rate)) + coord_flip()
 ```
 
 ```{r}
@@ -608,6 +654,30 @@ line_rate(raw_gpp_finescale, "gpp_finescale")
 #| fig-asp: 0.5
 
 line_rate(raw_soil_moisture, "soil_moisture")
+```
+
+```{r}
+#| label: fig-raw-soil-moisture-anomaly
+#| fig-cap: "Raw mean by equal-width bin of soil_moisture_anomaly (current season's soil-moisture anomaly (z-score against the same month in other years)), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_soil_moisture_anomaly, "soil_moisture_anomaly")
+```
+
+```{r}
+#| label: fig-raw-gpp-rolling6-anomaly-lag1
+#| fig-cap: "Raw mean by equal-width bin of gpp_rolling6_anomaly_lag1 (the previous season's 6-month GPP anomaly), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_gpp_rolling6_anomaly, "gpp_rolling6_anomaly_lag1")
+```
+
+```{r}
+#| label: fig-raw-min-temp-rolling3-anomaly-lag1
+#| fig-cap: "Raw mean by equal-width bin of min_temp_rolling3_anomaly_lag1 (the previous season's 3-month minimum-temperature anomaly), one coloured line per state. Rug (bottom): every session's own raw value, coloured the same way."
+#| fig-asp: 0.5
+
+line_rate(raw_min_temp_anomaly, "min_temp_rolling3_anomaly_lag1")
 ```
 
 ```{r}
@@ -695,16 +765,22 @@ burrow_data |>
 ## No random paddock intercept: gamlss's re() is a no-op inside gamlss2(), and mgcv's own
 ## s(paddock_id, bs = "re") badly under-regularises on these models.
 full_terms <- ~
-  ## month is a cyclic smooth by summer_zone_ne (zone-varying seasonal curve) -- gamlss's own cy()/
+  ## month is a cyclic smooth by cropping_system (a separate seasonal curve for sorghum and winter cereal regions) -- gamlss's own cy()/
   ## pbc() have no working by= argument, which is why this report uses gamlss2 at all. The by-factor
-  ## curves are centred, so summer_zone_ne also needs its own (random-effect) main effect.
-  s(month_num, bs = "cc", by = summer_zone_ne, k = 7) + s(summer_zone_ne, bs = "re") +
+  ## curves are centred, so cropping_system also needs its own (random-effect) main effect.
+  s(month_num, bs = "cc", by = cropping_system, k = 7) + s(cropping_system, bs = "re") +
   ## Crop and soil factors. crop_cell (crop_group x crop_stage) is the interaction, as its own random
   ## effect, so thin combinations are shrunk toward what their crop group and stage predict.
   s(crop_group, bs = "re") + s(crop_stage, bs = "re") + s(crop_cell, bs = "re") + s(soil_type, bs = "re") +
+  ## Soil group nests the soil orders: both random effects, so the shrinkage shows which level the soil differences sit at.
+  s(soil_group, bs = "re") +
   ## Every continuous main effect is its own smooth, s(x, k = 5).
   s(min_temp_lag1, k = 5) + s(rain_whiplash_trough_to_peak_lag1, k = 5) + s(rain_rolling6_lag1, k = 5) + s(gpp_rolling6_lag1, k = 5) +
   s(gpp_finescale, k = 5) + s(soil_moisture, k = 5) +
+  ## Anomalies beside their levels: the level carries the regular seasonal and regional cycle, the anomaly an unusual season.
+  s(soil_moisture_anomaly, k = 5) + s(gpp_rolling6_anomaly_lag1, k = 5) + s(min_temp_rolling3_anomaly_lag1, k = 5) +
+  ## Soil moisture by soil group: wet clays collapse burrows and dry clays crack, unlike sands.
+  s(soil_moisture, by = soil_group, k = 5) +
   ## rain_rolling6_lag1:gpp_rolling6_lag1 is a ti() pure interaction (not te(), which would double-count
   ## the main effects) -- 6-month rainfall and 6-month rolling GPP, both regional and over the same
   ## window, are expected to jointly shape crop growth and food supply.
@@ -940,7 +1016,7 @@ for (fam_name in comparison_set) {
     "",
     "```{r}",
     paste0("#| label: fig-effects-", tolower(fam_name)),
-    paste0("#| fig-cap: \"Effects of every term, for every parameter, in the ", fam_name, " model (gamlss2::plot.gamlss2(which = 'effects', scale = FALSE)). Log scale for mu, shaded-gradient uncertainty band (gamlss2's own convention). month's by-factor smooth gets two panels, one per summer_zone_ne level (summer/winter_only).\""),
+    paste0("#| fig-cap: \"Effects of every term, for every parameter, in the ", fam_name, " model (gamlss2::plot.gamlss2(which = 'effects', scale = FALSE)). Log scale for mu, shaded-gradient uncertainty band (gamlss2's own convention). month's by-factor smooth gets two panels, one per cropping_system level (sorghum/winter_cereal).\""),
     "#| fig-asp: 1.8",
     "#| fig-width: 11",
     "",

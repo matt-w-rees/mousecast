@@ -100,7 +100,7 @@ chew_data <- survey_model_data_rapid |>
     rate = chewcards_detected / chewcards_deployed,
     month_num = as.integer(format(survey_date, "%m")),
     chewcard_any = as.integer(chewcards_detected > 0),
-    summer_zone_ne = factor(ifelse(ae_zone == "NSW NE Qld SE", "summer", "winter_only")),
+    cropping_system = factor(cropping_system, levels = c("winter_cereal", "sorghum")),
     year_adj = as.integer(sub(".*-", "", as.character(season_year_adj))),
     ## The two-column cbind(successes, failures) response every binomial-type model in this report
     ## fits against (y ~ ...), not `rate` -- preserves each session's own trial size
@@ -129,7 +129,7 @@ chew_data <- survey_model_data_rapid |>
 ## re-mutating or re-selecting (chew_data already has everything in the right shape). crop_group
 ## excludes cotton/unknown (too thin to model, Table 2); droplevels() removes those now-empty levels.
 chew_data_model <- chew_data |>
-  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type),
+  filter(!is.na(crop_group), !is.na(crop_stage), !is.na(soil_type), !is.na(cropping_system),
          !is.na(rain_whiplash_trough_to_peak_lag1), !is.na(rain_rolling6_lag1), !is.na(gpp_rolling6_lag1),
          !is.na(gpp_finescale_lag1), !is.na(soil_moisture_lag1), !is.na(min_temp_lag1),
          !crop_group %in% c("cotton", "unknown")) |>
