@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-09-28 16:14:58
+Generated: 2026-09-30 12:53:33
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -135,12 +135,6 @@ ae_zone
   Values:      e.g., SA Vic Mallee, NSW Central, Yorke Mid North
   Source:      Polygon-over-polygon join with GRDC AEZ layer in attach_aez()
 
-cropping_system
-  Description: Broad cropping calendar for the paddock's ae_zone: single winter crop per year, or summer+winter double cropping
-  Type:        Character
-  Values:      single (most of southern Australia + WA), dual (northern NSW + Qld); NA for WA Ord or no ae_zone
-  Source:      Lookup on ae_zone in attach_cropping_system()
-
 grdc_subregion
   Description: GRDC growing subregion covering the paddock polygon -- a finer-grained alternative to ae_zone
   Type:        Character
@@ -168,8 +162,14 @@ latitude_paddock
 soil_type
   Description: Dominant Australian Soil Classification within the paddock polygon
   Type:        Character
-  Values:      ASC order codes (e.g., Chromosol, Vertosol)
+  Values:      ASC order name (e.g., Vertosol, Chromosol, Calcarosol)
   Source:      Modal raster extraction (terra::extract) in attach_soil_type(); 38% of paddocks span multiple types
+
+cropping_system
+  Description: Broad cropping system of the paddock's SA2 cropping region: sorghum (summer + winter cropping) or winter cereal (winter-only)
+  Type:        Character
+  Values:      sorghum (northern NSW + Qld), winter_cereal (southern NSW, VIC, SA, WA); NA outside every cropping region (e.g. WA Ord)
+  Source:      SA2 (2021) cropping-region layer, point-in-polygon with nearest-region snap (<= 50 km), in attach_cropping_system()
 
 snap_type
   Description: How the survey point was matched to its paddock polygon

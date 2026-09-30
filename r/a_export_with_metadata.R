@@ -312,7 +312,7 @@ get_all_variable_definitions <- function() {
     soil_type = list(
       desc   = "Dominant Australian Soil Classification within the paddock polygon",
       type   = "Character",
-      values = "ASC order codes (e.g., Chromosol, Vertosol)",
+      values = "ASC order name (e.g., Vertosol, Chromosol, Calcarosol)",
       source = "Modal raster extraction (terra::extract) in attach_soil_type(); 38% of paddocks span multiple types"
     ),
     state = list(
@@ -322,10 +322,10 @@ get_all_variable_definitions <- function() {
       source = "Polygon-over-polygon join with state boundaries in attach_state()"
     ),
     cropping_system = list(
-      desc   = "Broad cropping calendar for the paddock's ae_zone: single winter crop per year, or summer+winter double cropping",
+      desc   = "Broad cropping system of the paddock's SA2 cropping region: sorghum (summer + winter cropping) or winter cereal (winter-only)",
       type   = "Character",
-      values = "single (most of southern Australia + WA), dual (northern NSW + Qld); NA for WA Ord or no ae_zone",
-      source = "Lookup on ae_zone in attach_cropping_system()"
+      values = "sorghum (northern NSW + Qld), winter_cereal (southern NSW, VIC, SA, WA); NA outside every cropping region (e.g. WA Ord)",
+      source = "SA2 (2021) cropping-region layer, point-in-polygon with nearest-region snap (<= 50 km), in attach_cropping_system()"
     ),
     grdc_subregion = list(
       desc   = "GRDC growing subregion covering the paddock polygon -- a finer-grained alternative to ae_zone",

@@ -1,3 +1,37 @@
+# asc_order_name(): TERN ASC raster code -> soil order name, from TERN's legend for this product
+# (ASC_ORDER.txt, alongside the COG in the SLGA NationalMaps/SoilClassifications/ASC/90m store,
+# matching the raster's own attribute table; its "Calcarasol" typo corrected).
+#
+# Arguments:
+#   code  integer (or character) ASC order codes, 1-14
+#
+# Returns the order names (NA for any other value).
+asc_order_name <- function(code) {
+  order_names <- c("1" = "Vertosol", "2" = "Sodosol", "3" = "Dermosol", "4" = "Chromosol",
+                   "5" = "Ferrosol", "6" = "Kurosol", "7" = "Tenosol", "8" = "Kandosol",
+                   "9" = "Hydrosol", "10" = "Podosol", "11" = "Rudosol", "12" = "Calcarosol",
+                   "13" = "Organosol", "14" = "Anthroposol")
+  unname(order_names[as.character(code)])
+}
+
+# soil_group_of(): soil order -> one of three broader groups by how they hold burrows and water --
+# cracking clays (Vertosol); duplex and calcareous loams, whose harder or sealing subsoils behave
+# alike in the burrow/chew-card detection effects (Sodosol, Chromosol, Calcarosol, Dermosol, and the
+# other structured or texture-contrast orders); and sandy or massive earths (Kandosol, Tenosol,
+# Rudosol, Podosol). Orders with no surveyed paddocks are grouped on pedology.
+#
+# Arguments:
+#   soil_type  soil order names (asc_order_name()'s output)
+#
+# Returns "cracking clay", "duplex/calcareous loam", "sandy earth", or NA.
+soil_group_of <- function(soil_type) {
+  dplyr::case_when(
+    soil_type == "Vertosol"                                       ~ "cracking clay",
+    soil_type %in% c("Kandosol", "Tenosol", "Rudosol", "Podosol") ~ "sandy earth",
+    !is.na(soil_type)                                             ~ "duplex/calcareous loam"
+  )
+}
+
 # Attach Australian Soil Classification to an sf polygon object.
 # Downloaded from https://portal.tern.org.au/metadata/TERN/15728dba-b49c-4da5-9073-13d8abe67d7c
 # Citation: Searle, R. (2021): Australian Soil Classification Map. Version 1.
@@ -25,6 +59,10 @@
 # right before extracting just that one polygon, instead measured at
 # ~0.008 sec/polygon -- confirmed to return identical values to the
 # original single-call approach on real paddocks, just ~2500x faster.
+#
+# The raster stores each ASC order as an integer code; soil_type is returned as
+# the order's name instead (asc_order_name() above), so it can't be mistaken for
+# a number downstream.
 attach_soil_type <- function(data, skip = FALSE) {
 
   if (skip) {
@@ -42,6 +80,9 @@ attach_soil_type <- function(data, skip = FALSE) {
     x          <- terra::extract(small_crop, poly, fun = "modal", na.rm = TRUE)
     x[[2]]
   }, numeric(1))
+
+  # Integer ASC order code -> order name (asc_order_name() above).
+  data$soil_type <- asc_order_name(data$soil_type)
 
   data
 

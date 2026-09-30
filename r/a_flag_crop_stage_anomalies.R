@@ -1,12 +1,12 @@
 # Flag survey rows where the recorded crop_stage is agronomically implausible
-# for that ae_zone's cropping system and the survey's calendar month.
+# for that paddock's cropping system and the survey's calendar month.
 #
 # Two cropping systems matter in Australia's eastern/southern grain belt:
-#   - single (winter-only): one winter crop per paddock per year (most of
-#     southern Australia + all of WA).
-#   - dual (summer + winter): paddocks north of ~Dubbo (northern NSW + Qld)
-#     can carry either a winter or a summer crop, so plausibility depends on
-#     which one a given row's crop_variety belongs to.
+#   - winter_cereal (winter-only): one winter crop per paddock per year
+#     (southern NSW, Victoria, SA and WA).
+#   - sorghum (summer + winter): paddocks in the sorghum regions (northern NSW
+#     + Qld) can carry either a winter or a summer crop, so plausibility depends
+#     on which one a given row's crop_variety belongs to.
 #
 # The winter month-by-stage windows below come from this project's own pooled
 # surveys_all data (a large, clean sample -- e.g. September flowering n=419,
@@ -22,16 +22,16 @@
 #
 # Excluded from checking: rows with no crop_stage to begin with (pasture/
 # bare_soil/unknown-crop rows already have NA crop_stage by design), rows with
-# no cropping_system (no ae_zone, or WA Ord -- an irrigated scheme with no
-# fixed rain-fed calendar -- see attach_cropping_system()), lucerne
+# no cropping_system (outside every cropping region, e.g. WA Ord -- an
+# irrigated scheme with no fixed rain-fed calendar -- see
+# attach_cropping_system()), lucerne
 # (perennial, no annual stage cycle), and MouseAlert observations (crop_stage
 # there is a different citizen-facing vocabulary -- "in crop"/"pre-sowing" --
 # not the six ODK stages this function's calendars are built around).
 #
-# Requires data to already have a cropping_system column (single/dual/NA),
-# attached at the paddock level by attach_cropping_system() -- see
-# r/a_attach_cropping_system.R, which uses the same aez_zone_info()
-# region_label grouping this function used to recompute internally.
+# Requires data to already have a cropping_system column (sorghum/
+# winter_cereal/NA), attached at the paddock level by attach_cropping_system()
+# from the SA2 cropping-region layer -- see r/a_attach_cropping_system.R.
 flag_crop_stage_anomalies <- function(data) {
 
   odk_stages <- c("sown", "seedling", "vegetative", "flowering", "ripening", "stubble")
@@ -135,15 +135,15 @@ flag_crop_stage_anomalies <- function(data) {
     )
 
   single_checked <- data |>
-    dplyr::filter(cropping_system == "single") |>
+    dplyr::filter(cropping_system == "winter_cereal") |>
     dplyr::left_join(winter_calendar, by = c("survey_month" = "month", "crop_stage"))
 
   dual_known <- data |>
-    dplyr::filter(cropping_system == "dual", variety_season != "unknown") |>
+    dplyr::filter(cropping_system == "sorghum", variety_season != "unknown") |>
     dplyr::left_join(calendar_by_season, by = c("survey_month" = "month", "crop_stage", "variety_season" = "season"))
 
   dual_unknown <- data |>
-    dplyr::filter(cropping_system == "dual", variety_season == "unknown") |>
+    dplyr::filter(cropping_system == "sorghum", variety_season == "unknown") |>
     dplyr::left_join(lenient_calendar, by = c("survey_month" = "month", "crop_stage"))
 
   dplyr::bind_rows(single_checked, dual_known, dual_unknown) |>
@@ -152,7 +152,7 @@ flag_crop_stage_anomalies <- function(data) {
       severity = dplyr::if_else(is.na(plausibility), "implausible", "unusual"),
       reason = paste0(
         "crop_stage '", crop_stage, "' is ", severity, " for month ", survey_month,
-        " in a ", cropping_system, "-cropping zone (", ae_zone, ")",
+        " in a ", gsub("_", " ", cropping_system), " region (", ae_zone, ")",
         dplyr::if_else(variety_season != "unknown", paste0(" [", variety_season, " crop: ", crop_variety, "]"), "")
       )
     ) |>
