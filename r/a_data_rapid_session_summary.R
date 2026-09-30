@@ -10,7 +10,7 @@
 #                              so a card counted as "chewed" there is also counted as a detection here
 #   chewcards_detected_first10 same >= 1 threshold, but restricted to chewcard_percent_1..10 only --
 #                              added 2026-08 for the HMM's own chewcard observation stream
-#                              (r/d_build_hmm_data.R), which needs one fixed trials count across
+#                              (r/e_build_hmm_data.R), which needs one fixed trials count across
 #                              surveys that deployed 10, 20 or 40 cards; using only the first 10
 #                              keeps every survey on the same denominator without discarding
 #                              surveys that happened to deploy more.
@@ -19,7 +19,7 @@
 #                              for cards 11-20/21-30/31-40 (transects 2/3/4) -- added 2026-08 so the
 #                              HMM's own chewcard stream can use MULTIPLE fixed-trials=10 streams
 #                              (one per transect actually deployed) instead of discarding cards past
-#                              the first transect, see r/d_fit_plague_hmm.R's header for the
+#                              the first transect, see r/e_fit_plague_hmm.R's header for the
 #                              block-stream mechanism (confirmed against hmmTMB's own
 #                              crossbill_occupancy.R case study as the package's own standard
 #                              pattern for varying replicate counts, not a workaround).
@@ -27,7 +27,7 @@
 #                              was chewed, 0 otherwise -- added 2026-08 as an alternative "was the
 #                              paddock occupied at all" response, collapsing the graded count down to
 #                              a single Bernoulli trial with no fixed-trials denominator needed at
-#                              all (unlike the count-based streams above); see r/d_fit_plague_hmm.R's
+#                              all (unlike the count-based streams above); see r/e_fit_plague_hmm.R's
 #                              header for why this is being compared against the block-stream count
 #                              version, not adopted outright.
 #

@@ -17,9 +17,9 @@
 # to 1980) to give trap_count a detection-side formula for a measured pseudo-residual worsening --
 # reverted the same day after removing the historic period's negative state anchor left the
 # historic era's own trap_count intercept with zero anchored support, driving it to a degenerate
-# boundary solution (see r/d_fit_plague_hmm.R's header). Not reintroduced here.
+# boundary solution (see r/e_fit_plague_hmm.R's header). Not reintroduced here.
 #
-# Observation streams are trap, burrow and chewcard counts (r/d_fit_plague_hmm.R). chewcards
+# Observation streams are trap, burrow and chewcard counts (r/e_fit_plague_hmm.R). chewcards
 # needed real handling first (added 2026-08): hmmTMB's binomial "size" (trials) parameter is
 # fixed, not covariate-varying, so every chewcard observation needs a common trials count despite
 # chewcards_deployed varying (predominantly 10/20/40, i.e. 1/2/4 transects of 10 cards).
@@ -33,7 +33,7 @@
 #
 # chewcard_block2/3/4 and chewcard_any (added 2026-08, r/a_data_rapid_session_summary.R): two
 # alternative/supplementary encodings of the same underlying chewcard data, both under live
-# comparison against the chewcard_count-alone spec above -- see r/d_fit_plague_hmm.R's header.
+# comparison against the chewcard_count-alone spec above -- see r/e_fit_plague_hmm.R's header.
 # chewcard_block2/3/4 extend the fixed-trials-of-10 idea across every deployed transect (not just
 # the first) as three EXTRA binom(10) streams rather than one wider one, confirmed against hmmTMB's
 # own crossbill_occupancy.R case study as the package's standard pattern for varying replicate
@@ -57,7 +57,7 @@
 #                           c("NSW", "VIC", "SA", "QLD", "WA") -- hmm_states,
 #                           _targets.R, WA added 2026-09 once the transition
 #                           formula's own zone slope moved to a hierarchical
-#                           spec, see r/d_fit_plague_hmm.R's header)
+#                           spec, see r/e_fit_plague_hmm.R's header)
 #                           to restrict the fit to; NULL keeps every state.
 #                           Filters on the paddock's own state (r/a_attach_state.R),
 #                           not ae_zone (2026-08, replaced an ae_zone_filter
@@ -100,7 +100,7 @@
 #                          just a thin sample. NULL (default) excludes
 #                          nothing; this is a data-quality exclusion from the
 #                          FIT itself, distinct from predict_plague_risk()'s
-#                          own separate mask (r/d_predict_plague_risk.R),
+#                          own separate mask (r/e_predict_plague_risk.R),
 #                          which only ever restricts the PREDICTION grid.
 #
 # Returns one row per paddock x season_year_adj, sorted by ID then season,
@@ -146,7 +146,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # trials=10 observation, excluded (see header) rather than treated as 10
     dplyr::mutate(chewcard_count = dplyr::if_else(chewcards_deployed < 7, NA_integer_, chewcard_count)) |>
     # Same "fewer than 7 of this block's own 10 cards" rule, applied per block (2026-08) -- each
-    # block is its own separate trials=10 stream (r/d_fit_plague_hmm.R), so its own NA gate has to
+    # block is its own separate trials=10 stream (r/e_fit_plague_hmm.R), so its own NA gate has to
     # use ITS OWN deployment count (chewcards_deployed_blockN), not the overall chewcards_deployed
     # chewcard_count's gate uses -- a paddock could deploy a full 10-card block2 while its own
     # block1 (or vice versa) was only partially read. chewcard_any needs no equivalent gate: it has
@@ -159,10 +159,10 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     ) |>
     # burrow_metres_searched: burrow_transects_surveyed's own transects are a fixed 100m each
     # (CLAUDE.md's "100 m transects"), so this is the actual search effort a raw burrow_count needs
-    # correcting for (2026-08) -- see r/d_fit_plague_hmm.R's header for why this has to be a genuine
+    # correcting for (2026-08) -- see r/e_fit_plague_hmm.R's header for why this has to be a genuine
     # covariate term with a coefficient fixed at 1, not hmmTMB's own offset() (silently dropped, see
     # that same header). log() taken here, not in the formula, purely so the column already exists
-    # for r/d_predict_plague_risk.R's own newdata construction without duplicating the transform.
+    # for r/e_predict_plague_risk.R's own newdata construction without duplicating the transform.
     #
     # burrow_transects_surveyed == 0 (a real value, not NA -- r/a_clean_deduplicate_surveys.R
     # already sets burrow_total_count itself to NA in this case, so these rows never contribute to
@@ -181,7 +181,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # genuine trap-nights (functional traps summed across every night of the session, phantoms
     # excluded), so unlike burrow_metres_searched no unit conversion is needed here -- just the same
     # log()-and-guard treatment for trap_count's own search-effort offset (2026-08, mirrors
-    # burrow_count's, see r/d_fit_plague_hmm.R's header for why both need a genuine covariate term
+    # burrow_count's, see r/e_fit_plague_hmm.R's header for why both need a genuine covariate term
     # with a coefficient fixed at 1, not hmmTMB's own offset()). Trap effort varies far more widely
     # than burrow's (confirmed live: 4-827 trap-nights, ~200x, vs burrow's ~8x), correlates 0.60 with
     # raw trap_count, and the pre-offset pseudo-residual itself correlated 0.44 with effort and rose
@@ -194,7 +194,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
       log_trap_effort = log(trap_effort)
     ) |>
     # ae_zone/grdc_subregion as factors -- mgcv's bs = "re" random-effect
-    # basis (the second pass's random effect, r/d_fit_plague_hmm.R) needs a
+    # basis (the second pass's random effect, r/e_fit_plague_hmm.R) needs a
     # factor grouping variable, not character; either column may end up as
     # the grouping variable depending on how many groups a given fit needs.
     dplyr::mutate(
@@ -203,11 +203,11 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     ) |>
     # cropping_system: sorghum (summer + winter cropping) or winter_cereal (winter-only), the
     # paddock's SA2 cropping region (r/a_attach_cropping_system.R), used for the trap and burrow
-    # season x cropping-system detection terms (r/d_fit_plague_hmm.R). Winter cereal (winter-only)
+    # season x cropping-system detection terms (r/e_fit_plague_hmm.R). Winter cereal (winter-only)
     # is the reference level, so the coefficients read as the sorghum regions' difference from it.
     dplyr::mutate(cropping_system = factor(cropping_system, levels = c("winter_cereal", "sorghum"))) |>
     # ae_zone_adj: adjusted AE zone (r/a_adjust_aez.R's ae_zone_adj_of(), the same rule as the aez_adj
-    # polygons), used for the burrow and chew-card zone effects (r/d_fit_plague_hmm.R's obs_zone
+    # polygons), used for the burrow and chew-card zone effects (r/e_fit_plague_hmm.R's obs_zone
     # argument) -- with the 11 original zones several plague-state zone effects had no data behind them
     # and the unsupervised fit failed. The transitions keep the 11 original AE zones.
     dplyr::mutate(ae_zone_adj = factor(ae_zone_adj_of(ae_zone, aus_state))) |>
@@ -219,7 +219,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     # "vs. the normal/most common case" rather than an arbitrary comparison. NA on a placeholder row
     # (no real visit of that survey type this season) -- same as log_trap_effort/log_burrow_metres_searched
     # already are on those rows, handled the same way (hmmTMB's own internal NA-fill, see
-    # r/d_predict_plague_risk.R's header) since 0% of REAL trap/rapid visits have a missing bait_history
+    # r/e_predict_plague_risk.R's header) since 0% of REAL trap/rapid visits have a missing bait_history
     # (confirmed live), so no complete-case row loss from adding this.
     dplyr::mutate(
       bait_history_traps = factor(bait_history_traps, levels = c("unsure", "no", "yes")),

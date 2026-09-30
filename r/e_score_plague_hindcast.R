@@ -1,4 +1,4 @@
-# Scores hindcast_plague_occurrence()'s grid hindcast (r/d_hindcast_plague_occurrence.R) against the
+# Scores hindcast_plague_occurrence()'s grid hindcast (r/e_hindcast_plague_occurrence.R) against the
 # recorded plague years in yearly_plague_occurrence.csv -- one row per calendar year, one column per
 # state (South Australia, Victoria, New South Wales, Queensland), 1 where a plague was recorded that
 # year. WA has no column, so WA cells aren't scored.

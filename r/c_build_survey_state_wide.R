@@ -1,7 +1,7 @@
 # Merge the two survey types' seasonal panels (r/c_build_survey_model_data.R)
 # into one wide row per paddock x season, with separate response/effort
 # columns per stream (traps, burrows, chewcards) -- the shape hmmTMB's
-# multi-stream observations need (r/d_build_hmm_data.R), and also a useful
+# multi-stream observations need (r/e_build_hmm_data.R), and also a useful
 # general-purpose "everything about this paddock-season" table on its own.
 #
 # Each input is first collapsed to at most one row per paddock x season via

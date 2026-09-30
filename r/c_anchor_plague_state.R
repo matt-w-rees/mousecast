@@ -83,7 +83,7 @@
 # offers over a qualitative per-region rating.
 #
 # Returns survey_state_wide with plague_state added (2L = plague, 1L = not-plague, NA = unanchored)
-# -- same coding as the superseded rule, so nothing downstream (r/d_build_hmm_data.R onward) needs
+# -- same coding as the superseded rule, so nothing downstream (r/e_build_hmm_data.R onward) needs
 # to change.
 
 anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_start = "Summer 2013",

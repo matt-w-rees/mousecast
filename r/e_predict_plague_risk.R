@@ -8,7 +8,7 @@
 # fit_zones (2026-08) after an initial unmasked version extrapolated into
 # zones the model was never fit to (originally Western Australia specifically,
 # back when hmm_states excluded it -- WA joined the fit itself 2026-09, see
-# r/d_fit_plague_hmm.R's header, so this mask now simply reflects WA's own 4
+# r/e_fit_plague_hmm.R's header, so this mask now simply reflects WA's own 4
 # fitted zones like every other state's, no longer a blanket exclusion).
 #
 # Uses hmmTMB's own HMM$predict(what = "tpm", newdata = ...) rather than
@@ -17,7 +17,7 @@
 # (out-of-sample) covariate values, confirmed via its own documentation.
 #
 # newdata needs a season column too (2026-08, once burrow_count's own
-# detection formula went in, r/d_fit_plague_hmm.R) even though only the
+# detection formula went in, r/e_fit_plague_hmm.R) even though only the
 # transition-side prediction ("tpm") is actually requested here -- confirmed
 # live that $predict() validates every formula's covariates are present,
 # observation formulas included, not just the ones the requested "what"
@@ -27,13 +27,13 @@
 # mgcv-based prediction needs the same factor levels the model was fit with,
 # not just the same values. (An era column was briefly required here too,
 # 2026-08, while trap_count had its own ~era formula -- reverted the same
-# day, see r/d_fit_plague_hmm.R's header, so no longer needed.)
+# day, see r/e_fit_plague_hmm.R's header, so no longer needed.)
 #
 # Every OTHER observation-formula covariate (2026-08, ADOPTED -- fixes a real, live bug found the
 # same day) is now auto-filled by introspecting the fitted model itself, not hand-maintained here --
 # the previous version hand-listed only log_burrow_metres_searched/log_trap_effort as hardcoded
 # placeholder constants, and silently fell out of sync when burrow_count's own formula grew
-# gpp_finescale/season:summer_zone_ne (r/d_fit_plague_hmm.R's "third pass" era, well before this
+# gpp_finescale/season:summer_zone_ne (r/e_fit_plague_hmm.R's "third pass" era, well before this
 # fix) -- confirmed live this broke $predict() outright ("object 'gpp_finescale' not found").
 # plague_hmm$obs()$formulas() returns the model's own real nested formula list (stream -> param ->
 # state -> formula); plague_hmm$obs()$data() returns its own stored training data -- every
@@ -59,9 +59,9 @@
 # period" below has to be found across all three rasters' own layer name
 # sets, not just assumed to be rain_whiplash's own latest month.
 #
-# min_temp_raster added 2026-08 (plague_hmm_fourth_pass, r/d_fit_plague_hmm.R) -- uses
+# min_temp_raster added 2026-08 (plague_hmm_fourth_pass, r/e_fit_plague_hmm.R) -- uses
 # min_temp_raster_coarse (_targets.R), NOT min_temp_seasonal_raster, even though the latter is what
-# the training covariate ("min_temp" column, r/d_build_hmm_data.R via paddock_season_covs) actually
+# the training covariate ("min_temp" column, r/e_build_hmm_data.R via paddock_season_covs) actually
 # is (a genuine 3-month within-season mean, build_seasonal_raster()). min_temp_seasonal_raster's own
 # layer names are season-grain ("Winter-2025", period_col = "season_year_adj" in _targets.R's own
 # attach_raster_covs() call) -- incompatible with the "<month>_<year>" naming every other raster
@@ -75,7 +75,7 @@
 # mean, not a materially different quantity.
 #
 # newdata also needs log_burrow_metres_searched and log_trap_effort (2026-08, once burrow_count's
-# and trap_count's own search-effort offsets went in, r/d_fit_plague_hmm.R) for the same "every
+# and trap_count's own search-effort offsets went in, r/e_fit_plague_hmm.R) for the same "every
 # formula's covariates must be present" reason as season -- each fixed at its own average-effort
 # scenario (mean burrow_metres_searched/trap_effort across hmm_data_first_pass, ~349m / ~67
 # trap-nights), purely as a placeholder: both streams' mean formulas are entirely observation-side,
@@ -84,13 +84,13 @@
 # briefly, 2026-08: paddock-seasons with burrow_transects_surveyed == 0 produce log(0) = -Inf, not
 # NA -- is.na(-Inf) is FALSE, so it silently survived hmmTMB's own internal NA-fill and crashed
 # mgcv::gam() specifically inside $predict(newdata = ...)'s internal dummy-response refit on the
-# full training data, with an opaque "NA/NaN/Inf in foreign function call" error. r/d_build_hmm_data.R
+# full training data, with an opaque "NA/NaN/Inf in foreign function call" error. r/e_build_hmm_data.R
 # now NAs those rows out before taking log(), fixed at the source rather than patched here --
 # trap_effort got the same guard pre-emptively even though number_functional_traps_session == 0
 # never actually co-occurs with a non-NA trap_count in the current data.)
 #
 # newdata also needs a real (non-placeholder) ae_zone value per cell (2026-08, once the second-pass
-# model's own s(ae_zone, bs = "re") transition term went in, r/d_fit_plague_hmm.R) -- unlike
+# model's own s(ae_zone, bs = "re") transition term went in, r/e_fit_plague_hmm.R) -- unlike
 # season/log_burrow_metres_searched/log_trap_effort above, this one genuinely affects the
 # transition-side prediction (it's the whole point of the random effect), so it can't be a shared
 # placeholder constant across every cell -- each cell needs its OWN zone. Built via
@@ -142,9 +142,9 @@
 # distribution (a longer-run equilibrium quantity, a different question).
 #
 # Arguments:
-#   plague_hmm            a fitted HMM object (r/d_fit_plague_hmm.R), with any transition formula(s)
+#   plague_hmm            a fitted HMM object (r/e_fit_plague_hmm.R), with any transition formula(s)
 #   covariate_rasters      named list of SpatRasters, one per transition covariate, named by its
-#                          hmm_data column (build_risk_grid_newdata(), r/d_build_risk_grid_newdata.R).
+#                          hmm_data column (build_risk_grid_newdata(), r/e_build_risk_grid_newdata.R).
 #                          Time-varying rasters have one layer per period, named "<month>_<year>";
 #                          a single-layer raster is a static covariate. For the current model:
 #                          rain_whiplash_trough_to_peak, gpp_rolling6 (gpp_rolling_raster_6,
@@ -230,7 +230,7 @@ predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, per
     period <- shared_periods[order(period_year, period_month)][length(shared_periods)]
   }
 
-  # Per-cell covariate table for this period (r/d_build_risk_grid_newdata.R) -- see header above for
+  # Per-cell covariate table for this period (r/e_build_risk_grid_newdata.R) -- see header above for
   # what each step does and why.
   grid <- build_risk_grid_newdata(plague_hmm, covariate_rasters, fit_zones_sf, period, mask_zone_extrapolation)
   cell_df <- grid$cell_df

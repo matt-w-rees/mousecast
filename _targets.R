@@ -8,7 +8,7 @@
 # first (see that function's own header), and prints every such conflict --
 # currently just for visibility, no further handling. May come back to this.
 
-# plague_risk_map_nowcast (2026-09, r/d_predict_plague_risk.R) uses the latest complete calendar
+# plague_risk_map_nowcast (2026-09, r/e_predict_plague_risk.R) uses the latest complete calendar
 # month instead of waiting for the next Feb/May/Aug/Nov boundary, so a current-season forecast is
 # available at the start of that season rather than one season late. Added quickly to unblock a
 # real Spring-2026 request -- revisit the design once it's had a few real uses: is "nowcast" the
@@ -795,7 +795,7 @@ tar_plan(
   # complete, but the season-end trim above only ever keeps Feb/May/Aug/Nov, discarding a genuinely complete month (e.g. July) just because it isn't one of
   # those four. Same rolling-mean computation as gpp_rolling_raster_6 above, minus that trim -- real, complete-month data only, no partial-period averaging
   # and no extrapolation. Training is unaffected: paddock_season_grid's own attach (below) always reads period_col = "season_end_month_year", so this extra
-  # grain is invisible there. See soil_moisture_raster_coarse_nowcast (4.iii-b below, same rationale) and r/d_predict_plague_risk.R's header for how
+  # grain is invisible there. See soil_moisture_raster_coarse_nowcast (4.iii-b below, same rationale) and r/e_predict_plague_risk.R's header for how
   # plague_risk_map_nowcast (3. below) uses both.
   tar_terra_rast(gpp_rolling_raster_6_nowcast, compute_rolling_mean_raster(gpp_raster_coarse, window = 6), gdal = covariate_gdal_options),
 
@@ -1199,14 +1199,14 @@ tar_plan(
   # Fits the 2-state HMM (trap + burrow + chewcard streams, chewcard split into 4 tied beta-binomial(10) blocks by transect, covariate-driven transitions, seasonal
   # detection tied across states as a shared detection effect, ae_zone/shape left free per state as real density/dispersion effects, trap/burrow search-effort
   # offsets). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, s(ae_zone, by = ..., bs = "re") -- not a fixed
-  # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/d_fit_plague_hmm.R's header for why.
-  # Detection covariates on the trap, burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/d_fit_plague_hmm.R.
-  # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/d_fit_plague_hmm_subprocess.R.
+  # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/e_fit_plague_hmm.R's header for why.
+  # Detection covariates on the trap, burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/e_fit_plague_hmm.R.
+  # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/e_fit_plague_hmm_subprocess.R.
   hmm_detection_terms = list(trap_count   = c("season:cropping_system", "crop_group_trap_det"),
                              burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det"),
                              chewcard     = c("crop_group_det", "crop_stage_det", "soil_type_det")),
 
-  # Transition formulas: entering plague [1, 2] and leaving plague [2, 1], chosen by the transition search -- see r/d_fit_plague_hmm.R's header.
+  # Transition formulas: entering plague [1, 2] and leaving plague [2, 1], chosen by the transition search -- see r/e_fit_plague_hmm.R's header.
   # min_temp and gpp_rolling6 are levels, centred and scaled in the formula (hmm_data means and SDs); every other covariate is an anomaly.
   plague_transition_enter = "~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = 're') + gpp_anomaly + I((gpp_rolling6 - 2.38) / 0.93) + I((min_temp - 11.12) / 4.47) + s(ae_zone, bs = 're')",
   plague_transition_leave = "~ rain_whiplash_trough_to_peak + rain_whiplash_trough_to_peak:soil_group + gpp_rolling3_anomaly + soil_moisture_anomaly + soil_moisture_anomaly:soil_group + soil_group + min_temp_rolling3_anomaly + I((min_temp - 11.12) / 4.47) + s(ae_zone, bs = 're')",
@@ -1227,32 +1227,32 @@ tar_plan(
     obs_zone           = "ae_zone_adj"
   ),
 
-  # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/d_fit_plague_hmm.R's own header documents ~18 formula/
+  # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/e_fit_plague_hmm.R's own header documents ~18 formula/
   # family variants tried against that unresolved miscalibration with no fix): simulates 100 replicate datasets from plague_hmm itself (hmmTMB's own HMM$check(),
   # a purpose-built parametric-bootstrap mechanism) and compares real vs. simulated summary statistics. Supervised model only, matching Pseudo-residuals/
   # Distribution family review's own scope. A real fresh-worker tar_make() run took 8m50s for this target (confirmed live, 2026-09) -- an interactive-session
   # timing test looked like ~9s and was misleadingly fast, an artifact of hmmTMB's own machinery already being warm; too slow for a live report render either
-  # way, hence its own cached target. See r/d_check_plague_hmm_fit.R for the full method (including a real NA-matching pitfall found and fixed before this
+  # way, hence its own cached target. See r/e_check_plague_hmm_fit.R for the full method (including a real NA-matching pitfall found and fixed before this
   # was usable at all).
   plague_hmm_ppc = check_plague_hmm_fit(plague_hmm, nsims = 100),
 
-  # Randomised pseudo-residuals per stream (hmmTMB's own pseudores() is biased for count data) -- see r/d_randomised_pseudores.R.
+  # Randomised pseudo-residuals per stream (hmmTMB's own pseudores() is biased for count data) -- see r/e_randomised_pseudores.R.
   plague_hmm_pseudores = randomised_pseudores(plague_hmm, seed = 1),
 
 
   # 3) Grid prediction ------------------------------------------------------------------------------------------------------------------------------------------
-  # Pr(not-plague -> plague) on the 0.1 degree grid, over the prediction region below, for the covariates' latest shared period -- see r/d_predict_plague_risk.R.
+  # Pr(not-plague -> plague) on the 0.1 degree grid, over the prediction region below, for the covariates' latest shared period -- see r/e_predict_plague_risk.R.
   # Also masks cells that extrapolate a zone-varying covariate beyond that zone's training range -- see predict_plague_risk()'s header.
   # The fitted AE zones (full polygons, for report maps and zone summaries).
   fit_zones_sf = dplyr::filter(aez, ae_zone %in% unique(hmm_data$ae_zone)),
-  # Prediction region: the fitted zones cut to SA2 cropping land plus 25 km around surveyed paddocks -- see r/d_build_prediction_region.R.
+  # Prediction region: the fitted zones cut to SA2 cropping land plus 25 km around surveyed paddocks -- see r/e_build_prediction_region.R.
   prediction_region_sf = build_prediction_region(fit_zones_sf, cropping_regions, dplyr::filter(paddocks_sf_with_soil_type, paddock_id %in% hmm_data$ID)),
 
-  # Soil group on the covariate grid, for the exit transition's soil-group terms -- see r/d_build_soil_group_raster.R.
+  # Soil group on the covariate grid, for the exit transition's soil-group terms -- see r/e_build_soil_group_raster.R.
   tar_file(soil_type_raster_file, "raw_data/predictor_variables/soil_type/ASC_EV_C_P_AU_TRN_N.cog.tif"),
   tar_terra_rast(soil_group_raster, build_soil_group_raster(soil_type_raster_file, rain_whiplash_trough_to_peak), gdal = covariate_gdal_options),
 
-  # Each transition covariate's raster, named by its hmm_data column -- extend these lists when the transition formulas gain a covariate (see r/d_build_risk_grid_newdata.R).
+  # Each transition covariate's raster, named by its hmm_data column -- extend these lists when the transition formulas gain a covariate (see r/e_build_risk_grid_newdata.R).
 
   # Both the semi-supervised (anchored) and unsupervised models get their own risk/uncertainty maps -- a standing comparison, not a one-off, via tar_map() over model variant.
   # Same "same computation, several variants" pattern as gpp_rolling_attach_map/rain_rolling_attach_map above -- a third model variant later is one more tibble row, not a hand-copied target pair.
@@ -1275,7 +1275,7 @@ tar_plan(
       ),
       prediction_region_sf
     )),
-    # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/d_predict_plague_risk.R's header for why this is a separate cached target rather than computed live in the report.
+    # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/e_predict_plague_risk.R's header for why this is a separate cached target rather than computed live in the report.
     tar_terra_rast(plague_risk_map_uncertainty, predict_plague_risk(model_sym,
       list(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
@@ -1297,7 +1297,7 @@ tar_plan(
     # already full monthly grain, never season-end-trimmed to begin with (see rain_whiplash_source_raster's own comment above). Real, complete-month data
     # only, no extrapolation -- kept as a separate target rather than changing plague_risk_map itself, so the primary map's own definition never silently
     # shifts. Point estimate only, no uncertainty variant yet (2026-09) -- deliberately deferred, not an oversight, see the TO-DO note at the top of this
-    # file. See r/d_predict_plague_risk.R's header.
+    # file. See r/e_predict_plague_risk.R's header.
     tar_terra_rast(plague_risk_map_nowcast, predict_plague_risk(model_sym,
       list(
         rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
@@ -1319,7 +1319,7 @@ tar_plan(
   tar_file(mutze_plague_maps_file, "raw_data/plague_occurrence/mutze_1989_sa_plagues/mutze_1989_sa_plagues.gpkg"),
   mutze_plague_maps = sf::read_sf(mutze_plague_maps_file),
 
-  # Grid hindcast of onset risk and propagated occupancy from Summer 1983, scored against yearly_plague_occurrence by state-year -- see r/d_hindcast_plague_occurrence.R.
+  # Grid hindcast of onset risk and propagated occupancy from Summer 1983, scored against yearly_plague_occurrence by state-year -- see r/e_hindcast_plague_occurrence.R.
   tarchetypes::tar_map(
     values = tibble::tibble(
       model_variant = c("supervised", "unsupervised"),
@@ -1339,7 +1339,7 @@ tar_plan(
       ),
       prediction_region_sf
     )),
-    # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/d_score_plague_hindcast.R.
+    # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/e_score_plague_hindcast.R.
     tar_target(plague_hindcast_scores, score_plague_hindcast(plague_hindcast, aus_shp, yearly_plague_occurrence))
   ),
 

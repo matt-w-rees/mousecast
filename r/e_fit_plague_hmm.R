@@ -22,7 +22,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # Build and fit the two-state (not-plague / plague) hidden Markov model
 # (hmmTMB) described in CLAUDE.md's "Section D" plan: per-paddock time
 # series (hmmTMB's own ID mechanism), semi-supervised via the "state" column
-# build_hmm_data() (r/d_build_hmm_data.R) produces, covariate-driven
+# build_hmm_data() (r/e_build_hmm_data.R) produces, covariate-driven
 # transition probabilities, conditionally-independent observation streams.
 #
 # This same function is meant to serve both first and second pass (CLAUDE.md)
@@ -46,7 +46,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # the trap_count/burrow_count/chewcard_count family review above. Investigating whether
 # rain_whiplash_trough_to_peak also varies spatially (same idea as soil_moisture x zone) surfaced
 # that ae_zone's own "Qld Central" has zero plague anchors AND zero real observations of any kind
-# since 2008 (confirmed live, r/d_build_hmm_data.R's exclude_zones header) -- and testing a
+# since 2008 (confirmed live, r/e_build_hmm_data.R's exclude_zones header) -- and testing a
 # soil_moisture x ae_zone FIXED interaction (not yet the random effect) with Qld Central still
 # included reproduced exactly the "formal convergence, one degenerate coefficient" failure mode
 # above: Qld Central's own interaction term alone blew up to -17.76 while every other zone's stayed
@@ -67,7 +67,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # the slope version's worse AIC and lack of an independent diagnosis over the fixed interaction +
 # intercept-only combination didn't justify the added complexity (still worth revisiting once more
 # anchor data accumulates). This is now the model plague_risk_map predicts from
-# (r/d_predict_plague_risk.R, which needed a genuine per-cell ae_zone value added to its own
+# (r/e_predict_plague_risk.R, which needed a genuine per-cell ae_zone value added to its own
 # newdata construction as a result -- see that file's own header) and quarto_reports/
 # plague_model_summary.qmd's primary model throughout. plague_hmm_first_pass/plague_hmm_unsupervised
 # remain in the pipeline as the fixed-effect-only comparison baseline, not as the recommended fit.
@@ -137,7 +137,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #
 # min_temp (SILO minimum temperature, season mean, r/b_build_seasonal_raster.R) ADDED (2026-08) as
 # plague_hmm_fourth_pass -- re-enabled in Section B (_targets.R) after the OneDrive dataless-file
-# blocker that had it temporarily commented out (see r/d_build_hmm_data.R's covariates argument)
+# blocker that had it temporarily commented out (see r/e_build_hmm_data.R's covariates argument)
 # was resolved; hmm_data_first_pass$min_temp confirmed live 100% non-NA (33,135/33,135 rows, range
 # 0.6-23.4C) once re-enabled, no new coverage gap to work around. Added as a simple pooled fixed
 # effect on top of plague_hmm_third_pass's own formula (no zone interaction tried for it, matching
@@ -161,14 +161,14 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # mean (build_seasonal_raster()), attached via period_col = "season_year_adj" in paddock_season_covs
 # (_targets.R) -- its own source raster (min_temp_seasonal_raster) uses season-grain layer names
 # ("Winter-2025"), incompatible with the "<month>_<year>" naming every other prediction raster here
-# depends on for r/d_predict_plague_risk.R's own shared-period intersection logic. Used
+# depends on for r/e_predict_plague_risk.R's own shared-period intersection logic. Used
 # min_temp_raster_coarse instead (full monthly grain, same "<month>_<year>" naming as
 # rain_whiplash_trough_to_peak) -- a real but minor definitional mismatch (one raw month's own mean
 # minimum temperature standing in for that season's own 3-month mean) accepted rather than solved
 # properly (e.g. a genuine min_temp rolling-3-month-then-season-end-trimmed raster, mirroring
 # gpp_rolling6's own construction) because minimum temperature changes smoothly across a season
 # (unlike rainfall or GPP's own sharper swings), so one month's value is a reasonable stand-in, not
-# a materially different quantity. See r/d_predict_plague_risk.R's own header for the full detail.
+# a materially different quantity. See r/e_predict_plague_risk.R's own header for the full detail.
 #
 # burrow_count's search-effort offset (added 2026-08): burrow_transects_surveyed varies genuinely
 # (2, 4 transects most commonly, but 1/3/5/6/8 also occur -- confirmed live, up to an 8x range),
@@ -181,7 +181,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # genuine package limitation, not a misuse -- confirmed by fitting a burrow_count.mean ~ season +
 # offset(log(burrow_metres_searched)) model, which converged "successfully" but gave byte-identical
 # coefficients to the no-offset version, and identical fitted means at 100m vs 400m searched).
-# The working mechanism instead: add log_burrow_metres_searched (r/d_build_hmm_data.R) as a genuine
+# The working mechanism instead: add log_burrow_metres_searched (r/e_build_hmm_data.R) as a genuine
 # covariate term, seed its coefficient to exactly 1 via Observation$update_coeff_fe(), then fix it
 # there (not estimated) via Observation$new(fixpar = ...) -- confirmed live this reproduces true
 # offset behaviour (fitted mean scales exactly 4x between 100m and 400m searched, matching the
@@ -189,7 +189,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # from the no-offset version (this is a detection-effort correction, not a new plague-risk signal).
 #
 # trap_count's own search-effort offset (added 2026-08, same mechanism, same day as a broader
-# family review below): number_functional_traps_session (log_trap_effort, r/d_build_hmm_data.R) is
+# family review below): number_functional_traps_session (log_trap_effort, r/e_build_hmm_data.R) is
 # already genuine trap-nights, so no unit conversion is needed the way burrow's transect count
 # needed x100. The confound is considerably larger than burrow's own: trap-nights ranges 4-827
 # (~200x, vs burrow's ~8x, confirmed live), correlates 0.60 with raw trap_count, and the pre-offset
@@ -241,7 +241,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # dnbinom's own size/prob) plus chewcard_count (binom, added 2026-08).
 # hmmTMB's binomial "size" (trials) parameter is fixed, not covariate-varying
 # (confirmed live against the installed package: dist_binom$fixed() returns
-# size = TRUE) -- r/d_build_hmm_data.R already standardises every row onto a
+# size = TRUE) -- r/e_build_hmm_data.R already standardises every row onto a
 # common trials = 10 (first 10 cards only, rows with < 7 actually deployed
 # excluded) specifically so this works as one stream, not several
 # fixed-size sub-streams. size = c(10, 10) needs a per-state vector, not a
@@ -462,7 +462,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # ADOPTED (2026-08): burrow_count's mean formula below is now ~season + log_burrow_metres_searched +
 # ae_zone + season:summer_zone_ne + gpp_finescale -- the best-AIC combination found (17549.3), applied
 # live (converges cleanly, transition-side coefficients confirmed materially unchanged from before this
-# change -- see r/d_build_hmm_data.R for summer_zone_ne's own construction). Every other candidate
+# change -- see r/e_build_hmm_data.R for summer_zone_ne's own construction). Every other candidate
 # above (grdc_subregion, soil_type, any RE or smooth variant, the full ae_zone:season interaction) was
 # tested and rejected on its own merits, not left out for lack of trying. Applies to every pass (this
 # function is shared by all of them), so plague_hmm_first_pass through fourth_pass all refit with this
@@ -535,7 +535,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # Western Australia), and -- decisively -- every remaining row falls in Winter-2026, for which
 # rain_whiplash_trough_to_peak/gpp_rolling6/soil_moisture/min_temp are ALL still NA (confirmed live)
 # because the covariate rasters simply haven't caught up to the current season yet (the
-# "covariates" argument's own documented trailing-edge trim, see r/d_build_hmm_data.R's header) --
+# "covariates" argument's own documented trailing-edge trim, see r/e_build_hmm_data.R's header) --
 # not a bait_history-specific gap, this would zero out ANY brand-new field the same way. trap_count
 # has 5 real "yes" rows (thin, not zero), and shows exactly the red flag this project has learned to
 # distrust even under a clean convergence code: bait_history_trapsyes is +2.77 in state 1 but -0.73
@@ -698,7 +698,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # Implemented both variants live before choosing (2026-08, both on top of the adopted fourth-pass
 # transition formula and the tied-across-states/free-across-states observation spec above):
 #   - Block-stream count version: chewcard_count (cards 1-10) + three new streams, chewcard_block2/
-#     3/4 (cards 11-20/21-30/31-40, r/a_data_rapid_session_summary.R/r/d_build_hmm_data.R), each its
+#     3/4 (cards 11-20/21-30/31-40, r/a_data_rapid_session_summary.R/r/e_build_hmm_data.R), each its
 #     own binom(10). Every coefficient (intercept, season, ae_zone) tied across all four blocks --
 #     they represent the SAME underlying detection-rate model, just evaluated over however many
 #     transects a paddock-season actually deployed, not four independent ones -- with season also
@@ -805,7 +805,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # "SA Vic Mallee"'s own fixed-interaction coefficient (2.344, by far the steepest of any zone under
 # Model I) was the direct cause of the over-confident far-west-SA-coast risk cluster documented in
 # quarto_reports/plague_model_summary.qmd's own "Known limitations" (estimated with zero supporting
-# evidence at the covariate range actually driving those predictions) -- r/d_predict_plague_risk.R's
+# evidence at the covariate range actually driving those predictions) -- r/e_predict_plague_risk.R's
 # own mask_zone_extrapolation guard only ever papered over the SYMPTOM (masking the resulting cells),
 # not this cause. Under the hierarchical spec, SA Vic Mallee's own slope shrinks to the pooled
 # estimate (0.487) plus its own now-modest deviation (0.288) = ~0.775 -- a real fix, not just a
@@ -815,14 +815,14 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # ADOPTED for every zone, not scoped to WA alone (confirmed with the project owner) -- this
 # supersedes the fixed rain_whiplash_trough_to_peak:ae_zone interaction as the transition formula's
 # own zone term everywhere it's used (_targets.R's plague_hmm/plague_hmm_unsupervised), not just for
-# the 4 new WA zones. r/d_predict_plague_risk.R's own zone-extrapolation-guard term-detection logic
+# the 4 new WA zones. r/e_predict_plague_risk.R's own zone-extrapolation-guard term-detection logic
 # needed updating to match this new term's own label (see that file's header).
 #
 # OBSERVATION-MODEL REWORK FROM THE SECTION D EXPLORATION REPORTS (2026-09, ADOPTED Stages 1-2) -- each
 # change fitted as its own variant against the rebuilt model (corrected historic QLD/ODK trap data)
 # and checked for convergence, coefficient range, pseudo-residuals and decoded-state agreement:
 #   Stage 1, ADOPTED: trap_count is total captures (trap success) rather than unique individuals --
-#     see r/d_build_hmm_data.R's header for why. Converges cleanly; trap pseudo-residuals improve
+#     see r/e_build_hmm_data.R's header for why. Converges cleanly; trap pseudo-residuals improve
 #     slightly (mean/SD 0.39/0.67 vs 0.43/0.68).
 #   Stage 2, ADOPTED: crop group, crop stage and soil type (crop_group_det/crop_stage_det/soil_type_det,
 #     missing crop as "not recorded") added to the burrow and chew-card streams as detection terms
@@ -851,7 +851,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     in other years). Raw soil moisture's strong negative onset effect (-10 per unit) mostly tracked
 #     its seasonal cycle and suppressed onset through the wet build-up to a plague, delaying the
 #     warning by 2-3 seasons (2010-11 hindcast). Variant tests, scored on the pre-2013 grid hindcast
-#     (r/d_hindcast_plague_occurrence.R, r/d_score_plague_hindcast.R), within-state AUC: one-year-ahead
+#     (r/e_hindcast_plague_occurrence.R, r/e_score_plague_hindcast.R), within-state AUC: one-year-ahead
 #     onset 0.75 vs 0.57 for raw soil moisture, same-year 0.65 vs 0.69, AIC -137. Also rejected: dropping
 #     soil moisture (same lead skill, +160 AIC vs the anomaly); season in the transitions, as fixed or
 #     random effects, shared or by cropping region (big in-sample gains but near-degenerate fits and
@@ -896,7 +896,7 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # Fitting note: run variant fits one at a time -- several fitted at once as parallel R processes
 # stopped at a NaN likelihood while still reporting "relative convergence". Separately, hmmTMB's C++ is
 # intermittently non-deterministic for three-parameter chew-card families even in a fresh process, so
-# the pipeline fits through fit_plague_hmm_subprocess() (r/d_fit_plague_hmm_subprocess.R), which
+# the pipeline fits through fit_plague_hmm_subprocess() (r/e_fit_plague_hmm_subprocess.R), which
 # retries invalid fits in a new process.
 #
 # PSEUDO-RESIDUAL "MISCALIBRATION" WAS LARGELY A DIAGNOSTIC ARTEFACT (2026-09): hmmTMB's own
@@ -904,14 +904,14 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # randomisation -- biased for count data, where it shifts residuals up and compresses them even under a
 # correct model (mean 0.47 / SD 0.70 on simulated, correctly specified nbinom2 data). The "mean well
 # above 0, SD well below 1 on every stream" pattern investigated through many formula/family variants
-# above is that bias. Randomised quantile residuals (r/d_randomised_pseudores.R, the plague_hmm_pseudores
+# above is that bias. Randomised quantile residuals (r/e_randomised_pseudores.R, the plague_hmm_pseudores
 # target) show trap_count (0.02 / 0.99) and burrow_count (-0.03 / 1.02) are well calibrated; only the
 # chew-card streams genuinely misfit (SD ~1.5-1.7, too spread out), consistent with the posterior-
 # predictive check and quarto_reports/chewcard_count_exploration.qmd (binomial can't represent chewed
 # cards clustering within a session). Use randomised_pseudores(), not $pseudores(), for any future check.
 #
 # Arguments:
-#   hmm_data           build_hmm_data()'s output (r/d_build_hmm_data.R) --
+#   hmm_data           build_hmm_data()'s output (r/e_build_hmm_data.R) --
 #                       must have ID/state/trap_count/burrow_count/
 #                       chewcard_count/chewcard_block2/chewcard_block3/
 #                       chewcard_block4/season and every covariate named in
@@ -977,7 +977,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
   # for the full investigation): four separate binom(10) streams instead of one, using hmmTMB's own
   # documented pattern for varying replicate counts (confirmed against its crossbill_occupancy.R
   # case study) -- each row contributes to whichever blocks it actually deployed enough cards for
-  # (NA elsewhere, r/d_build_hmm_data.R), so a paddock-season's full card count is used instead of
+  # (NA elsewhere, r/e_build_hmm_data.R), so a paddock-season's full card count is used instead of
   # truncating everyone to the first transect's own 10 cards.
   # Each stream's formula, plus any optional detection_terms for it.
   chewcard_prob <- append_formula_terms(~season, c(obs_zone, detection_terms$chewcard))

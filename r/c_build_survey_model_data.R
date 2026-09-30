@@ -29,7 +29,7 @@
 # paddock x season x visit. (A crop_stage-based det_cov column -- a coarse "dense_cover" vs
 # "low_cover" burrow-detection split -- was computed here for rapid rows until 2026-08, but was
 # never actually consumed anywhere downstream once the richer ae_zone + season:summer_zone_ne +
-# gpp_finescale detection formula was adopted for burrow_count -- see r/d_fit_plague_hmm.R's header.
+# gpp_finescale detection formula was adopted for burrow_count -- see r/e_fit_plague_hmm.R's header.
 # Removed as dead code rather than left computing something nothing reads.)
 
 build_survey_model_data <- function(survey_visit_grid, paddock_season_covs_lagged,

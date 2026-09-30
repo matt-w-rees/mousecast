@@ -1,5 +1,5 @@
 # Adjusted agro-ecological zones: GRDC AE zones with few surveys merged, for the plague HMM's burrow and
-# chew-card zone effects (r/d_fit_plague_hmm.R), where several zone x state effects had too little data
+# chew-card zone effects (r/e_fit_plague_hmm.R), where several zone x state effects had too little data
 # with the original 11 zones.
 #
 #   NSW NE Qld SE + NSW NW Qld SW -> merged, then split at the NSW/Qld border: "NSW N" and "QLD S"
@@ -8,7 +8,7 @@
 #   SA Midnorth-Lower Yorke Eyre, SA Vic Bordertown-Wimmera, SA Vic Mallee, Qld Central -> unchanged
 #
 # ae_zone_adj_of() is the rule itself, applied both to the polygons here (adjust_aez()) and to each
-# paddock in the model data (build_hmm_data(), r/d_build_hmm_data.R), so the two always agree. The
+# paddock in the model data (build_hmm_data(), r/e_build_hmm_data.R), so the two always agree. The
 # north/south split follows the earlier version of this function (kept in r_not_in_use/a_adjust_aez.R).
 #
 # Arguments:

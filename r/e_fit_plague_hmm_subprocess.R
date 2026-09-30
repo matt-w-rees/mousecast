@@ -1,4 +1,4 @@
-# Fits the plague HMM (fit_plague_hmm(), r/d_fit_plague_hmm.R) in a fresh R subprocess, checks the fit
+# Fits the plague HMM (fit_plague_hmm(), r/e_fit_plague_hmm.R) in a fresh R subprocess, checks the fit
 # is valid, and retries in another fresh subprocess if it isn't.
 #
 # Why a subprocess: hmmTMB's C++ likelihood is intermittently non-deterministic with byte-identical

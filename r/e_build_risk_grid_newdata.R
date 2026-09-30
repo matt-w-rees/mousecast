@@ -4,7 +4,7 @@
 # are the names covariate_rasters must supply.
 #
 # Arguments:
-#   plague_hmm  a fitted HMM object (r/d_fit_plague_hmm.R)
+#   plague_hmm  a fitted HMM object (r/e_fit_plague_hmm.R)
 #
 # Returns a character vector of covariate names.
 transition_covariates <- function(plague_hmm) {
@@ -19,7 +19,7 @@ transition_covariates <- function(plague_hmm) {
 # placeholder values for every observation-formula covariate, and the zone-
 # extrapolation guard. Shared by predict_plague_risk() and hindcast_plague_occurrence() so the
 # published risk maps and the historic hindcast use exactly the same construction -- see
-# r/d_predict_plague_risk.R's header for the rationale behind each step.
+# r/e_predict_plague_risk.R's header for the rationale behind each step.
 #
 # The transition covariates are whatever the fitted formulas use (transition_covariates() above),
 # so any formula can be mapped without changing this function: covariate_rasters supplies one
@@ -27,7 +27,7 @@ transition_covariates <- function(plague_hmm) {
 # single-layer raster is a static covariate (the same value every period).
 #
 # Arguments:
-#   plague_hmm               a fitted HMM object (r/d_fit_plague_hmm.R)
+#   plague_hmm               a fitted HMM object (r/e_fit_plague_hmm.R)
 #   covariate_rasters        named list of SpatRasters, one per transition covariate (names = the
 #                            hmm_data columns, e.g. list(rain_whiplash_trough_to_peak = ...,
 #                            gpp_rolling6 = ...)); multi-layer rasters have "<month>_<year>" layer
@@ -115,7 +115,7 @@ build_risk_grid_newdata <- function(plague_hmm, covariate_rasters, fit_zones_sf,
   # hand-parsed formula string): a fixed "<covariate>:ae_zone" interaction (the earlier, since-
   # superseded "Model I" spec -- kept here so this still works if some future model variant reverts
   # to it) and the now-adopted hierarchical "s(ae_zone, by = <covariate>, bs = \"re\")" random-slope
-  # term (2026-09, Pedersen et al. 2019 PeerJ 7:e6876's "Model GS" -- see r/d_fit_plague_hmm.R's
+  # term (2026-09, Pedersen et al. 2019 PeerJ 7:e6876's "Model GS" -- see r/e_fit_plague_hmm.R's
   # header for why partial pooling replaced the fixed interaction). Both forms are detected and
   # their own covariate name extracted, so this generalises to whichever covariate(s) the fitted
   # model's own transition formula actually gives a zone-varying slope, not just today's single case.

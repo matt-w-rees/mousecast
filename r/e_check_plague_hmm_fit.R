@@ -3,7 +3,7 @@
 # and opportunities in ecology", Methods in Ecology and Evolution, recommends exactly this as the
 # fix for sensitive/hard-to-diagnose fits: validate via posterior predictive checks comparing
 # simulated vs. observed summary statistics, rather than relying on per-row residual diagnostics
-# alone). r/d_fit_plague_hmm.R's own header documents ~18 formula/family variants tried against
+# alone). r/e_fit_plague_hmm.R's own header documents ~18 formula/family variants tried against
 # the pseudo-residual miscalibration (all streams' mean/SD systematically off target) with no
 # resolution -- every one of those was still a per-row diagnostic on the SAME fitted model. This is
 # a genuinely different lens: does the fitted model, when actually SIMULATED forward many times,
@@ -52,7 +52,7 @@
 # tar_make() run of this target, in its own fresh crew worker process with nothing pre-loaded,
 # took 8m50s end to end (confirmed live, 2026-09) -- corrected here rather than leaving the faster,
 # unrepresentative number on record. Genuinely too slow for a live report render (same reasoning as
-# plague_risk_map_uncertainty, r/d_predict_plague_risk.R's own header), so this stays its own
+# plague_risk_map_uncertainty, r/e_predict_plague_risk.R's own header), so this stays its own
 # cached _targets.R target (plague_hmm_ppc) -- the ORIGINAL reason for caching it, restored once
 # the real cost was actually measured in the environment that matters (a fresh tar_make() worker,
 # not a warm interactive session). seed fixed for the same reason predict_plague_risk()'s own
@@ -60,7 +60,7 @@
 # the target would never stabilise across pipeline re-runs.
 #
 # Arguments:
-#   plague_hmm  a fitted HMM object (r/d_fit_plague_hmm.R)
+#   plague_hmm  a fitted HMM object (r/e_fit_plague_hmm.R)
 #   nsims       number of replicate datasets to simulate (default 100)
 #   seed        RNG seed set immediately before simulation
 #

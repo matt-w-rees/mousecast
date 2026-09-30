@@ -1,6 +1,6 @@
 # Hindcasts the fitted plague HMM's transition model over every season from start_period onwards on
 # the 0.1 degree covariate grid, for comparison against independently recorded plague years
-# (yearly_plague_occurrence.csv -- scored by score_plague_hindcast(), r/d_score_plague_hindcast.R).
+# (yearly_plague_occurrence.csv -- scored by score_plague_hindcast(), r/e_score_plague_hindcast.R).
 #
 # Why: pre-2013 paddock-seasons carry no plague anchors (the hand-digitised maps start in Summer
 # 2013) and almost no survey data (a few dozen trap sessions a year before 2009, none in 2010-2011),
@@ -12,7 +12,7 @@
 #
 # Two quantities per cell and season:
 #   onset      Pr(not-plague -> plague) given this season's covariates -- the published risk map's
-#              quantity (predict_plague_risk(), r/d_predict_plague_risk.R).
+#              quantity (predict_plague_risk(), r/e_predict_plague_risk.R).
 #   occupancy  Pr(plague) this season, propagated forward from season to season through each
 #              season's transition matrix -- what the HMM itself infers for a paddock with no survey
 #              data. occupancy[t + 1] = occupancy[t] * persist[t] + (1 - occupancy[t]) * onset[t],
@@ -30,7 +30,7 @@
 #
 # Arguments:
 #   plague_hmm, covariate_rasters, fit_zones_sf
-#                            as build_risk_grid_newdata() (r/d_build_risk_grid_newdata.R)
+#                            as build_risk_grid_newdata() (r/e_build_risk_grid_newdata.R)
 #   start_period             first "<month>_<year>" period to hindcast (default "2_1983", Summer 1983);
 #                            the hindcast starts later if a covariate's record does
 #   mask_zone_extrapolation  passed to build_risk_grid_newdata() (default FALSE, see above)

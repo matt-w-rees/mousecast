@@ -38,8 +38,8 @@ r_path     <- file.path(root_path, "r")
 
 ## season_info() labels the forecast season; hindcast_auc() scores the Mutze spot check.
 source(file.path(r_path, "a_season_info.R"))
-source(file.path(r_path, "d_score_plague_hindcast.R"))
-source(file.path(r_path, "d_build_risk_grid_newdata.R"))
+source(file.path(r_path, "e_score_plague_hindcast.R"))
+source(file.path(r_path, "e_build_risk_grid_newdata.R"))
 
 tar_load(
   c(
@@ -433,7 +433,7 @@ tibble::tribble(
 - **Tied** terms have one shared value in both states: they describe how easily mice are detected (season, crop, soil, search conditions), which should not depend on whether a paddock is in plague. The state intercepts and the adjusted-zone effects differ between states, carrying the difference in mouse numbers.
 - **Families.** Trap and burrow counts use the negative binomial; chew cards use the beta-binomial, which lets the chew rate vary between sessions so cards within a session tend to be chewed together. The beta-binomial is not in CRAN hmmTMB; it comes from the patched build pinned in `renv.lock`.
 - **Effort.** Search effort (trap-nights, metres searched) enters as an offset, so means are per unit of effort.
-- Full specification, and the alternatives tested: `r/d_fit_plague_hmm.R`.
+- Full specification, and the alternatives tested: `r/e_fit_plague_hmm.R`.
 
 ### Transition hypotheses
 
@@ -760,7 +760,7 @@ pr_summary |>
   gt::tab_header(title = "Randomised quantile pseudo-residuals, supervised model")
 ```
 
-Randomised quantile residuals (`r/d_randomised_pseudores.R`) compare each observation with the model's one-season-ahead forecast of it; for a well-specified model they are standard normal (mean 0, SD 1, about 5% beyond ±2). hmmTMB's built-in version is biased for count data, so it is not used.
+Randomised quantile residuals (`r/e_randomised_pseudores.R`) compare each observation with the model's one-season-ahead forecast of it; for a well-specified model they are standard normal (mean 0, SD 1, about 5% beyond ±2). hmmTMB's built-in version is biased for count data, so it is not used.
 
 ### Simulated data
 
@@ -807,7 +807,7 @@ anchored_n         <- get_hindcast("Supervised", "onset", "anchored era", "n")
 anchored_n_flagged <- get_hindcast("Supervised", "onset", "anchored era", "n_flagged")
 ```
 
-Before 2013 there are no anchors and almost no surveys, so plague years recorded by state in `yearly_plague_occurrence.csv` are labels the model never saw. The hindcast (`r/d_hindcast_plague_occurrence.R`) runs the transition model over every grain-zone grid cell from `r hindcast_first$season` `r hindcast_first$year_adj`, giving each cell's **onset** risk, Pr(not-plague → plague), and **occupancy**, Pr(plague), carried forward season to season through the transitions. Each state's cells are averaged, and the highest season in each year is scored against that state-year's record (`r/d_score_plague_hindcast.R`).
+Before 2013 there are no anchors and almost no surveys, so plague years recorded by state in `yearly_plague_occurrence.csv` are labels the model never saw. The hindcast (`r/e_hindcast_plague_occurrence.R`) runs the transition model over every grain-zone grid cell from `r hindcast_first$season` `r hindcast_first$year_adj`, giving each cell's **onset** risk, Pr(not-plague → plague), and **occupancy**, Pr(plague), carried forward season to season through the transitions. Each state's cells are averaged, and the highest season in each year is scored against that state-year's record (`r/e_score_plague_hindcast.R`).
 
 ```{r}
 #| label: tbl-hindcast-scores
@@ -969,7 +969,7 @@ The anchors align the second state with mapped plague, which the paddock-level o
 
 ## Current forecast
 
-**The maps below forecast `r forecast$target_season` `r forecast$target_year`**, from `r forecast$covariate_season` `r forecast$covariate_year` covariates (layer `r forecast$period`). Maps cover the prediction region: the fitted AE zones cut to SA2 cropping land plus 25 km around every surveyed paddock, so non-cropping parts of the zones (rangeland, forest, towns) aren't extrapolated to (`r/d_build_prediction_region.R`). The forecast reaches one season ahead only: every covariate is built from observed data, and each season's covariates set the transition into the following season.
+**The maps below forecast `r forecast$target_season` `r forecast$target_year`**, from `r forecast$covariate_season` `r forecast$covariate_year` covariates (layer `r forecast$period`). Maps cover the prediction region: the fitted AE zones cut to SA2 cropping land plus 25 km around every surveyed paddock, so non-cropping parts of the zones (rangeland, forest, towns) aren't extrapolated to (`r/e_build_prediction_region.R`). The forecast reaches one season ahead only: every covariate is built from observed data, and each season's covariates set the transition into the following season.
 
 ```{r}
 #| label: fig-risk-map

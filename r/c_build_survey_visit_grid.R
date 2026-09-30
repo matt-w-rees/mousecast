@@ -116,7 +116,7 @@ build_survey_visit_grid <- function(data, survey_type = c("traps", "rapid"), fir
   # Stack real visits and placeholders back together, keep only the columns
   # a model needs, and sort into a stable, predictable row order. bait_history
   # kept alongside crop_group/crop_stage (2026-08) -- a real per-visit field
-  # (100% recorded, "no"/"unsure"/"yes", see r/d_fit_plague_hmm.R's header),
+  # (100% recorded, "no"/"unsure"/"yes", see r/e_fit_plague_hmm.R's header),
   # not previously carried past this function at all.
   dplyr::bind_rows(real_visits, placeholders) |>
     dplyr::select(paddock_id, longitude, latitude, year_adj, season, season_year_adj,
