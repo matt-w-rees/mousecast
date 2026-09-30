@@ -1156,7 +1156,7 @@ tar_plan(
 
   # Semi-supervised HMM state anchor -- paddock-scale point-in-polygon match against recent_plague_maps, see r/c_anchor_plague_state.R.
   # Every paddock-season from census_start to the latest mapped season is non-plague unless inside a polygon mapped that season.
-  plague_state_anchors = anchor_plague_state(survey_state_wide, recent_plague_maps, census_start = "Summer 2013"),
+  plague_state_anchors = anchor_plague_state(survey_state_wide, recent_plague_maps, census_start = "Summer 2013", map_season_scope = "region"),
 
 
   # D) OBSERVATION-STREAM EXPLORATORY ANALYSIS -------------------------------------------------------------------------------------------------------------------

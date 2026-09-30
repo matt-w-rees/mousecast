@@ -16,6 +16,9 @@
 #                       un-anchoring" below
 #   map_season_absence TRUE (default): not-plague anchors only in seasons with no plague mapped
 #                       anywhere, see decision (4) below
+#   map_season_scope   "national" (default): a plague mapped anywhere releases every paddock's
+#                       not-plague anchor that season; "region": only paddocks in the same region
+#                       as the mapped plague -- WA or the eastern states (west/east of 129 E)
 #
 # Rule, decided directly with the project owner (2026-09) rather than re-derived from first
 # principles (unlike the (a)+(b) rule's own iterative history) -- see chat for the 3 explicit calls
@@ -52,6 +55,12 @@
 #      state take over (88%), and keeping them only where surveyed wasn't enough either (47%) --
 #      absence anchors on unsurveyed paddocks are what hold "plague" to its mapped meaning.
 #      map_season_absence = FALSE restores decision (3) alone.
+#   5) REGIONAL SCOPE (2026-09-30, decided with the project owner): with map_season_scope = "region"
+#      (as _targets.R uses), decision (4) applies within each region separately -- WA or the eastern
+#      states, split at 129 E -- so a plague mapped only in WA keeps the eastern states' not-plague
+#      anchors that season, and vice versa, since the two cropping systems are separate. Against the
+#      national scope: pre-2013 hindcast one-season-ahead onset 0.73 vs 0.72, same-season onset 0.61
+#      vs 0.69, occupancy 0.67 vs 0.68 (all within the year-resampled intervals); chosen on principle.
 #
 # No multi-season FORWARD persistence/propagation (unlike the old rule's propagate_seasons): the
 # old rule's propagation was anchored to a real, documented signal (yearly_plague_occurrence.csv's
@@ -87,7 +96,10 @@
 # to change.
 
 anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_start = "Summer 2013",
-                                lookback_seasons = 2, map_season_absence = TRUE) {
+                                lookback_seasons = 2, map_season_absence = TRUE,
+                                map_season_scope = c("national", "region")) {
+
+  map_season_scope <- match.arg(map_season_scope)
 
   # Summer/Autumn/Winter/Spring as one steadily-increasing integer ("quarter"), so "N seasons
   # before" is just subtraction -- Summer's own rank (0) means a Summer 2018 quarter number is
@@ -131,9 +143,13 @@ anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_st
   anchored <- tibble::tibble(.row_id = candidate_points$.row_id, plague_state = ifelse(is_inside, 2L, 1L))
 
   # Decision (4): in a season with a plague mapped anywhere, not-plague anchors are left unanchored.
+  # With map_season_scope = "region", a season is "mapped" only within the region (WA or the
+  # eastern states, split at 129 E) its plague polygons are in.
   if (map_season_absence) {
-    mapped_seasons <- unique(paste(poly_season, poly_year))
-    in_mapped_season <- paste(candidate_points$season, candidate_points$year_adj) %in% mapped_seasons
+    poly_region  <- if (map_season_scope == "region") ifelse(sf::st_coordinates(suppressWarnings(sf::st_centroid(sf::st_geometry(recent_plague_maps))))[, 1] < 129, "west", "east") else "all"
+    point_region <- if (map_season_scope == "region") ifelse(candidate_points$longitude < 129, "west", "east") else "all"
+    mapped_seasons <- unique(paste(poly_season, poly_year, poly_region))
+    in_mapped_season <- paste(candidate_points$season, candidate_points$year_adj, point_region) %in% mapped_seasons
     anchored$plague_state[in_mapped_season & anchored$plague_state == 1L] <- NA_integer_
   }
 
