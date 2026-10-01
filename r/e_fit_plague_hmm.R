@@ -888,6 +888,15 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     Levels are centred and scaled in the formula (the uncentred levels confounded the intercepts);
 #     the supervised fit is unchanged by this. The unsupervised fit omits the exit soil-group terms,
 #     which it can't identify without anchors (false convergence at every start with them).
+#   Plague maps as a soft observation stream (map_stream), TESTED and NOT ADOPTED (2026-09-30): the
+#     maps as a binomial(1) stream in seasons with a plague mapped in the region, hard not-plague
+#     anchors kept only in seasons with none. With no hard plague anchors the survey data overrule
+#     the maps: estimated Pr(mapped | not plague) = 0.24, the plague state shrinks to ~4% of
+#     paddock-seasons and the pre-2013 one-season-ahead hindcast falls from 0.72 to 0.57-0.58 --
+#     whether the map is used only at unsurveyed paddock-seasons or at all of them, and whether its
+#     false-positive rate is estimated or fixed at 0.05/0.10. Keeping the hard plague anchors makes the
+#     map stream degenerate (estimated as perfect, 0/1), i.e. back to full anchoring. The hard
+#     regional anchoring stays; map_stream/map_false_positive remain available (default off).
 #   Burrow soil-moisture detection, ADOPTED (2026-09-30), from the Section D burrow report (pooled
 #     soil-moisture level shrunk out, soil-group-specific curves kept): soil_moisture_anomaly +
 #     soil_moisture:soil_group on burrow_count's mean, tied across states. AIC -7.2 (the anomaly
@@ -958,11 +967,18 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #                       starting values (default 0: none). fit_plague_hmm_subprocess() uses it on
 #                       retries, so a failed attempt isn't repeated from the exact same starting
 #                       point -- with init given, every retry otherwise starts identically.
+#   map_stream          TRUE: also fit hmm_data's plague_map column (1 inside a mapped plague
+#                       extent, 0 outside, NA where not used) as a binomial(1) stream with a
+#                       probability per state -- the plague maps as noisy evidence (default FALSE)
+#   map_false_positive  with map_stream: Pr(inside a mapped extent | not plague) fixed at this value
+#                       rather than estimated (default NULL: estimated) -- a prior belief that the
+#                       maps are mostly right, since estimated freely the survey data overrule them
 #
 # Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed).
 
 fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(), shape_terms = list(), chewcard_dist = "betabinom",
-                           init = NULL, obs_zone = "ae_zone", obs_zone_tied = FALSE, start_jitter = 0) {
+                           init = NULL, obs_zone = "ae_zone", obs_zone_tied = FALSE, start_jitter = 0, map_stream = FALSE,
+                           map_false_positive = NULL) {
 
   hid <- hmmTMB::MarkovChain$new(
     data          = hmm_data,
@@ -994,10 +1010,17 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     zibinom   = list(size = c(10, 10), prob = c(0.05, 0.4), z = c(0.1, 0.1)),
     betabinom = list(size = c(10, 10), prob = c(0.05, 0.4), sigma = c(0.5, 0.5)),
     list(size = c(10, 10), prob = c(0.05, 0.4)))
+  # Optional plague-map stream (map_stream = TRUE): hmm_data's plague_map column, 1 inside a mapped
+  # plague extent and 0 outside (NA where not used), as a binomial(1) observation whose probability
+  # is estimated in each state -- the maps as noisy evidence rather than fixed states.
+  map_dists    <- if (map_stream) list(plague_map = "binom") else list()
+  map_formulas <- if (map_stream) list(plague_map = list(prob = ~1)) else list()
+  map_par      <- if (map_stream) list(plague_map = list(size = c(1, 1), prob = c(0.05, 0.6))) else list()
   obs <- hmmTMB::Observation$new(
     data     = hmm_data,
-    dists    = list(trap_count = "nbinom2", burrow_count = "nbinom2", chewcard_count = chewcard_dist,
-                     chewcard_block2 = chewcard_dist, chewcard_block3 = chewcard_dist, chewcard_block4 = chewcard_dist),
+    dists    = c(list(trap_count = "nbinom2", burrow_count = "nbinom2", chewcard_count = chewcard_dist,
+                      chewcard_block2 = chewcard_dist, chewcard_block3 = chewcard_dist, chewcard_block4 = chewcard_dist),
+                 map_dists),
     formulas = list(
       trap_count      = list(mean = append_formula_terms(~season + log_trap_effort, detection_terms$trap_count),
                              shape = append_formula_terms(~1, shape_terms$trap_count)),
@@ -1008,7 +1031,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
       chewcard_block2 = list(prob = chewcard_prob),
       chewcard_block3 = list(prob = chewcard_prob),
       chewcard_block4 = list(prob = chewcard_prob)
-    ),
+    ) |> c(map_formulas),
     par      = list(
       trap_count      = list(mean = c(8, 30), shape = c(1, 1)),
       burrow_count    = list(mean = c(0.5, 8), shape = c(1, 1)),
@@ -1016,7 +1039,7 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
       chewcard_block2 = chewcard_par,
       chewcard_block3 = chewcard_par,
       chewcard_block4 = chewcard_par
-    )
+    ) |> c(map_par)
   )
 
   # Every non-effort, non-intercept, non-ae_zone, non-shape term above is tied to ONE shared,
@@ -1156,6 +1179,11 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
                     tie(paste0(chewcard_streams, ".sigma.state2.(Intercept)")))
   }
 
+  # Map stream's false-positive rate fixed (map_false_positive), seeded to its value below.
+  if (map_stream && !is.null(map_false_positive)) {
+    fixpar_obs <- c(fixpar_obs, "plague_map.prob.state1.(Intercept)" = NA)
+  }
+
   obs$update_fixpar(list(obs = fixpar_obs))
 
   # Seed the offset coefficients to exactly 1 -- fixpar above only fixes them at whatever value
@@ -1166,6 +1194,9 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
   coeff_fe["burrow_count.mean.state2.log_burrow_metres_searched", 1] <- 1
   coeff_fe["trap_count.mean.state1.log_trap_effort", 1] <- 1
   coeff_fe["trap_count.mean.state2.log_trap_effort", 1] <- 1
+  if (map_stream && !is.null(map_false_positive)) {
+    coeff_fe["plague_map.prob.state1.(Intercept)", 1] <- stats::qlogis(map_false_positive)
+  }
   obs$update_coeff_fe(coeff_fe[, 1])
 
   # Starting values from a previous fit when init is given (see the init argument above).
