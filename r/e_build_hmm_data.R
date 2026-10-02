@@ -1,3 +1,49 @@
+# Trap-stream regional detection groups: each trap row's GRDC subregion, coded so it adds to the trap
+# mean's season * cropping_system term rather than duplicating it. Subregions stand in for the
+# long-term trapping programmes (trap type, grid design and regional trappability together); each
+# site used a single trap type, so trap type itself can't be separated from site or region.
+#   - Thin subregions (fewer than min_rows trap rows) join the most-surveyed subregion in the same
+#     adjusted AE zone (e.g. North West NSW's 2 rows join Central West NSW).
+#   - Among trap rows, the sorghum cropping system is almost entirely one subregion (South East QLD),
+#     so cropping_system already carries its contrast: the most-surveyed mostly-sorghum subregion is
+#     merged into the reference level, the most-surveyed mostly-winter-cereal subregion. Without this
+#     the two terms are near-duplicates and their coefficients run off to +-17 (tested 2026-10-01).
+#   - Rows with no trap survey take the reference level (their trap stream is missing anyway), so no
+#     level is left without trap data.
+#
+# Arguments:
+#   data      build_hmm_data()'s table, with trap_count, grdc_subregion, ae_zone_adj and cropping_system
+#   min_rows  smallest number of trap rows for a subregion to keep its own level (default 10)
+#
+# Returns a factor, reference level first, then the other levels by number of trap rows.
+trap_subregion_of <- function(data, min_rows = 10) {
+  has_trap <- !is.na(data$trap_count)
+  group <- as.character(data$grdc_subregion)
+
+  # Thin subregions joined to the most-surveyed subregion in their adjusted AE zone.
+  trap_n <- table(group[has_trap])
+  for (g in names(trap_n)[trap_n < min_rows]) {
+    zone <- names(which.max(table(as.character(data$ae_zone_adj[has_trap & group == g]))))
+    candidates <- table(group[has_trap & data$ae_zone_adj == zone & group != g])
+    candidates <- candidates[candidates >= min_rows]
+    if (length(candidates) > 0) group[group == g] <- names(which.max(candidates))
+  }
+
+  # Reference: the most-surveyed mostly-winter-cereal subregion; the most-surveyed mostly-sorghum
+  # subregion is merged into it (its difference is carried by cropping_system).
+  trap_n <- table(group[has_trap])
+  sorghum_share <- tapply(data$cropping_system[has_trap] == "sorghum", group[has_trap], mean)
+  winter_groups <- names(sorghum_share)[sorghum_share < 0.5]
+  sorghum_groups <- names(sorghum_share)[sorghum_share >= 0.5]
+  reference <- winter_groups[which.max(trap_n[winter_groups])]
+  if (length(sorghum_groups) > 0) group[group == sorghum_groups[which.max(trap_n[sorghum_groups])]] <- reference
+
+  # Rows without a trap survey take the reference level.
+  trap_n <- sort(table(group[has_trap]), decreasing = TRUE)
+  group[!has_trap] <- reference
+  factor(group, levels = c(reference, setdiff(names(trap_n), reference)))
+}
+
 # Reshape plague_state_anchors (r/c_anchor_plague_state.R) into hmmTMB's own
 # expected data shape (see the "Data preparation" section of hmmTMB's
 # "Analysing time series data..." vignette, and its "Supervised learning"
@@ -102,6 +148,11 @@
 #                          FIT itself, distinct from predict_plague_risk()'s
 #                          own separate mask (r/e_predict_plague_risk.R),
 #                          which only ever restricts the PREDICTION grid.
+#   scaled                 character vector of covariates to centre and scale
+#                          (r/e_scale_covariates.R): each gets a "<covariate>_scaled"
+#                          column for the model formulas, and the constants
+#                          used are kept as attr(, "covariate_scaling") so
+#                          predictions reuse them. NULL (default) scales nothing.
 #
 # Returns one row per paddock x season_year_adj, sorted by ID then season,
 # with ID/state/trap_count/burrow_count/chewcard_count plus every covariate
@@ -115,8 +166,11 @@
 # (e.g. quarto_reports/plague_model_summary.qmd's own state-grain
 # visualizations, matching state_filter above and plague_state's own
 # anchoring grain, r/c_anchor_plague_state.R) rather than being dropped.
+# Plus trap_subregion (trap_subregion_of() above), and a "<covariate>_scaled"
+# column for each covariate in scaled, with the scaling constants as
+# attr(, "covariate_scaling").
 
-build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates = NULL, exclude_zones = NULL) {
+build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates = NULL, exclude_zones = NULL, scaled = NULL) {
 
   data <- plague_state_anchors
   if (!is.null(state_filter)) {
@@ -129,7 +183,7 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
     data <- dplyr::filter(data, dplyr::if_all(dplyr::all_of(covariates), ~ !is.na(.x)))
   }
 
-  data |>
+  hmm_data <- data |>
     dplyr::rename(
       ID           = paddock_id,
       aus_state    = state,
@@ -248,4 +302,14 @@ build_hmm_data <- function(plague_state_anchors, state_filter = NULL, covariates
       crop_stage_trap_det = factor(dplyr::if_else(is.na(crop_stage_traps), "not recorded", crop_stage_traps))
     ) |>
     dplyr::arrange(ID, season_year_adj)
+
+  # GRDC subregion for the trap stream's regional detection effect (trap_subregion_of() above).
+  hmm_data$trap_subregion <- trap_subregion_of(hmm_data)
+
+  # Centring and scaling constants from this model data (r/e_scale_covariates.R), kept with it so the
+  # fitted model and every later prediction use the same ones.
+  scaling <- covariate_scaling(hmm_data, if (is.null(scaled)) character(0) else scaled)
+  hmm_data <- scale_covariates(hmm_data, scaling)
+  attr(hmm_data, "covariate_scaling") <- scaling
+  hmm_data
 }

@@ -1188,45 +1188,138 @@ tar_plan(
 
   # 1) Build model data ---------------------------------------------------------------------------------------------------------------------------------------
 
-  # Reshapes to hmmTMB's ID/state format.
+  # Reshapes to hmmTMB's ID/state format, dropping rows missing a transition covariate.
+  # Level covariates get centred and scaled "_scaled" copies, with the constants kept for prediction -- see r/e_scale_covariates.R.
   hmm_data = build_hmm_data(plague_state_anchors,
     state_filter   = c("NSW", "VIC", "SA", "QLD", "WA"),
     covariates     = c("rain_whiplash_trough_to_peak", "gpp_anomaly", "gpp_rolling6", "min_temp", "gpp_rolling3_anomaly", "soil_moisture_anomaly", "min_temp_rolling3_anomaly"),
-    exclude_zones  = "Qld Central"
+    exclude_zones  = "Qld Central",
+    scaled         = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "min_temp", "gpp_finescale", "soil_moisture")
   ),
 
-  # 2) Fit the plague HMM --------------------------------------------------------------------------------------------------------------------------------------
-  # Fits the 2-state HMM (trap + burrow + chewcard streams, chewcard split into 4 tied beta-binomial(10) blocks by transect, covariate-driven transitions, seasonal
-  # detection tied across states as a shared detection effect, ae_zone/shape left free per state as real density/dispersion effects, trap/burrow search-effort
-  # offsets). rain_whiplash_trough_to_peak's own zone slope is a hierarchical (partially-pooled) random slope, s(ae_zone, by = ..., bs = "re") -- not a fixed
-  # rain_whiplash_trough_to_peak:ae_zone interaction (2026-08/09's earlier adopted spec) -- see r/e_fit_plague_hmm.R's header for why.
-  # Detection covariates on the trap, burrow and chew-card streams, tied across states (from the Section D exploration reports) -- see r/e_fit_plague_hmm.R.
-  # Burrow detection includes soil moisture by soil group (wet clays collapse burrows, dry clays crack) -- see r/e_fit_plague_hmm.R.
-  # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/e_fit_plague_hmm_subprocess.R.
-  hmm_detection_terms = list(trap_count   = c("season:cropping_system", "crop_group_trap_det"),
-                             burrow_count = c("crop_group_det", "crop_stage_det", "soil_type_det", "soil_moisture_anomaly", "soil_moisture:soil_group"),
-                             chewcard     = c("crop_group_det", "crop_stage_det", "soil_type_det")),
 
-  # Transition formulas: entering plague [1, 2] and leaving plague [2, 1], chosen by the transition search -- see r/e_fit_plague_hmm.R's header.
-  # min_temp and gpp_rolling6 are levels, centred and scaled in the formula (hmm_data means and SDs); every other covariate is an anomaly.
-  plague_transition_enter = "~ rain_whiplash_trough_to_peak + s(ae_zone, by = rain_whiplash_trough_to_peak, bs = 're') + gpp_anomaly + I((gpp_rolling6 - 2.38) / 0.93) + I((min_temp - 11.12) / 4.47) + s(ae_zone, bs = 're')",
-  plague_transition_leave = "~ rain_whiplash_trough_to_peak + rain_whiplash_trough_to_peak:soil_group + gpp_rolling3_anomaly + soil_moisture_anomaly + soil_moisture_anomaly:soil_group + soil_group + min_temp_rolling3_anomaly + I((min_temp - 11.12) / 4.47) + s(ae_zone, bs = 're')",
+  # 2) Specify the plague HMM ----------------------------------------------------------------------------------------------------------------------------------
+
+  # Every model term is set here; fit_plague_hmm() only builds and fits it -- see r/e_fit_plague_hmm.R's header for how each term was chosen.
+
+  # i. Observation model
+
+  # One family and term list per stream and parameter; "1" is intercept-only, offset() fixes a coefficient at 1.
+  # Intercepts differ between the not-plague and plague states; covariate terms are detection effects shared by both states.
+  # A stream's optional state_specific entry would list covariates estimated separately for each state instead (none at present).
+  hmm_observation_model = list(
+    trap_count = list(
+      family = "nbinom2",
+      mean   = c(
+        # Seasonal detection, differing between sorghum and winter-cereal regions.
+        "season * cropping_system",
+        # Crop recorded on the trap visit.
+        "crop_group_trap_det",
+        # Regional trapping differences (GRDC subregion; trap type, grid design and programme) -- see r/e_build_hmm_data.R.
+        "trap_subregion",
+        # Trap-nights.
+        "offset(log_trap_effort)"
+      ),
+      shape  = "1"
+    ),
+    burrow_count = list(
+      family = "nbinom2",
+      mean   = c(
+        # Seasonal detection, differing between sorghum and winter-cereal regions.
+        "season * cropping_system",
+        # Regional differences in burrow visibility (adjusted AE zones).
+        "ae_zone_adj",
+        # Paddock-scale crop growth.
+        "gpp_finescale_scaled",
+        # Crop group and stage recorded on the rapid visit.
+        "crop_group_det",
+        "crop_stage_det",
+        # Paddock's soil order (static, TERN soil map); soil group is a grouping of it, so this also covers soil group's main effect.
+        "soil_type_det",
+        # Unusually wet or dry soil.
+        "soil_moisture_anomaly",
+        # Soil moisture's effect on burrow visibility, by soil group (wet clays collapse, dry clays crack).
+        "soil_moisture_scaled",
+        "soil_moisture_scaled:soil_group",
+        # Metres of transect searched.
+        "offset(log_burrow_metres_searched)"
+      ),
+      shape  = "1"
+    ),
+    # Applied to all four chew-card blocks (cards 1-10, 11-20, 21-30, 31-40), tied across blocks.
+    chewcard = list(
+      family = "betabinom",
+      prob   = c(
+        # Seasonal detection.
+        "season",
+        # Regional differences in chew-card detection (adjusted AE zones).
+        "ae_zone_adj",
+        # Crop group and stage recorded on the rapid visit.
+        "crop_group_det",
+        "crop_stage_det",
+        # Paddock's soil order (static, TERN soil map).
+        "soil_type_det"
+      ),
+      sigma  = "1"
+    )
+  ),
+
+
+  # ii. Transition model
+
+  # Entering plague [1, 2], chosen by the transition search; anomalies are already z-scores, so only levels are "_scaled".
+  plague_transition_enter = c(
+    # Rainfall whiplash, with a partially-pooled slope per AE zone.
+    "rain_whiplash_trough_to_peak_scaled",
+    "s(ae_zone, by = rain_whiplash_trough_to_peak_scaled, bs = 're')",
+    # 12-month GPP anomaly.
+    "gpp_anomaly",
+    # 6-month GPP level.
+    "gpp_rolling6_scaled",
+    # Seasonal minimum temperature level.
+    "min_temp_scaled",
+    # AE-zone random intercept.
+    "s(ae_zone, bs = 're')"
+  ),
+
+  # Leaving plague [2, 1].
+  plague_transition_leave = c(
+    # Soil group's own effect.
+    "soil_group",
+    # Rainfall whiplash, by soil group.
+    "rain_whiplash_trough_to_peak_scaled",
+    "rain_whiplash_trough_to_peak_scaled:soil_group",
+    # 3-month GPP anomaly.
+    "gpp_rolling3_anomaly",
+    # Soil-moisture anomaly, by soil group.
+    "soil_moisture_anomaly",
+    "soil_moisture_anomaly:soil_group",
+    # 3-month minimum-temperature anomaly.
+    "min_temp_rolling3_anomaly",
+    # Seasonal minimum temperature level.
+    "min_temp_scaled",
+    # AE-zone random intercept.
+    "s(ae_zone, bs = 're')"
+  ),
+
   # The unsupervised fit's exit drops the soil-group terms, which it can't identify without anchors.
-  plague_transition_leave_unsupervised = "~ rain_whiplash_trough_to_peak + gpp_rolling3_anomaly + soil_moisture_anomaly + min_temp_rolling3_anomaly + I((min_temp - 11.12) / 4.47) + s(ae_zone, bs = 're')",
-
-  # Burrow/chew-card zone effects use the adjusted AE zones (ae_zone_adj, 7 in the fit); transitions keep the 11 original AE zones -- see r/a_adjust_aez.R.
-  plague_hmm = fit_plague_hmm_subprocess(hmm_data,
-    transition_formula = matrix(c(".", plague_transition_leave, plague_transition_enter, "."), nrow = 2),
-    detection_terms    = hmm_detection_terms,
-    obs_zone           = "ae_zone_adj"
+  plague_transition_leave_unsupervised = c(
+    "rain_whiplash_trough_to_peak_scaled",
+    "gpp_rolling3_anomaly",
+    "soil_moisture_anomaly",
+    "min_temp_rolling3_anomaly",
+    "min_temp_scaled",
+    "s(ae_zone, bs = 're')"
   ),
+
+
+  # 3) Fit the plague HMM --------------------------------------------------------------------------------------------------------------------------------------
+
+  # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/e_fit_plague_hmm_subprocess.R.
+  plague_hmm = fit_plague_hmm_subprocess(hmm_data, observation_model = hmm_observation_model, transition_model = list(enter = plague_transition_enter, leave = plague_transition_leave)),
 
   # Unsupervised comparison fit: every anchor removed, and the simpler exit formula above.
-  plague_hmm_unsupervised = fit_plague_hmm_subprocess(dplyr::mutate(hmm_data, state = NA_integer_),
-    transition_formula = matrix(c(".", plague_transition_leave_unsupervised, plague_transition_enter, "."), nrow = 2),
-    detection_terms    = hmm_detection_terms,
-    obs_zone           = "ae_zone_adj"
-  ),
+  plague_hmm_unsupervised = fit_plague_hmm_subprocess(dplyr::mutate(hmm_data, state = NA_integer_), observation_model = hmm_observation_model, transition_model = list(enter = plague_transition_enter, leave = plague_transition_leave_unsupervised)),
 
   # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/e_fit_plague_hmm.R's own header documents ~18 formula/
   # family variants tried against that unresolved miscalibration with no fix): simulates 100 replicate datasets from plague_hmm itself (hmmTMB's own HMM$check(),
@@ -1241,7 +1334,7 @@ tar_plan(
   plague_hmm_pseudores = randomised_pseudores(plague_hmm, seed = 1),
 
 
-  # 3) Grid prediction ------------------------------------------------------------------------------------------------------------------------------------------
+  # 4) Grid prediction ------------------------------------------------------------------------------------------------------------------------------------------
   # Pr(not-plague -> plague) on the 0.1 degree grid, over the prediction region below, for the covariates' latest shared period -- see r/e_predict_plague_risk.R.
   # Also masks cells that extrapolate a zone-varying covariate beyond that zone's training range -- see predict_plague_risk()'s header.
   # The fitted AE zones (full polygons, for report maps and zone summaries).
@@ -1317,7 +1410,7 @@ tar_plan(
   ),
 
 
-  # 4) Hindcast against recorded plague years --------------------------------------------------------------------------------------------------------------------
+  # 5) Hindcast against recorded plague years --------------------------------------------------------------------------------------------------------------------
   # Mutze (1989) digitised SA plague extents, 1904-1984 (only 1984 falls within the covariate record).
   tar_file(mutze_plague_maps_file, "raw_data/plague_occurrence/mutze_1989_sa_plagues/mutze_1989_sa_plagues.gpkg"),
   mutze_plague_maps = sf::read_sf(mutze_plague_maps_file),
@@ -1347,7 +1440,7 @@ tar_plan(
   ),
 
 
-  # 5) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
+  # 6) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
   # Model fit diagnostics (convergence, coefficients, Viterbi-vs-known-history validation, pseudo-residuals) and the risk map together, generated live from
   # this section's own targets -- tar_quarto() auto-detects the qmd's own tar_load() calls as dependencies, no need to list them here.
   # deployment = "main": quarto renders run one at a time in the main process, since concurrent renders in quarto_reports/ on crew workers clash.

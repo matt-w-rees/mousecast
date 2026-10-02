@@ -19,6 +19,10 @@
 # out the garbage-objective case, which can be hugely positive or hugely negative), and the second
 # state holds a plausible share of paddock-seasons (between `min_state_share` and 50%) -- a fit can
 # report convergence while collapsing to one state (seen with an unanchored model, 0.1% in state 2).
+# It must also have no estimated observation coefficient beyond +-`max_obs_coef` (fixed ones -- offsets
+# and the chew-card binomial size -- excluded): two near-duplicate terms converge with coefficients that
+# run off and cancel (+-17 when a trap region duplicated the sorghum cropping-system contrast,
+# 2026-10-01), while valid fits stay within +-7.
 #
 # Retries start from slightly different values: attempt k > 1 adds random noise with SD
 # 0.25 * (k - 1) to the transition coefficients' starting values (fit_plague_hmm()'s start_jitter),
@@ -26,15 +30,16 @@
 # (init) retries from the identical point each time.
 #
 # Arguments:
-#   ...            passed to fit_plague_hmm() (hmm_data, transition_formula, detection_terms, ...)
+#   ...            passed to fit_plague_hmm() (hmm_data, observation_model, transition_model, ...)
 #   max_attempts   maximum number of fresh-subprocess fits before giving up (default 3)
 #   max_objective  largest plausible negative log-likelihood (default 1e6; real fits are ~1e4)
 #   min_state_share smallest plausible mean Pr(state 2) across paddock-seasons (default 0.5%)
+#   max_obs_coef   largest plausible absolute estimated observation coefficient (default 12)
 #
 # Returns the fitted hmmTMB::HMM object, with attr(, "fit_stats") = list(aic, loglik, edf,
 # objective, attempts).
 
-fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6, min_state_share = 0.005) {
+fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6, min_state_share = 0.005, max_obs_coef = 12) {
   fit_args <- list(...)
 
   for (attempt in seq_len(max_attempts)) {
@@ -53,6 +58,14 @@ fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6
         set.seed(seed)
         tryCatch({
           hmm <- do.call(fit_fun, fit_args)
+          # Estimated observation coefficients: every coeff_fe() row except those fixed by fixpar (NA:
+          # the offsets) or by the family itself (the chew-card binomial size).
+          obs_coef <- hmm$obs()$coeff_fe()[, 1]
+          coef_stream <- sub("^([^.]+)[.].*$", "\\1", names(obs_coef))
+          coef_param  <- sub("^[^.]+[.]([^.]+)[.].*$", "\\1", names(obs_coef))
+          family_fixed <- mapply(function(st, pa) pa %in% names(which(hmm$obs()$dists()[[st]]$fixed())), coef_stream, coef_param)
+          fixpar_obs <- hmm$obs()$fixpar()$obs
+          estimated <- !family_fixed & !(names(obs_coef) %in% names(fixpar_obs)[is.na(fixpar_obs)])
           # Fit statistics need the live TMB object, so they are computed here, before serialisation.
           # hmmTMB warns that AIC is "experimental" for models with random effects; that is expected.
           fit_stats <- list(aic       = suppressWarnings(stats::AIC(hmm)),
@@ -60,12 +73,14 @@ fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6
                             edf       = hmm$edf(),
                             objective = hmm$out()$objective,
                             convergence = hmm$out()$convergence,
-                            state2_share = mean(hmm$state_probs()[, 2]))
+                            state2_share = mean(hmm$state_probs()[, 2]),
+                            max_obs_coef = max(abs(obs_coef[estimated])))
           list(hmm = hmm, fit_stats = fit_stats, error = NULL)
         }, error = function(e) list(hmm = NULL, fit_stats = NULL, error = conditionMessage(e)))
       },
       args = list(fit_fun  = fit_plague_hmm,
-                  helpers  = list(append_formula_terms = append_formula_terms, detection_tie_groups = detection_tie_groups),
+                  helpers  = list(paste_formula = paste_formula, offset_variables = offset_variables,
+                                  coef_uses_variable = coef_uses_variable, observation_fixpar = observation_fixpar),
                   fit_args = attempt_args,
                   seed     = attempt_seed)
     )
@@ -77,17 +92,19 @@ fit_plague_hmm_subprocess <- function(..., max_attempts = 3, max_objective = 1e6
       is.finite(stats$objective) && is.finite(stats$aic) &&
       stats$objective > 0 && stats$objective < max_objective &&
       stats$edf > 0 &&
-      stats$state2_share > min_state_share && stats$state2_share < 0.5
+      stats$state2_share > min_state_share && stats$state2_share < 0.5 &&
+      stats$max_obs_coef < max_obs_coef
 
     if (valid) {
       hmm <- result$hmm
-      attr(hmm, "fit_stats") <- c(stats[c("aic", "loglik", "edf", "objective", "state2_share")], attempts = attempt)
+      attr(hmm, "fit_stats") <- c(stats[c("aic", "loglik", "edf", "objective", "state2_share", "max_obs_coef")], attempts = attempt)
       return(hmm)
     }
 
     # Report why this attempt was rejected before retrying.
     reason <- if (!is.null(result$error)) result$error else
-      sprintf("convergence %s, objective %s, AIC %s, state 2 share %s", stats$convergence, signif(stats$objective, 6), signif(stats$aic, 6), signif(stats$state2_share, 3))
+      sprintf("convergence %s, objective %s, AIC %s, state 2 share %s, max |obs coef| %s", stats$convergence, signif(stats$objective, 6),
+              signif(stats$aic, 6), signif(stats$state2_share, 3), signif(stats$max_obs_coef, 3))
     message(sprintf("fit_plague_hmm attempt %d of %d rejected: %s", attempt, max_attempts, reason))
   }
 

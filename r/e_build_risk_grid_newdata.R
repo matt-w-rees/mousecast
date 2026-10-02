@@ -1,7 +1,9 @@
 # transition_covariates(): the covariates a fitted HMM's transition formulas need real per-cell
 # values for -- every variable in either transition's formula (entering [1, 2], leaving [2, 1]),
-# except the ones build_risk_grid_newdata() derives for each cell itself (ae_zone, season). These
-# are the names covariate_rasters must supply.
+# except the ones build_risk_grid_newdata() derives for each cell itself (ae_zone, season). A
+# "<covariate>_scaled" formula variable is returned as its original covariate, since rasters hold
+# real units and build_risk_grid_newdata() scales them with the model's own constants. These are the
+# names covariate_rasters must supply.
 #
 # Arguments:
 #   plague_hmm  a fitted HMM object (r/e_fit_plague_hmm.R)
@@ -10,7 +12,7 @@
 transition_covariates <- function(plague_hmm) {
   formulas <- unique(as.vector(plague_hmm$hid()$formula()))
   formula_vars <- unlist(lapply(formulas[formulas != "."], function(f) all.vars(stats::as.formula(f))))
-  setdiff(unique(formula_vars), c("ae_zone", "season"))
+  setdiff(unique(sub("_scaled$", "", formula_vars)), c("ae_zone", "season"))
 }
 
 # Builds the per-cell covariate table predict_plague_risk() and hindcast_plague_occurrence() feed to
@@ -79,6 +81,10 @@ build_risk_grid_newdata <- function(plague_hmm, covariate_rasters, fit_zones_sf,
   )
   cell_df$ae_zone <- terra::as.data.frame(zone_rast, xy = TRUE, na.rm = FALSE)[[3]]
   cell_df$ae_zone <- factor(cell_df$ae_zone, levels = sort(unique(fit_zones_sf$ae_zone)))
+
+  # Centred and scaled copies of the covariates the formulas use in "_scaled" form, with the constants
+  # the model was fitted with (r/e_scale_covariates.R) -- never recomputed from the grid itself.
+  cell_df <- scale_covariates(cell_df, attr(plague_hmm, "covariate_scaling"))
 
   # The fitted model's training data, for the observation-covariate placeholders below.
   training_data <- plague_hmm$obs()$data()

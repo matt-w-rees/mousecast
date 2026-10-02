@@ -1,22 +1,89 @@
-# Appends extra terms (a character vector) to a one-sided formula; returns base unchanged if there are
-# none, so fit_plague_hmm()'s default formulas are exactly the adopted ones.
-append_formula_terms <- function(base, extra) {
-  if (length(extra) == 0) return(base)
-  stats::update(base, stats::as.formula(paste("~ . +", paste(extra, collapse = " + "))))
+# Pastes a vector of model terms into a one-sided formula string, e.g. c("season", "ae_zone_adj")
+# -> "~ season + ae_zone_adj"; "1" alone gives an intercept-only "~ 1". offset(<covariate>) terms are
+# written as the plain covariate, since hmmTMB silently drops offset() -- fit_plague_hmm() fixes that
+# covariate's coefficient at 1 instead (offset_variables() below finds them).
+paste_formula <- function(terms) {
+  paste("~", paste(sub("^offset\\((.*)\\)$", "\\1", terms), collapse = " + "))
 }
 
-# Groups one detection term's coefficient rows (coeff_fe() row names) so each factor level can be tied
-# to one shared, estimated value across both states -- and across every stream in `streams` at once,
-# e.g. all four chew-card blocks. Returns a list of row-name vectors, one per level.
-detection_tie_groups <- function(valid_rows, streams, param, term) {
-  prefix <- paste0("^(", paste(streams, collapse = "|"), ")\\.", param, "\\.state[12]\\.")
-  # Each variable in the term may be followed by its level text, so an interaction such as
-  # "season:cropping_system" matches "seasonSummer:cropping_systemsorghum"; anchored at the end so
-  # "soil_moisture" can't also match "soil_moisture_anomaly".
-  term_pattern <- paste0(paste0(strsplit(term, ":", fixed = TRUE)[[1]], "[^:]*", collapse = ":"), "$")
-  rows <- grep(paste0(prefix, term_pattern), valid_rows, value = TRUE)
-  # The level itself (e.g. "crop_group_detwinter_cereals"), with stream and state stripped, is the group key.
-  unname(split(rows, sub(prefix, "", rows)))
+# The covariates written as offset(<covariate>) in a vector of model terms.
+offset_variables <- function(terms) {
+  sub("^offset\\((.*)\\)$", "\\1", grep("^offset\\(", terms, value = TRUE))
+}
+
+# TRUE if a coefficient (a coeff_fe() name with stream/parameter/state stripped, e.g.
+# "ae_zone_adjNSW N" or "seasonAutumn:cropping_systemsorghum") belongs to covariate v: one of its
+# ":"-separated parts is v itself (numeric) or v followed by one of v's factor levels. Matching on
+# the actual levels means "soil_moisture" can't also match "soil_moisture_anomaly".
+coef_uses_variable <- function(coef, v, data) {
+  parts <- strsplit(coef, ":", fixed = TRUE)[[1]]
+  level_match <- is.factor(data[[v]]) & startsWith(parts, v) & substring(parts, nchar(v) + 1) %in% levels(data[[v]])
+  any(parts == v | level_match)
+}
+
+# Builds hmmTMB's observation fixpar vector from one rule, so every coefficient's treatment follows
+# from the model specification in _targets.R rather than hand-written lists:
+#   - offset covariates: fixed at 1 (NA here, seeded to 1 before fitting);
+#   - intercepts and each stream's state-specific terms: one value per state (what tells the states apart);
+#   - every other covariate term: one value shared by both states (a detection effect);
+#   - and in every case one value shared across the four chew-card blocks, which are replicates of
+#     the same card-reading process (stream_key maps each block to "chewcard").
+# Coefficients sharing a value get the same integer id (hmmTMB's "estimated to a common value");
+# a coefficient with nothing to share with is left out (freely estimated). Parameters the family
+# itself holds fixed (the chew-card binomial size) are left out too, so a tie can't free them.
+#
+# Arguments:
+#   row_names             rownames(obs$coeff_fe()), "<stream>.<parameter>.state<k>.<coefficient>"
+#   data                  the model data (for factor levels)
+#   stream_key            named vector mapping each hmmTMB stream to its specification name
+#   state_specific_terms  named list, per specification name (e.g. "burrow_count", "chewcard"), of the
+#                         covariates estimated separately in each state
+#   offset_terms          covariates whose coefficient is fixed at 1
+#   fixed_params          named list, per stream, of the parameters its family holds fixed
+#
+# Returns a named vector for Observation$update_fixpar(): NA (fixed) or an integer tie id.
+observation_fixpar <- function(row_names, data, stream_key, state_specific_terms, offset_terms, fixed_params) {
+  stream <- sub("^([^.]+)\\..*$", "\\1", row_names)
+  param  <- sub("^[^.]+\\.([^.]+)\\..*$", "\\1", row_names)
+  state  <- sub("^[^.]+\\.[^.]+\\.state([0-9]+)\\..*$", "\\1", row_names)
+  coef   <- sub("^[^.]+\\.[^.]+\\.state[0-9]+\\.", "", row_names)
+
+  # Each coefficient's specification name (the four chew-card blocks share "chewcard").
+  key_stream <- unname(stream_key[stream])
+
+  # Fail loudly if a named offset or state-specific term matches no coefficient (e.g. a typo), since
+  # it would otherwise silently become an ordinary tied term.
+  for (v in offset_terms) {
+    if (!any(vapply(coef, coef_uses_variable, logical(1), v = v, data = data))) {
+      stop("fit_plague_hmm(): offset term '", v, "' is in no observation formula.")
+    }
+  }
+  for (k in names(state_specific_terms)) {
+    for (v in state_specific_terms[[k]]) {
+      if (!any(vapply(coef[key_stream == k], coef_uses_variable, logical(1), v = v, data = data))) {
+        stop("fit_plague_hmm(): state-specific term '", v, "' is in no ", k, " formula.")
+      }
+    }
+  }
+
+  # Parameters the family holds fixed: left to hmmTMB.
+  is_family_fixed <- mapply(function(st, pa) pa %in% fixed_params[[st]], stream, param)
+  # Offsets: fixed, not estimated.
+  is_offset <- coef %in% offset_terms
+  # Intercepts and state-specific terms keep the state in their grouping key; everything else drops
+  # it, so both states share one value.
+  is_state_specific <- coef == "(Intercept)" |
+    mapply(function(cf, k) any(vapply(state_specific_terms[[k]], coef_uses_variable, logical(1), coef = cf, data = data)),
+           coef, key_stream)
+  key <- ifelse(is_state_specific,
+                paste(key_stream, param, state, coef),
+                paste(key_stream, param, coef))
+
+  # One integer id per key shared by two or more coefficients.
+  shared <- !is_offset & !is_family_fixed & key %in% key[duplicated(key)]
+  tie_ids <- match(key[shared], unique(key[shared]))
+  c(stats::setNames(rep(NA, sum(is_offset)), row_names[is_offset]),
+    stats::setNames(tie_ids, row_names[shared]))
 }
 
 # Build and fit the two-state (not-plague / plague) hidden Markov model
@@ -909,6 +976,34 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 #     region, r/a_attach_cropping_system.R; winter_cereal the reference level) in the trap and burrow
 #     season x cropping-system terms.
 #     Earlier notes in this header refer to summer_zone_ne by its old name.
+#   Model specification in _targets.R, ADOPTED (2026-10-01): every observation and transition term,
+#     family, offset and state-specific term is now set in _targets.R (hmm_observation_model,
+#     plague_transition_*) rather than split between there and this
+#     function. Tying follows one rule (observation_fixpar()), replacing the hand-written tie() lists
+#     and the detection_terms/shape_terms/obs_zone/chewcard_dist arguments, which earlier notes in this
+#     header still mention. Interactions are written with their main effects (season * cropping_system,
+#     soil_moisture + soil_moisture:soil_group), a reparameterisation of the earlier interaction-only
+#     terms. Level covariates (whiplash, min_temp, 6-month GPP, fine-scale GPP, soil moisture) are
+#     centred and scaled in the data (r/e_scale_covariates.R), replacing the hardcoded in-formula
+#     scaling; centring whiplash also changes how its zone random slope is separated from the zone
+#     intercepts.
+#   Trap subregion, ADOPTED (2026-10-01): GRDC subregion on the trap mean (trap_subregion,
+#     r/e_build_hmm_data.R), tied across states -- a regional / site-programme detection effect; each
+#     site used one trap type, so trap type itself can't be separated from it. Coded with the main
+#     sorghum (Queensland) subregion merged into the reference, since season * cropping_system already
+#     carries that contrast: coded naively, both trap_subregion and ae_zone_adj duplicated it (coefficients
+#     +-17). Coded this way, against the tied-zone model: subregion -26.3 AIC (~6 more edf), adjusted AE
+#     zone -2.0; hindcast, Pr(plague) by zone and decoded states unchanged.
+#   Observation zones tied across states, ADOPTED (2026-10-01): the burrow and chew-card ae_zone_adj
+#     effects are now detection effects shared by the not-plague and plague states, replacing the
+#     separate per-state zone effects above. With them separate, the plague-to-not-plague burrow
+#     contrast ranged from 2.8x (SA Midnorth) to 33x (NSW Central-Slopes), letting the observation
+#     model redefine the plague state by zone. Tested against the per-state model (supervised, one fit
+#     per process, tmp/obs_zone_test/): tying chew cards +15.6 AIC, burrows +29.7, both +43.8 (11
+#     fewer parameters); removing the zone term instead cost +114 (chew cards), +156 (burrows) and +267
+#     (both). Pre-2013 hindcast unchanged (one-season-ahead 0.724 vs 0.727), Pr(plague) by zone
+#     identical to three decimals, decoded states 99.9% unchanged -- with about half of paddock-seasons
+#     anchored, the zone treatment changes the count fit, not where plagues are inferred.
 # Fitting note: run variant fits one at a time -- several fitted at once as parallel R processes
 # stopped at a NaN likelihood while still reporting "relative convergence". Separately, hmmTMB's C++ is
 # intermittently non-deterministic for three-parameter chew-card families even in a fresh process, so
@@ -927,59 +1022,40 @@ detection_tie_groups <- function(valid_rows, streams, param, term) {
 # cards clustering within a session). Use randomised_pseudores(), not $pseudores(), for any future check.
 #
 # Arguments:
-#   hmm_data           build_hmm_data()'s output (r/e_build_hmm_data.R) --
-#                       must have ID/state/trap_count/burrow_count/
-#                       chewcard_count/chewcard_block2/chewcard_block3/
-#                       chewcard_block4/season and every covariate named in
-#                       transition_formula
-#   transition_formula  one-sided formula applied to every transition
-#                       probability (MarkovChain$new()'s single-formula
-#                       form) -- e.g. ~ rain_whiplash_trough_to_peak
-#   detection_terms     optional extra detection covariates per stream, as a
-#                       named list of column-name vectors -- names trap_count,
-#                       burrow_count and/or chewcard (all four chew-card
-#                       blocks). Each is appended to that stream's mean/prob
-#                       formula and tied across both states (and, for
-#                       chewcard, across all four blocks), like season.
-#                       Default: none, i.e. the adopted model.
-#   shape_terms         optional covariates on the nbinom2 shape (dispersion)
-#                       parameter, as a named list of column-name vectors --
-#                       names trap_count and/or burrow_count. Left free per
-#                       state (dispersion is a state-dependent quantity, not a
-#                       detection effect). Default: none (shape intercept-only).
-#   chewcard_dist       hmmTMB family for the four chew-card streams:
-#                       "betabinom" (default, adopted: beta-binomial,
-#                       overdispersion sigma's intercept tied across blocks --
-#                       needs the patched hmmTMB pinned in renv.lock, not CRAN
-#                       1.1.2), "binom", or "zibinom" (zero-inflated binomial,
-#                       zero-inflation intercept tied across blocks).
-#   init                optional fitted HMM whose estimates are used as starting values
-#                       (hmmTMB's HMM$new(init = ...)) instead of the generic ones below.
-#                       Not used by the pipeline since the merged observation zones (the
-#                       unsupervised fit now converges from generic starting values); kept for
-#                       variant fits started from a previous model.
-#   obs_zone            name of the hmm_data column giving each row's zone for the burrow and chew-card
-#                       zone effects (default "ae_zone"); lets thin zones be merged for the observation
-#                       streams without changing the transitions' zone effects
-#   obs_zone_tied       TRUE: one zone effect per zone, shared by both states (and all four chew-card
-#                       blocks), like season; FALSE (default): a separate zone effect in each state
-#   start_jitter        standard deviation of random noise added to the transition coefficients'
-#                       starting values (default 0: none). fit_plague_hmm_subprocess() uses it on
-#                       retries, so a failed attempt isn't repeated from the exact same starting
-#                       point -- with init given, every retry otherwise starts identically.
-#   map_stream          TRUE: also fit hmm_data's plague_map column (1 inside a mapped plague
-#                       extent, 0 outside, NA where not used) as a binomial(1) stream with a
-#                       probability per state -- the plague maps as noisy evidence (default FALSE)
-#   map_false_positive  with map_stream: Pr(inside a mapped extent | not plague) fixed at this value
-#                       rather than estimated (default NULL: estimated) -- a prior belief that the
-#                       maps are mostly right, since estimated freely the survey data overrule them
+#   hmm_data              build_hmm_data()'s output (r/e_build_hmm_data.R), holding every column the
+#                         formulas name; its attr(, "covariate_scaling") is copied onto the fitted model
+#   observation_model     the observation model, as set in _targets.R (hmm_observation_model): a named
+#                         list per stream -- trap_count, burrow_count and chewcard (applied to all four
+#                         chew-card blocks) -- each with a hmmTMB family, a vector of terms per
+#                         parameter (e.g. mean = c("season", "offset(log_trap_effort)"), shape = "1"),
+#                         and optionally state_specific: covariates estimated separately in each state
+#                         (every other covariate is tied across states as a detection effect -- see
+#                         observation_fixpar() above for the full rule).
+#                         Supported families: nbinom2 (trap/burrow), betabinom, binom or zibinom
+#                         (chew cards; size fixed at 10).
+#   transition_model      list(enter = <terms>, leave = <terms>): the terms for entering plague [1, 2]
+#                         and leaving plague [2, 1], as set in _targets.R
+#   init                  optional fitted HMM whose estimates are used as starting values
+#                         (hmmTMB's HMM$new(init = ...)) instead of the generic ones below.
+#                         Not used by the pipeline; kept for variant fits started from a previous model.
+#   start_jitter          standard deviation of random noise added to the transition coefficients'
+#                         starting values (default 0: none). fit_plague_hmm_subprocess() uses it on
+#                         retries, so a failed attempt isn't repeated from the exact same starting
+#                         point -- with init given, every retry otherwise starts identically.
+#   map_stream            TRUE: also fit hmm_data's plague_map column (1 inside a mapped plague
+#                         extent, 0 outside, NA where not used) as a binomial(1) stream with a
+#                         probability per state -- the plague maps as noisy evidence (default FALSE)
+#   map_false_positive    with map_stream: Pr(inside a mapped extent | not plague) fixed at this value
+#                         rather than estimated (default NULL: estimated) -- a prior belief that the
+#                         maps are mostly right, since estimated freely the survey data overrule them
 #
-# Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed).
+# Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed), with the model data's scaling
+# constants as attr(, "covariate_scaling") (r/e_scale_covariates.R) for predictions.
 
-fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(), shape_terms = list(), chewcard_dist = "betabinom",
-                           init = NULL, obs_zone = "ae_zone", obs_zone_tied = FALSE, start_jitter = 0, map_stream = FALSE,
-                           map_false_positive = NULL) {
+fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init = NULL, start_jitter = 0, map_stream = FALSE, map_false_positive = NULL) {
 
+  # Transition formulas: entering plague [1, 2] and leaving plague [2, 1] ("." on the diagonal).
+  transition_formula <- matrix(c(".", paste_formula(transition_model$leave), paste_formula(transition_model$enter), "."), nrow = 2)
   hid <- hmmTMB::MarkovChain$new(
     data          = hmm_data,
     n_states      = 2,
@@ -987,197 +1063,83 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     initial_state = "stationary"
   )
 
-  # Initial values: state 1 = not-plague (lower counts/chew rates), state 2 =
-  # plague (higher) -- separated starting values in the right order for each
-  # stream, shape = 1 (moderate overdispersion) as a generic starting guess
-  # for the two count streams. Each chewcard_* stream's own prob seeds low/high
-  # detection rates (0.05/0.4); size = c(10, 10) is fixed (not estimated),
-  # see the header above for why it needs to be a vector, not a scalar.
-  # These only seed the optimiser; none of them (other than chewcard size
-  # and the fixpar'd terms below) are fixed values.
-  #
-  # chewcard_count/chewcard_block2/chewcard_block3/chewcard_block4 (2026-08, ADOPTED -- see header
-  # for the full investigation): four separate binom(10) streams instead of one, using hmmTMB's own
-  # documented pattern for varying replicate counts (confirmed against its crossbill_occupancy.R
-  # case study) -- each row contributes to whichever blocks it actually deployed enough cards for
-  # (NA elsewhere, r/e_build_hmm_data.R), so a paddock-season's full card count is used instead of
-  # truncating everyone to the first transect's own 10 cards.
-  # Each stream's formula, plus any optional detection_terms for it.
-  chewcard_prob <- append_formula_terms(~season, c(obs_zone, detection_terms$chewcard))
-  # Starting values for one chew-card stream: zibinom adds a zero-inflation probability z, betabinom
-  # an overdispersion sigma.
-  chewcard_par <- switch(chewcard_dist,
+  # The hmmTMB streams behind each specification name: the chew-card specification applies to all four
+  # chew-card blocks (cards 1-10, 11-20, 21-30, 31-40 -- r/e_build_hmm_data.R), hmmTMB's documented
+  # pattern for a varying number of fixed-size binomial replicates.
+  chewcard_streams <- c("chewcard_count", "chewcard_block2", "chewcard_block3", "chewcard_block4")
+  stream_key <- c(trap_count = "trap_count", burrow_count = "burrow_count",
+                  stats::setNames(rep("chewcard", length(chewcard_streams)), chewcard_streams),
+                  plague_map = "plague_map")
+  streams <- names(stream_key)[stream_key %in% names(observation_model)]
+
+  # Each stream's family and formulas (one per parameter: every list element except "family" and
+  # "state_specific").
+  param_names <- function(spec) setdiff(names(spec), c("family", "state_specific"))
+  dists <- lapply(streams, function(s) observation_model[[stream_key[[s]]]]$family)
+  formulas <- lapply(streams, function(s) {
+    spec <- observation_model[[stream_key[[s]]]]
+    lapply(spec[param_names(spec)], function(terms) stats::as.formula(paste_formula(terms)))
+  })
+  names(dists) <- names(formulas) <- streams
+  # Every offset(<covariate>) term across the specification, fixed at 1 below.
+  offset_terms <- unique(unlist(lapply(observation_model, function(spec) lapply(spec[param_names(spec)], offset_variables))))
+  # Each stream's state-specific covariates (none if not given).
+  state_specific_terms <- lapply(observation_model, function(spec) spec$state_specific)
+
+  # Fail before fitting if a stream's terms are exactly redundant on the rows that stream observes (e.g.
+  # soil_group alongside soil_type_det, which nests it, or a factor level with no observations): those
+  # coefficients can't be estimated. The four chew-card blocks are checked together, since their
+  # coefficients are tied. Near-duplicates (two terms differing on a handful of rows) pass this check,
+  # but are caught after fitting by fit_plague_hmm_subprocess()'s coefficient-size check.
+  for (k in intersect(names(observation_model), stream_key)) {
+    spec_streams <- names(stream_key)[stream_key == k]
+    observed <- Reduce(`|`, lapply(spec_streams, function(s) !is.na(hmm_data[[s]])))
+    for (param in names(formulas[[spec_streams[1]]])) {
+      X <- stats::model.matrix(formulas[[spec_streams[1]]][[param]], hmm_data[observed, , drop = FALSE])
+      qr_X <- qr(X)
+      if (qr_X$rank < ncol(X)) {
+        stop("fit_plague_hmm(): ", k, " ", param, " terms can't all be estimated from its observations -- redundant column(s): ",
+             paste(colnames(X)[qr_X$pivot[(qr_X$rank + 1):ncol(X)]], collapse = ", "))
+      }
+    }
+  }
+
+  # Starting values: state 1 = not-plague (lower counts/chew rates), state 2 = plague (higher), with
+  # shape = 1 (moderate overdispersion) for the two count streams. These only seed the optimiser.
+  # Chew-card size = c(10, 10) is fixed (each block is 10 cards); it needs a per-state vector, since a
+  # scalar silently mis-broadcasts.
+  count_par <- list(trap_count = list(mean = c(8, 30), shape = c(1, 1)),
+                    burrow_count = list(mean = c(0.5, 8), shape = c(1, 1)))
+  for (s in names(count_par)) {
+    if (s %in% names(observation_model) && observation_model[[s]]$family != "nbinom2") {
+      stop("fit_plague_hmm(): starting values are only defined for ", s, " as nbinom2.")
+    }
+  }
+  # zibinom adds a zero-inflation probability z, betabinom an overdispersion sigma.
+  chewcard_par <- switch(observation_model$chewcard$family,
     zibinom   = list(size = c(10, 10), prob = c(0.05, 0.4), z = c(0.1, 0.1)),
     betabinom = list(size = c(10, 10), prob = c(0.05, 0.4), sigma = c(0.5, 0.5)),
-    list(size = c(10, 10), prob = c(0.05, 0.4)))
+    binom     = list(size = c(10, 10), prob = c(0.05, 0.4)),
+    stop("fit_plague_hmm(): unsupported chew-card family ", observation_model$chewcard$family))
+  par <- c(count_par[intersect(names(count_par), streams)],
+           stats::setNames(rep(list(chewcard_par), length(chewcard_streams)), chewcard_streams))
+
   # Optional plague-map stream (map_stream = TRUE): hmm_data's plague_map column, 1 inside a mapped
   # plague extent and 0 outside (NA where not used), as a binomial(1) observation whose probability
   # is estimated in each state -- the maps as noisy evidence rather than fixed states.
-  map_dists    <- if (map_stream) list(plague_map = "binom") else list()
-  map_formulas <- if (map_stream) list(plague_map = list(prob = ~1)) else list()
-  map_par      <- if (map_stream) list(plague_map = list(size = c(1, 1), prob = c(0.05, 0.6))) else list()
-  obs <- hmmTMB::Observation$new(
-    data     = hmm_data,
-    dists    = c(list(trap_count = "nbinom2", burrow_count = "nbinom2", chewcard_count = chewcard_dist,
-                      chewcard_block2 = chewcard_dist, chewcard_block3 = chewcard_dist, chewcard_block4 = chewcard_dist),
-                 map_dists),
-    formulas = list(
-      trap_count      = list(mean = append_formula_terms(~season + log_trap_effort, detection_terms$trap_count),
-                             shape = append_formula_terms(~1, shape_terms$trap_count)),
-      burrow_count    = list(mean = append_formula_terms(~season + log_burrow_metres_searched,
-                                                         c(obs_zone, "season:cropping_system", "gpp_finescale", detection_terms$burrow_count)),
-                             shape = append_formula_terms(~1, shape_terms$burrow_count)),
-      chewcard_count  = list(prob = chewcard_prob),
-      chewcard_block2 = list(prob = chewcard_prob),
-      chewcard_block3 = list(prob = chewcard_prob),
-      chewcard_block4 = list(prob = chewcard_prob)
-    ) |> c(map_formulas),
-    par      = list(
-      trap_count      = list(mean = c(8, 30), shape = c(1, 1)),
-      burrow_count    = list(mean = c(0.5, 8), shape = c(1, 1)),
-      chewcard_count  = chewcard_par,
-      chewcard_block2 = chewcard_par,
-      chewcard_block3 = chewcard_par,
-      chewcard_block4 = chewcard_par
-    ) |> c(map_par)
-  )
-
-  # Every non-effort, non-intercept, non-ae_zone, non-shape term above is tied to ONE shared,
-  # freely-ESTIMATED coefficient (2026-08, "ecological reality over AIC" -- see header) via
-  # hmmTMB's fixpar "estimate to a common value" mechanism (?hmmTMB::Observation -- an
-  # integer/factor-level tie, TMB's own map-style device, distinct from fixing to a known constant).
-  # tie() takes any number of full coeff_fe() row names and assigns them all a fresh shared id, so
-  # each DISTINCT term gets its own tie group -- season.L and season.Q, say, must never share an id,
-  # or they'd be forced equal to EACH OTHER too, not just tied across whatever they're meant to be
-  # tied across (states, or -- for the four chewcard streams below -- states AND blocks at once,
-  # since blocks 1-4 are just more replicates of the same underlying detection-rate model, not four
-  # separate ones).
-  #
-  # Every row name every tie() call below is hand-written against the term names confirmed live at
-  # the time this was built (2026-08) -- e.g. specific ae_zone factor levels, specific formula terms.
-  # None of that is re-derived from the formulas/data above, so a future change (a new/renamed zone,
-  # exclude_zones dropping a different set, a formula edit) could silently mistie the wrong rows
-  # together, or -- more likely -- just error deep inside hmmTMB's own TMB map-construction with no
-  # indication which row name was the problem (the same opaque-failure shape r/d_predict_plague_
-  # risk.R's own header now documents fixing for a different function). tie() checks every row name
-  # it's given against the model's own real coeff_fe() rownames as they're built, and fails loudly
-  # here, naming the exact bad row(s), rather than however hmmTMB's own internals would fail instead.
-  valid_rows <- rownames(obs$coeff_fe())
-  .tie_id <- 0L
-  tie <- function(...) {
-    .tie_id <<- .tie_id + 1L
-    rows <- c(...)
-    bad_rows <- setdiff(rows, valid_rows)
-    if (length(bad_rows) > 0) {
-      stop("fit_plague_hmm(): tie() referenced row name(s) not in the model's own coeff_fe() -- ",
-           "a formula or ae_zone factor level has likely changed since these were hand-written: ",
-           paste(bad_rows, collapse = ", "))
-    }
-    setNames(rep(.tie_id, length(rows)), rows)
+  if (map_stream) {
+    dists$plague_map    <- "binom"
+    formulas$plague_map <- list(prob = ~1)
+    par$plague_map      <- list(size = c(1, 1), prob = c(0.05, 0.6))
   }
 
-  chewcard_streams <- c("chewcard_count", "chewcard_block2", "chewcard_block3", "chewcard_block4")
+  obs <- hmmTMB::Observation$new(data = hmm_data, dists = dists, formulas = formulas, par = par)
 
-  fixpar_obs <- c(
-    # burrow_count's and trap_count's search-effort offsets (burrow added 2026-08, trap_count added
-    # 2026-08 alongside it, see header) -- fixed at the KNOWN constant 1 (NA = "estimated? no, fixed
-    # at whatever coeff_fe value it already holds", confirmed live against the installed package's
-    # own bundled examples), seeded to 1 below via update_coeff_fe() before fitting -- a true
-    # multiplicative offset needs exactly 1, not a value estimated from the data, so this stays a
-    # fix-to-constant, not a tie() call. hmmTMB's own offset() formula term is silently dropped (see
-    # header), so this two-step fixpar + update_coeff_fe() dance is the only working mechanism.
-    "burrow_count.mean.state1.log_burrow_metres_searched" = NA,
-    "burrow_count.mean.state2.log_burrow_metres_searched" = NA,
-    "trap_count.mean.state1.log_trap_effort" = NA,
-    "trap_count.mean.state2.log_trap_effort" = NA,
-
-    # season (trap_count, burrow_count), gpp_finescale, and season:summer_zone_ne (both
-    # burrow_count only): detection-side terms (ground cover/crop growth stage obscuring signs,
-    # CLAUDE.md), tied across states on the view that visibility mechanisms shouldn't depend on
-    # which state is true.
-    tie(paste0("trap_count.mean.state", 1:2, ".seasonAutumn")),
-    tie(paste0("trap_count.mean.state", 1:2, ".seasonWinter")),
-    tie(paste0("trap_count.mean.state", 1:2, ".seasonSpring")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonWinter")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSpring")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".gpp_finescale")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSummer:cropping_systemsorghum")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonAutumn:cropping_systemsorghum")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonWinter:cropping_systemsorghum")),
-    tie(paste0("burrow_count.mean.state", 1:2, ".seasonSpring:cropping_systemsorghum")),
-
-    # chewcard_count/block2/3/4: season tied across BOTH states (same detection-invariance argument
-    # as above) AND all four blocks at once (one shared "how does season affect the chew rate"
-    # curve, not four independent ones) -- 8 rows per season term (4 blocks x 2 states).
-    do.call(c, lapply(c("seasonAutumn", "seasonWinter", "seasonSpring"), function(term) {
-      tie(paste0(chewcard_streams, ".prob.state", rep(1:2, each = length(chewcard_streams)), ".", term))
-    })),
-
-    # chewcard_count/block2/3/4: the state-specific INTERCEPT is tied across blocks only (still free
-    # between states -- that's what makes the two states distinguishable at all), since all four
-    # blocks are measuring the same underlying detection rate, just via however many transects a
-    # given paddock-season actually deployed.
-    tie(paste0(chewcard_streams, ".prob.state1.(Intercept)")),
-    tie(paste0(chewcard_streams, ".prob.state2.(Intercept)")),
-
-    # chewcard_count/block2/3/4: ae_zone tied across blocks (same reasoning as the intercept above)
-    # but left free across states (matching burrow_count's own ae_zone treatment -- a real,
-    # state-dependent regional outbreak-magnitude effect, not a detection one).
-    # (Zone levels come from the data, minus the reference level, so merged zones work too.)
-    if (!obs_zone_tied) do.call(c, lapply(
-      levels(factor(hmm_data[[obs_zone]]))[-1],
-      function(zone) {
-        c(tie(paste0(chewcard_streams, ".prob.state1.", obs_zone, zone)),
-          tie(paste0(chewcard_streams, ".prob.state2.", obs_zone, zone)))
-      }
-    ))
-
-    # ae_zone (burrow_count, all 4 chewcard streams) and shape (trap_count, burrow_count)
-    # deliberately left free ACROSS STATES -- regional outbreak magnitude and
-    # overdispersion/aggregation are real, state-dependent ecological quantities, not detection
-    # artifacts. ae_zone NOT added to trap_count -- tried as a random effect (anticipating the same
-    # sparsity problem burrow_count's own fixed factor hit), and it failed anyway on genuine data
-    # sparsity, not a specification problem -- see header.
-  )
-
-  # Optional detection_terms: every level of every extra term tied across both states (and, for the
-  # chew-card streams, across all four blocks), the same detection-invariance treatment as season.
-  stream_sets <- list(trap_count = list(streams = "trap_count", param = "mean"),
-                      burrow_count = list(streams = "burrow_count", param = "mean"),
-                      chewcard = list(streams = chewcard_streams, param = "prob"))
-  # obs_zone_tied: the burrow and chew-card zone effects get the detection-term treatment too, one
-  # value per zone shared by both states (and all four chew-card blocks).
-  if (obs_zone_tied) {
-    for (stream in c("burrow_count", "chewcard")) {
-      set <- stream_sets[[stream]]
-      groups <- detection_tie_groups(valid_rows, set$streams, set$param, obs_zone)
-      fixpar_obs <- c(fixpar_obs, do.call(c, lapply(groups, function(g) tie(g))))
-    }
-  }
-  for (stream in names(detection_terms)) {
-    set <- stream_sets[[stream]]
-    for (term in detection_terms[[stream]]) {
-      groups <- detection_tie_groups(valid_rows, set$streams, set$param, term)
-      fixpar_obs <- c(fixpar_obs, do.call(c, lapply(groups, function(g) tie(g))))
-    }
-  }
-
-  # zibinom only: the zero-inflation probability's intercept tied across blocks (free between states),
-  # the same treatment as the chew-card prob intercept above.
-  if (chewcard_dist == "zibinom") {
-    fixpar_obs <- c(fixpar_obs,
-                    tie(paste0(chewcard_streams, ".z.state1.(Intercept)")),
-                    tie(paste0(chewcard_streams, ".z.state2.(Intercept)")))
-  }
-
-  # betabinom only: the overdispersion's intercept tied across blocks (free between states) -- the four
-  # blocks are replicates of the same card-reading process, so they share one clustering level.
-  if (chewcard_dist == "betabinom") {
-    fixpar_obs <- c(fixpar_obs,
-                    tie(paste0(chewcard_streams, ".sigma.state1.(Intercept)")),
-                    tie(paste0(chewcard_streams, ".sigma.state2.(Intercept)")))
-  }
+  # Which coefficients are fixed, tied across states/blocks, or free -- one rule, see
+  # observation_fixpar() above.
+  # (obs$dists()'s fixed() flags which parameters each family holds fixed, e.g. binomial size.)
+  fixed_params <- lapply(obs$dists(), function(d) names(which(d$fixed())))
+  fixpar_obs <- observation_fixpar(rownames(obs$coeff_fe()), hmm_data, stream_key, state_specific_terms, offset_terms, fixed_params)
 
   # Map stream's false-positive rate fixed (map_false_positive), seeded to its value below.
   if (map_stream && !is.null(map_false_positive)) {
@@ -1186,14 +1148,12 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
 
   obs$update_fixpar(list(obs = fixpar_obs))
 
-  # Seed the offset coefficients to exactly 1 -- fixpar above only fixes them at whatever value
-  # they currently hold, so this has to run after update_fixpar() (which seeds every non-par=
-  # covariate coefficient to 0 by default) but before $fit().
+  # Seed the offset coefficients to exactly 1 -- fixpar above only fixes them at whatever value they
+  # currently hold, so this has to run after update_fixpar() (which seeds every non-par= covariate
+  # coefficient to 0) but before $fit().
   coeff_fe <- obs$coeff_fe()
-  coeff_fe["burrow_count.mean.state1.log_burrow_metres_searched", 1] <- 1
-  coeff_fe["burrow_count.mean.state2.log_burrow_metres_searched", 1] <- 1
-  coeff_fe["trap_count.mean.state1.log_trap_effort", 1] <- 1
-  coeff_fe["trap_count.mean.state2.log_trap_effort", 1] <- 1
+  offset_rows <- rownames(coeff_fe)[sub("^[^.]+\\.[^.]+\\.state[0-9]+\\.", "", rownames(coeff_fe)) %in% offset_terms]
+  coeff_fe[offset_rows, 1] <- 1
   if (map_stream && !is.null(map_false_positive)) {
     coeff_fe["plague_map.prob.state1.(Intercept)", 1] <- stats::qlogis(map_false_positive)
   }
@@ -1207,5 +1167,8 @@ fit_plague_hmm <- function(hmm_data, transition_formula, detection_terms = list(
     hmm$hid()$update_coeff_fe(hid_coeff[, 1] + stats::rnorm(nrow(hid_coeff), 0, start_jitter))
   }
   hmm$fit(silent = TRUE)
+
+  # The model data's scaling constants travel with the model, so predictions scale new data the same way.
+  attr(hmm, "covariate_scaling") <- attr(hmm_data, "covariate_scaling")
   hmm
 }

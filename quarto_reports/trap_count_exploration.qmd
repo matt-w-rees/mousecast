@@ -164,7 +164,7 @@ covariate_reference_table <- tibble::tribble(
     "Missing or \"unknown\" crop is its own \"not recorded\" level, so no session is dropped -- but that level mostly marks older surveys, so its effect partly reflects era rather than crop.",
   4, "`crop_stage`", "Categorical",
     "The growth stage of the crop regulates food and shelter for mice.",
-    "Ordered factor with levels: sown, seedling, vegetative, flowering, ripening, stubble, plus \"not recorded\".",
+    "Unordered factor (a separate effect per stage), with levels listed in growth order: sown, seedling, vegetative, flowering, ripening, stubble, plus \"not recorded\".",
   5, "`soil_type`", "Categorical",
     "Affects burrowing ability, crop yields and water absorption.",
     "Potential mediator variable for things like rainfall/soil moisture. From TERN's soil classification.",
@@ -1139,6 +1139,100 @@ mu_compare |>
   gt::sub_missing(columns = everything(), missing_text = "--") |>
   gt::data_color(columns = -Term, palette = "Blues", domain = c(0, max(c(mu_compare$`Trap success`, mu_compare$`Unique individuals`), na.rm = TRUE)), na_color = "white") |>
   gt::tab_options(table.font.size = "0.78em")
+```
+
+
+## 5) Effects in detail
+
+Individual terms of the trap success model carried forward (`` `r sel_success$best_bic` ``), shown in more detail than the effects figures above.
+
+### Crop group x crop stage
+
+```{r}
+#| label: crop-cell-effects-prep
+#| include: false
+
+## The model's predicted mean (mu) on new data, on the link scale. gamlss2's predict() fails on new data for
+## s(soil_group, bs = "re") -- soil group is nested in soil type, so mgcv drops some of its basis columns
+## when fitting, and predict() doesn't repeat that. soil_group is held at one level here, so its
+## contribution is a constant: taken from the term's fitted values at a model-data row with that level,
+## and added to the intercept and every other term predicted on the new data. Like predict(), this
+## leaves any search-effort offset out.
+predict_link <- function(model, newdata, data) {
+  term_names <- names(model$fitted.specials$mu)
+  other_terms <- setdiff(term_names, "s(soil_group)")
+  link <- model$coefficients$mu[["(Intercept)"]] +
+    predict(model, newdata = newdata, model = "mu", type = "link", terms = other_terms)
+  if ("s(soil_group)" %in% term_names) {
+    fitted_terms <- predict(model, model = "mu", type = "terms")
+    link <- link + fitted_terms[match(as.character(newdata$soil_group[1]), as.character(data$soil_group)), "s(soil_group)"]
+  }
+  link
+}
+
+## Standard error, on the link scale, of the crop terms' combined effect for each crop group x stage
+## combination. s(crop_group), s(crop_stage) and s(crop_cell) are random effects, so a combination's
+## crop effect is one coefficient from each term, and its variance is the sum of those coefficients'
+## variances, from each term's own posterior covariance (gamlss2 stores one per term, so covariance
+## between terms -- and uncertainty in the intercept and the covariates held fixed -- isn't included).
+crop_link_se <- function(model, cells) {
+  term_var <- function(term, levels) {
+    fitted_term <- model$fitted.specials$mu[[paste0("s(", term, ")")]]
+    variances <- diag(fitted_term$vcov)
+    names(variances) <- names(fitted_term$coefficients)
+    unname(variances[paste0(term, as.character(levels))])
+  }
+  sqrt(term_var("crop_group", cells$crop_group) + term_var("crop_stage", cells$crop_stage) + term_var("crop_cell", cells$crop_cell))
+}
+
+## A typical value for one column, to hold a covariate fixed: its median if numeric, otherwise its most
+## common value (kept in the column's own class, so factor levels are preserved). A matrix column (the
+## chew-card cbind(chewed, not chewed) response) keeps its first row, since predict() checks the
+## response is valid even though it doesn't use it.
+typical_value <- function(v) {
+  if (is.matrix(v)) return(v[1, , drop = FALSE])
+  if (is.numeric(v)) return(median(v, na.rm = TRUE))
+  mode_value <- names(which.max(table(v)))
+  if (is.factor(v)) factor(mode_value, levels = levels(v)) else v[match(mode_value, as.character(v))]
+}
+
+## Every crop group x crop stage combination in the model data.
+crop_cells <- success_data |>
+  dplyr::distinct(crop_group, crop_stage, crop_cell)
+
+## One row per combination: every other covariate at its typical value, then that combination's own
+## crop group, crop stage and crop_cell level.
+crop_newdata <- tibble::as_tibble(lapply(success_data, typical_value))[rep(1, nrow(crop_cells)), ]
+crop_newdata$crop_group <- crop_cells$crop_group
+crop_newdata$crop_stage <- crop_cells$crop_stage
+crop_newdata$crop_cell  <- crop_cells$crop_cell
+
+## The model's predicted mean (mu) for each combination, with a 95% interval for the crop terms' effect:
+## its crop_group, crop_stage and crop_cell (interaction) terms together, via predict_link() and
+## crop_link_se() above, back-transformed from the link scale (log or logit). The search-effort offset is left out, so this
+## is per trap-night, scaled to captures per 100 trap-nights to match the raw rate.
+crop_link <- predict_link(sel_success$model, crop_newdata, success_data)
+crop_se <- crop_link_se(sel_success$model, crop_cells)
+linkinv <- stats::make.link(sel_success$model$family$links[["mu"]])$linkinv
+crop_cells$predicted <- 100 * linkinv(crop_link)
+crop_cells$lcl <- 100 * linkinv(crop_link - 1.96 * crop_se)
+crop_cells$ucl <- 100 * linkinv(crop_link + 1.96 * crop_se)
+```
+
+```{r}
+#| label: fig-crop-cell-effects
+#| fig-cap: "Model-predicted captures per 100 trap-nights (trap success) for each crop group x crop stage combination in the model data, from the crop group, crop stage and crop group x stage terms together, with every other covariate held at its median or most common level -- so the pattern across stages is the focus, not the level. Each panel has its own y-axis. Bars are 95% intervals for the crop terms' effect alone (from each term's posterior covariance, ignoring covariance between terms and uncertainty in everything held fixed), so they understate the full prediction uncertainty. Thinly sampled combinations are shrunk towards their crop group and stage."
+#| fig-asp: 0.8
+#| fig-width: 10
+
+## Model prediction for each combination with its 95% interval, one panel per crop group, crop stages in
+## agronomic order. Each panel has its own y-axis, so the shape across stages is the focus rather than
+## the level between crop groups.
+ggplot(crop_cells, aes(crop_stage, predicted)) +
+  geom_pointrange(aes(ymin = lcl, ymax = ucl), colour = "#c0392b", size = 0.3) +
+  facet_wrap(~crop_group, scales = "free_y") +
+  labs(x = "Crop stage", y = "Captures per 100 trap-nights") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 
