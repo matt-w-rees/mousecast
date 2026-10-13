@@ -19,6 +19,10 @@
 #   map_season_scope   "national" (default): a plague mapped anywhere releases every paddock's
 #                       not-plague anchor that season; "region": only paddocks in the same region
 #                       as the mapped plague -- WA or the eastern states (west/east of 129 E)
+#   drop_summer_maps   TRUE: no plague anchors from Summer maps, see decision (6) below
+#   drop_map_seasons   character vector of "<Season> <YYYY> <STATE>" (e.g. "Spring 2021 NSW"):
+#                       mapped plague seasons whose plague anchors are dropped in that state, see
+#                       decision (7) below
 #
 # Rule, decided directly with the project owner (2026-09) rather than re-derived from first
 # principles (unlike the (a)+(b) rule's own iterative history) -- see chat for the 3 explicit calls
@@ -62,6 +66,26 @@
 #      national scope: pre-2013 hindcast one-season-ahead onset 0.73 vs 0.72, same-season onset 0.61
 #      vs 0.69, occupancy 0.67 vs 0.68 (all within the year-resampled intervals); chosen on principle.
 #
+#   6) SUMMER MAPS NOT ANCHORED (2026-10-07, decided with the project owner): Summer extents are
+#      inferred from the seasons either side rather than observed, so paddocks inside them are left
+#      unanchored (NA) instead of plague. The Summer polygons still count as "a plague mapped this
+#      season" for decision (4), so paddocks outside them stay unanchored too, as before.
+#   7) DROPPED MAP SEASONS (2026-10-07, decided with the project owner after comparing the maps
+#      against the yearly records, the survey data and MouseAlert -- tmp/plague_map_vs_spreadsheet.qmd):
+#      state-seasons listed in drop_map_seasons lose their plague anchors (set to NA, not to
+#      not-plague), as for decision (6). Each is a moderate-severity extent the yearly records don't
+#      list, where most surveyed paddocks inside it looked low (trap success < 5%, < 1 burrow per
+#      100 m, < 10% of cards chewed) and MouseAlert reports were mostly none or low -- the build-up
+#      or tail of a plague rather than plague itself:
+#        Spring 2021 NSW   8 of 9 surveyed paddocks low; 19 MouseAlert reports, all none or low.
+#        Winter 2020 QLD   5 of 7 low; all 7 MouseAlert reports inside the extent none.
+#        Winter 2020 SA    4 of 5 low; 10 of 11 MouseAlert reports none.
+#        Spring 2020 SA    4 of 6 low; 15 of 18 MouseAlert reports none.
+#        Winter 2020 NSW   9 of 10 low; MouseAlert 8 of 11 medium -- building up, not plague.
+#        SA 2021 (Summer to Spring)  surveys mixed; MouseAlert mostly low to medium (2 of 26 high).
+#      The drops run after the backward un-anchoring below, so the seasons before a dropped anchor
+#      stay unanchored as they were.
+#
 # No multi-season FORWARD persistence/propagation (unlike the old rule's propagate_seasons): the
 # old rule's propagation was anchored to a real, documented signal (yearly_plague_occurrence.csv's
 # own consecutive-year runs); recent_plague_maps has no equivalent multi-season structure to
@@ -97,7 +121,8 @@
 
 anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_start = "Summer 2013",
                                 lookback_seasons = 2, map_season_absence = TRUE,
-                                map_season_scope = c("national", "region")) {
+                                map_season_scope = c("national", "region"),
+                                drop_summer_maps = FALSE, drop_map_seasons = NULL) {
 
   map_season_scope <- match.arg(map_season_scope)
 
@@ -170,10 +195,22 @@ anchor_plague_state <- function(survey_state_wide, recent_plague_maps, census_st
     dplyr::distinct(paddock_id, quarter) |>
     dplyr::mutate(.in_lookback = TRUE)
 
-  result |>
+  result <- result |>
     dplyr::left_join(lookback_targets, by = c("paddock_id", "quarter")) |>
     dplyr::mutate(plague_state = dplyr::if_else(
       !is.na(.in_lookback) & plague_state == 1L, NA_integer_, plague_state
-    )) |>
-    dplyr::select(-.row_id, -quarter, -.in_lookback)
+    ))
+
+  # Decision (6): plague anchors from Summer maps left unanchored.
+  if (drop_summer_maps) {
+    result$plague_state[result$plague_state %in% 2L & result$season == "Summer"] <- NA_integer_
+  }
+
+  # Decision (7): plague anchors in the listed state-seasons left unanchored.
+  if (length(drop_map_seasons) > 0) {
+    dropped <- paste(result$season, result$year_adj, result$state) %in% drop_map_seasons
+    result$plague_state[result$plague_state %in% 2L & dropped] <- NA_integer_
+  }
+
+  dplyr::select(result, -.row_id, -quarter, -.in_lookback)
 }

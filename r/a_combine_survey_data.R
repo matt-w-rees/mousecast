@@ -1,5 +1,5 @@
-# Build the single flat, survey-level frame ("surveys_all") shared by
-# shiny/raw_data_explorer/app.R and quarto_reports/mouseforecast.com/raw_data_update.qmd.
+# Build the single flat, survey-level frame ("surveys_all") used by
+# shiny/raw_data_explorer/app.R (and for the forecast page's map extent).
 #
 # Combines traps, rapid and observations (MouseAlert) into one tibble — one
 # row per survey/sighting — with a common set of derived columns both

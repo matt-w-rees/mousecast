@@ -23,8 +23,8 @@ qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) {
 }
 map_png <- file.path(qmd_dir, "email_map.png")
 
-# Written alongside email_map.png by raw_data_update.qmd's fig-aez chunk
-# (same cap_aez text used under the AE zone map in the main report).
+# Written alongside email_map.png by model_forecast.qmd's fig-phase chunk
+# (the same caption as figure 1 on the forecast page).
 map_caption <- paste(readLines(file.path(qmd_dir, "email_caption.txt")), collapse = " ")
 
 r_path <- if (dir.exists("r")) "r" else "../../r"
@@ -195,10 +195,10 @@ Research Scientist | CSIRO | <a href="mailto:matt.rees@csiro.au">matt.rees@csiro
 
 # Embed the PNG as a plain <img> tag with an inline base64 data URI, bypassing
 # Quarto's figure wrapper (which adds a lightbox link and scroll controls).
-# map_caption (read from email_caption.txt in the setup chunk) is the same
-# cap_aez text shown under the AE zone map in the main report.
+# map_caption (read from email_caption.txt in the setup chunk) is figure 1's
+# caption on the forecast page.
 cat(sprintf(
-  '<img src="%s" style="width:100%%;height:auto;display:block;margin:12px auto 0;" alt="Mouse activity map" />
+  '<img src="%s" style="width:100%%;height:auto;display:block;margin:12px auto 0;" alt="Mouse forecast map" />
    <p style="margin:8px 0 0;font-size:0.82em;color:#666666;font-family:Arial,sans-serif;line-height:1.5;">%s</p>',
   knitr::image_uri(map_png),
   map_caption

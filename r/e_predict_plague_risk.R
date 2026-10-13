@@ -144,6 +144,9 @@
 #                          each season-end month's z-score against the same month in other years)
 #                          and min_temp (min_temp_seasonal_end_month, the seasonal mean relabelled
 #                          to season-end months; see header)
+#   transition             c(from, to) states of the transition probability to map; NULL (default)
+#                          maps entry into the last (plague) state from the one before it -- for the
+#                          3-state model, medium -> plague
 #   fit_zones_sf           sf polygons of exactly the ae_zone(s) the model
 #                          was fit to -- prediction is masked to this extent,
 #                          nothing extrapolated beyond it
@@ -202,14 +205,21 @@
 #                          posterior samples each time and the target would
 #                          never stabilise across pipeline re-runs.
 #
-# Returns a single-layer SpatRaster of Pr(state 1 -> state 2) when n_post is
+# Returns a single-layer SpatRaster of Pr(from -> to) (see transition) when n_post is
 # NULL, or a 3-layer (mle, lcl, ucl) SpatRaster when n_post is set. NA
 # wherever any input covariate is NA, the cell falls outside fit_zones_sf, or
 # (mask_zone_extrapolation, default TRUE) a zone-interacted covariate value
 # there falls outside that zone's own training range.
 
-predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, period = NULL,
+predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, period = NULL, transition = NULL,
                                  mask_zone_extrapolation = TRUE, n_post = NULL, level = 0.95, seed = 20260807) {
+
+  # The transition to map, as hmmTMB's "state <i>" row and column names: by default into the last
+  # (plague) state from the state before it.
+  n_states <- plague_hmm$hid()$nstates()
+  if (is.null(transition)) transition <- c(n_states - 1, n_states)
+  from <- paste("state", transition[1])
+  to   <- paste("state", transition[2])
 
   if (is.null(period)) {
     # Latest period shared by the model's time-varying covariate rasters (static single-layer ones
@@ -232,7 +242,7 @@ predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, per
   if (is.null(n_post)) {
     plague_risk <- rep(NA_real_, nrow(cell_df))
     tpm_pred <- plague_hmm$predict(what = "tpm", newdata = newdata)
-    plague_risk[has_covariates] <- tpm_pred["state 1", "state 2", ]
+    plague_risk[has_covariates] <- tpm_pred[from, to, ]
 
     return(terra::rast(
       cbind(cell_df[c("x", "y")], plague_risk = plague_risk),
@@ -246,9 +256,9 @@ predict_plague_risk <- function(plague_hmm, covariate_rasters, fit_zones_sf, per
   set.seed(seed)
   tpm_pred <- plague_hmm$predict(what = "tpm", newdata = newdata, n_post = n_post, level = level)
 
-  mle <- rep(NA_real_, nrow(cell_df)); mle[has_covariates] <- tpm_pred$mle["state 1", "state 2", ]
-  lcl <- rep(NA_real_, nrow(cell_df)); lcl[has_covariates] <- tpm_pred$lcl["state 1", "state 2", ]
-  ucl <- rep(NA_real_, nrow(cell_df)); ucl[has_covariates] <- tpm_pred$ucl["state 1", "state 2", ]
+  mle <- rep(NA_real_, nrow(cell_df)); mle[has_covariates] <- tpm_pred$mle[from, to, ]
+  lcl <- rep(NA_real_, nrow(cell_df)); lcl[has_covariates] <- tpm_pred$lcl[from, to, ]
+  ucl <- rep(NA_real_, nrow(cell_df)); ucl[has_covariates] <- tpm_pred$ucl[from, to, ]
 
   terra::rast(
     cbind(cell_df[c("x", "y")], mle = mle, lcl = lcl, ucl = ucl),

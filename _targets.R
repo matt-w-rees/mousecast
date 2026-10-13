@@ -8,14 +8,10 @@
 # first (see that function's own header), and prints every such conflict --
 # currently just for visibility, no further handling. May come back to this.
 
-# plague_risk_map_nowcast (2026-09, r/e_predict_plague_risk.R) uses the latest complete calendar
-# month instead of waiting for the next Feb/May/Aug/Nov boundary, so a current-season forecast is
-# available at the start of that season rather than one season late. Added quickly to unblock a
-# real Spring-2026 request -- revisit the design once it's had a few real uses: is "nowcast" the
-# right name for something that's still 100% real, complete-month data (no extrapolation)? should
-# it get an uncertainty variant (deliberately deferred for now, see the target's own comment)? do
-# gpp_rolling_raster_6_nowcast/soil_moisture_raster_coarse_nowcast need to stay separate cached
-# targets, or would inlining them into plague_risk_map_nowcast's own command be just as clear?
+# plague_risk_map_nowcast was dropped with the switch to the 3-state model (2026-10): its transition
+# covariates are now rolling anomalies read at season-end months only, so a "latest complete month"
+# map would equal plague_risk_map. A current-season forecast is planned instead (using the season's
+# surveys). gpp_rolling_raster_6_nowcast has no remaining consumer -- keep or drop once that's settled.
 
 
 # SET-UP ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -50,8 +46,8 @@ tar_option_set(
   # cleans up garbage every xth target
   garbage_collection = 10, 
   # Two named controllers, not one -- "main" (4 workers) for the great majority of targets, which are small/fast and benefit from real concurrency, and
-  # "heavy" (2 workers) for the handful of targets that load/aggregate a full raw archive at once (GPP composite loading, SILO daily-to-monthly aggregation --
-  # see heavy_resources below for exactly which). Confirmed live 2026-09: running 4 of those simultaneously (the "main"-only setup this replaces) exhausted
+  # "heavy" (2 workers) for the handful of targets that load/aggregate a full raw archive at once (GPP composite loading --
+  # see heavy_resources below for exactly which; SILO daily-to-monthly aggregation left it in 2026-10, once it read one year at a time). Confirmed live 2026-09: running 4 of those simultaneously (the "main"-only setup this replaces) exhausted
   # available RAM and crashed 3 of 4 crew workers mid-run (all three restarted together, losing ~20 minutes of already-completed work on those branches) --
   # this doesn't reduce parallelism for the rest of the pipeline, just keeps the memory-heavy targets from ever piling up more than a couple at a time.
   # 2 (not the original 1) chosen the same evening after confirming live that even a single heavy worker alone left the system with only ~99MB of RAM free
@@ -80,8 +76,8 @@ gpp_modis_end_date <- "2026-08-21"
 covariate_gdal_options <- c("COMPRESS=ZSTD", "PREDICTOR=3", "ZSTD_LEVEL=9")
 
 # Routes a target to the single-worker "heavy" crew controller (tar_option_set() above) instead of the default "main" one -- see that controller's own
-# comment for why. Passed as resources = heavy_resources on load_and_clamp_gpp_composites()/summarise_silo_to_month()'s own targets below, the two
-# functions confirmed to load/aggregate a full raw archive into memory at once.
+# comment for why. Passed as resources = heavy_resources on load_and_clamp_gpp_composites()'s own targets below, confirmed to load a full raw archive
+# into memory at once.
 heavy_resources <- tar_resources(crew = tar_resources_crew(controller = "heavy"))
 
 # Determine most recent season that has fully completed as of today (Used so seasonal covariates only processed at end of every season, currently used for SILO's min temp variable).
@@ -94,7 +90,7 @@ deploy_shiny_app <- FALSE
 # 24-48 month windows are long-term candidates for the plague HMM's transitions (quarto_reports/plague_model_summary.qmd, transition hypotheses).
 gpp_rolling_windows           <- c(3, 6, 12, 24, 36, 48)
 rain_rolling_windows          <- c(3, 6, 12, 24, 36, 48)
-soil_moisture_rolling_windows <- c(12, 24)
+soil_moisture_rolling_windows <- c(6, 12, 24, 36)
 min_temp_rolling_windows      <- c(3, 6, 12)
 # Trailing windows (months) for the count of unusually cold months (min-temp anomaly below -1 SD).
 min_temp_cold_month_windows   <- c(6, 12)
@@ -385,7 +381,7 @@ tar_plan(
   # 8) Shiny app for data exploration  ----------------------------------------------------------------------------------------------------------------------
   # to load shiny app in local browser run: shiny::runApp("shiny/raw_data_explorer")
   
-  # Dataset-wide reference levels the shiny app and report both scale their metrics against.
+  # Dataset-wide reference levels the shiny app scales its metrics against.
   metric_ranges = compute_metric_ranges(surveys_all,
                                         index_max_result_traps   = index_max_percentile(0.95),
                                         index_max_result_burrow  = index_max_percentile(0.95),
@@ -431,64 +427,6 @@ tar_plan(
   }),
 
 
-  # 9) Create Mouse Update quarto doc -----------------------------------------------------------------------------------------------------------------------
-
-  # i. tar_quarto document, scans the QMD for tar_load()/tar_read() calls and automatically adds those targets as dependencies,
-
-  # Each season, refresh the "## Overview" / "## Management recommendations" text BEFORE running tar_make(), in two steps:
-  #   1) Draft: regenerate _overview.md from the latest data by rendering once with draft_overview = TRUE (this render's own HTML output is a throwaway -- only _overview.md matters). _management.md is a standalone, hand-maintained checklist and is NOT touched by this step -- the qmd substitutes the current Moderate/High zone names into its "(list zones)" placeholder itself at render time:
-  #       quarto::quarto_render(
-  #         "quarto_reports/mouseforecast.com/raw_data_update.qmd",
-  #         execute_params = list(draft_overview = FALSE)),
-  #   2) Edit: hand-edit _overview.md as needed (e.g. add specific town names, rapid-assessment anecdotes, trend notes), and _management.md if the recommended actions themselves need to change.
-  # Then run tar_make("forecast_html") (draft_overview defaults to FALSE), which {{< include >}}s the edited files as-is and re-renders whenever they change (see extra_files below).
-  
-  # quarto html file of mouse forecast summarising recent survey data
-   tar_quarto(forecast_html, path = "quarto_reports/mouseforecast.com/raw_data_update.qmd",
-              # Hand-edited Overview / Management text (see r/a_draft_overview_files.R) -- {{< include >}}d by the qmd, so list here to force a re-render when these are edited. The css file is also listed so styling-only edits trigger a re-render.
-              extra_files = c("quarto_reports/mouseforecast.com/_overview.md", "quarto_reports/mouseforecast.com/_management.md", "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"),
-              execute_params = list(
-                # sets the earliest survey date the report summarises "current" activity from
-                data_from_date        = "01-06-2026",
-                # weight_* (0+) set the relative importance of each Mouse Activity Index component
-                weight_pct_detected   = 1,
-                weight_result_traps   = 1,
-                weight_result_burrow  = 1,
-                weight_chew_per10     = 1,
-                weight_avg_daily_high = 0.5, # mousealert
-                # AE zone map: activity_index value at which the colour gradient reaches full red (yellow sits at half this value). Lower this to make red appear sooner.
-                activity_index_gradient_max = 1
-              ), quiet = TRUE),
-
-    # copy the rendered HTML to docs/index.html so GitHub Pages stays up to date; explicitly references forecast_html so this target re-runs after each render
-    tar_file(mouse_update_docs, {
-      forecast_html  # dependency: re-copy whenever the report is re-rendered
-      file.copy("quarto_reports/mouseforecast.com/raw_data_update.html", "docs/index.html", overwrite = TRUE)
-      "docs/index.html"
-    }),
-    # Git commit of docs/index.html will then deploy to mouseforecast.com (important to specify in Claude.md to never commit this folder)
-  
-    # Track the email QMD as a file target so edits to it invalidate email_draft.
-    tar_file(email_draft_qmd, "quarto_reports/mouseforecast.com/email_draft.qmd"),
-
-    # Draft HTML email for the current update. Embeds the map PNG (and its caption, from email_caption.txt) saved as a side-effect of forecast_html. Open email_draft.html in a browser, Ctrl+A -> Ctrl+C, paste into Gmail. Edit the preamble before sending.
-    tar_file(
-      email_draft, {
-        forecast_html   # ensures forecast_html (and its email_map.png/email_caption.txt) runs first
-        email_draft_qmd # re-render whenever the QMD content changes
-        quarto::quarto_render("quarto_reports/mouseforecast.com/email_draft.qmd", quiet = TRUE)
-        "quarto_reports/mouseforecast.com/email_draft.html"
-      }),
-
-    # Print the rendered HTML to a PDF copy in mouse_updates/, following the "Mouse Monitoring project Update #<N> <Mon> <Year>.pdf" naming convention used by past updates (see mouse_update_pdf_path()). Re-rendering within the same month overwrites that month's PDF; a new month gets the next update number, so each month's update is kept.
-    tar_file(forecast_pdf, {
-      forecast_html  # dependency: re-convert whenever the report is re-rendered
-      mouse_update_pdf_from_html(html_path = "quarto_reports/mouseforecast.com/raw_data_update.html", pdf_path  = mouse_update_pdf_path("mouse_updates"))
-    }),
-
-
-  
-  
   # B) PROCESS TEMPORALLY-VARYING COVARIATES ----------------------------------------------------------------------------------------------------------------
 
   # 1) Shared set-up ----------------------------------------------------------------------------------------------------------------------------------------
@@ -776,6 +714,11 @@ tar_plan(
   # Native-resolution (not the shared 0.1 degree grid), locally-smoothed GPP for burrow_count's own detection formula.
   # Built for every state with a paddock -- chewcard_count_exploration.qmd (Section D) and the plague HMM both need it wherever there's data.
   tar_terra_rast(gpp_focal_raster, build_gpp_focal_raster(monthly_gpp_rast, paddocks_sf_with_soil_type), gdal = covariate_gdal_options),
+  # Every month, not just season-end months, so burrow detection can read crop cover at the survey's own month (same crop and 3x3 smoothing as above).
+  tar_terra_rast(gpp_focal_raster_monthly, {
+    crop_extent <- terra::ext(sf::st_bbox(paddocks_sf_with_soil_type)) + 0.1
+    compute_focal_raster(terra::crop(monthly_gpp_rast, crop_extent), window = 3)
+  }, gdal = covariate_gdal_options),
   # Coverage check, kept as its own target (not bundled into the build above).
   gpp_focal_coverage_check = warn_gpp_focal_coverage_gaps(gpp_focal_raster, paddocks_sf_with_soil_type),
 
@@ -790,6 +733,9 @@ tar_plan(
     tar_terra_rast(gpp_rolling_climatology_mean, compute_climatology_raster(gpp_rolling_raster, stat = "mean", smooth_window = 3), gdal = covariate_gdal_options),
     tar_terra_rast(gpp_rolling_climatology_sd, compute_climatology_raster(gpp_rolling_raster, stat = "sd", smooth_window = 3), gdal = covariate_gdal_options)
   ),
+  # April-October GPP so far at each season-end month (February: last year's whole crop), and its anomaly -- see r/b_compute_growing_season_total_raster.R.
+  tar_terra_rast(gpp_growing_season_raster, compute_growing_season_total_raster(gpp_raster_coarse), gdal = covariate_gdal_options),
+  tar_terra_rast(gpp_growing_season_anomaly_raster, compute_loo_anomaly_raster(gpp_growing_season_raster, smooth_window = 3), gdal = covariate_gdal_options),
 
   # xii-b. Nowcast (season-end-unaligned) rolling-6 GPP -- Section E's live "current risk" prediction needs a value for whichever month is most recently
   # complete, but the season-end trim above only ever keeps Feb/May/Aug/Nov, discarding a genuinely complete month (e.g. July) just because it isn't one of
@@ -881,7 +827,19 @@ tar_plan(
   tar_terra_rast(rain_seasonal_climatology_mean, compute_climatology_raster(rain_seasonal_raster, stat = "mean"), gdal = covariate_gdal_options),
   tar_terra_rast(rain_seasonal_climatology_sd, compute_climatology_raster(rain_seasonal_raster, stat = "sd"), gdal = covariate_gdal_options),
 
-  # vi. Whiplash --------------------------------------------------------------------------------------------------------------------------------------------
+  # vi. Recent rainfall for burrow detection: the previous month's rainfall anomaly and consecutive dry months, labelled to the month after, so a
+  # survey-month read returns the month before the survey -- see r/b_shift_raster_months.R and r/b_compute_dry_months_raster.R.
+  tar_terra_rast(rain_prev_month_anomaly_raster, shift_raster_months(compute_loo_anomaly_raster(rain_raster_coarse), months = 1), gdal = covariate_gdal_options),
+  tar_terra_rast(rain_dry_months_before_raster, shift_raster_months(compute_dry_months_raster(rain_raster_coarse), months = 1), gdal = covariate_gdal_options),
+
+
+  # vii. Growing-season rainfall to date ---------------------------------------------------------------------------------------------------------------------
+  # April-October rainfall so far at each season-end month (last year's full total in summer), and its anomaly -- see r/b_compute_growing_season_total_raster.R.
+  tar_terra_rast(rain_growing_season_raster, compute_growing_season_total_raster(rain_raster_coarse), gdal = covariate_gdal_options),
+  tar_terra_rast(rain_growing_season_anomaly_raster, compute_loo_anomaly_raster(rain_growing_season_raster), gdal = covariate_gdal_options),
+
+
+  # viii. Whiplash ------------------------------------------------------------------------------------------------------------------------------------------
   # 30-month source + 12-month sweep + anchor="current", validated against real plague-occurrence data (AUC=0.717) -- source built at full monthly grain (not trimmed to season-end months, unlike rain_rolling_raster above, since a multi-month sweep needs more than 4 layers/year). See r/b_compute_whiplash_raster.R's header for the full parameter-sweep history and why this replaced an earlier switch-event-validated 24/3 pairing.
   rain_whiplash_source_window = 30,
   tar_terra_rast(rain_whiplash_source_raster, compute_rolling_mean_raster(rain_raster_coarse, window = rain_whiplash_source_window), gdal = covariate_gdal_options),
@@ -966,7 +924,7 @@ tar_plan(
 
 
   # 5) Minimum temperature: SILO daily min_temp, aggregated to monthly --------------------------------------------------------------------------------------
-  # Computationally exhausting when tracking back to 1980, so dynamic branching is used in yearly blocks to not exhaust memory -- and (2026-08) the download
+  # Dynamic branching over 5-year blocks, so one changed file only reprocesses its own block -- and (2026-08) the download
   # itself is now branched the same way, for genuine per-block cache isolation: a change to the current year's file only invalidates the one block
   # containing it, not all 10 -- see r/b_build_year_blocks.R and r/b_download_silo_daily_data.R's own headers for the full history of this.
 
@@ -989,12 +947,12 @@ tar_plan(
   # iii. Aggregate daily min temp to monthly average ---------------------------------------------------------------------------------------------------------
   # Each branch already has exactly its own block's files -- download_silo_daily_data() now returns only what it was asked for, not the whole directory --
   # so no manual year-filtering is needed here any more, unlike before.
+  # Reads each year through the fast HDF5 reader (r/b_read_silo_daily.R), so a block takes seconds, one year in memory at a time.
   tar_terra_rast(
     min_temp_raster_block,
     summarise_silo_to_month(silo_daily_files_min_temp, summary_func = "mean", roi = covariate_download_region),
-    pattern   = map(silo_daily_files_min_temp),
-    gdal      = covariate_gdal_options,
-    resources = heavy_resources
+    pattern = map(silo_daily_files_min_temp),
+    gdal    = covariate_gdal_options
   ),
 
   # Combine blocks into one raster.
@@ -1059,6 +1017,54 @@ tar_plan(
   tarchetypes::tar_combine(min_temp_cold_month_covs, min_temp_cold_month_attach_map, command = dplyr::bind_cols(!!!.x)),
 
 
+  # vii. Cold nights -- days below min_temp_cold_day_threshold, summed over the last 6 and 12 months at season-end months --------------------------------
+  # Daily minimum (degrees C) below which a night counts as cold -- a target, so reports can read it.
+  min_temp_cold_day_threshold = 2,
+  # Monthly counts per block, from the same daily files. See r/b_count_silo_days_below.R.
+  tar_terra_rast(
+    min_temp_cold_days_raster_block,
+    count_silo_days_below(silo_daily_files_min_temp, threshold = min_temp_cold_day_threshold, roi = covariate_download_region),
+    pattern = map(silo_daily_files_min_temp),
+    gdal    = covariate_gdal_options
+  ),
+
+  # Combine blocks and realign to the standard covariate grid (cell-average count).
+  tar_terra_rast(min_temp_cold_days_raster, resample_to_grid(combine_spatraster_list(min_temp_cold_days_raster_block), covariate_grid_template), gdal = covariate_gdal_options),
+
+  # 3-, 6- and 12-month totals (trailing mean x window), read at season-end months.
+  tar_terra_rast(min_temp_cold_days3_raster, trim_to_season_end_months(compute_rolling_mean_raster(min_temp_cold_days_raster, window = 3) * 3, season_end_months = c(2, 5, 8, 11)), gdal = covariate_gdal_options),
+  # The 3-month count's departure from the same location's other years, in days (a z-score explodes for rare counts) -- see r/b_compute_departure_raster.R.
+  tar_terra_rast(min_temp_cold_days3_departure_raster, compute_departure_raster(min_temp_cold_days3_raster), gdal = covariate_gdal_options),
+  tar_terra_rast(min_temp_cold_days6_raster, trim_to_season_end_months(compute_rolling_mean_raster(min_temp_cold_days_raster, window = 6) * 6, season_end_months = c(2, 5, 8, 11)), gdal = covariate_gdal_options),
+  tar_terra_rast(min_temp_cold_days12_raster, trim_to_season_end_months(compute_rolling_mean_raster(min_temp_cold_days_raster, window = 12) * 12, season_end_months = c(2, 5, 8, 11)), gdal = covariate_gdal_options),
+
+
+  # viii. Frost-risk nights -- cold nights with dry air (9am vapour pressure below frost_vp_threshold), summed over 3 months at season-end months --------
+  # 9am vapour pressure (hPa) below which a cold night counts as frost-risk -- see r/b_count_silo_frost_days.R.
+  frost_vp_threshold = 6,
+  # Daily SILO vapour pressure, one branch per block like min_temp (ii. above).
+  tar_file(silo_daily_files_vp, {
+    download_silo_daily_data(
+      data          = paddock_month_grid,
+      earliest_year = min(min_temp_year_blocks),
+      latest_year   = max(min_temp_year_blocks),
+      variables     = "vp",
+      refresh_after = latest_complete_season_end)
+  }, pattern = map(min_temp_year_blocks)),
+  # Monthly counts per block, from both variables' daily files. See r/b_count_silo_frost_days.R.
+  tar_terra_rast(
+    frost_days_raster_block,
+    count_silo_frost_days(silo_daily_files_min_temp, silo_daily_files_vp, temp_threshold = min_temp_cold_day_threshold, vp_threshold = frost_vp_threshold, roi = covariate_download_region),
+    pattern = map(silo_daily_files_min_temp, silo_daily_files_vp),
+    gdal    = covariate_gdal_options
+  ),
+  # Combine blocks and realign to the standard covariate grid (cell-average count).
+  tar_terra_rast(frost_days_raster, resample_to_grid(combine_spatraster_list(frost_days_raster_block), covariate_grid_template), gdal = covariate_gdal_options),
+  # 3-month totals at season-end months, and their departure from the same location's other years, in days -- see r/b_compute_departure_raster.R.
+  tar_terra_rast(frost_days3_raster, trim_to_season_end_months(compute_rolling_mean_raster(frost_days_raster, window = 3) * 3, season_end_months = c(2, 5, 8, 11)), gdal = covariate_gdal_options),
+  tar_terra_rast(frost_days3_departure_raster, compute_departure_raster(frost_days3_raster), gdal = covariate_gdal_options),
+
+
   # 6) Attach seasonal + carried-forward yearly covariates to paddock_season_grid ---------------------------------------------------------------------------
   # Each covariate's period_col depends on its own grain -- monthly-grain rasters (GPP/soil_moisture) use "season_end_month_year"; rain_seasonal/min_temp already produce a real value per season directly, so they use "season_year_adj". See r/b_build_paddock_season_grid.R and r/b_attach_raster_covs.R.
   # GPP's/rain's own rolling triplets attach via bind_cols(gpp_rolling_covs)/bind_cols(rain_rolling_covs) instead, since those tables are built per-window (section 2.viii/3.iv) and combined via tar_combine() -- safe as a plain bind_cols() since every branch shares this same paddock_season_grid's row order (attach_raster_covs()'s own header).
@@ -1080,7 +1086,12 @@ tar_plan(
     # Min temperature
     attach_raster_covs(min_temp_seasonal_raster, "min_temp", period_col = "season_year_adj") |>
     dplyr::bind_cols(min_temp_rolling_covs) |>
-    dplyr::bind_cols(min_temp_cold_month_covs),
+    dplyr::bind_cols(min_temp_cold_month_covs) |>
+    attach_raster_covs(min_temp_cold_days6_raster, "min_temp_cold_days6", period_col = "season_end_month_year") |>
+    attach_raster_covs(min_temp_cold_days12_raster, "min_temp_cold_days12", period_col = "season_end_month_year") |>
+    # Frost-risk nights (cold, dry air), 3-month totals and their departure from the same location's other years (section 5.viii)
+    attach_raster_covs(frost_days3_raster, "frost_days3", period_col = "season_end_month_year") |>
+    attach_raster_covs(frost_days3_departure_raster, "frost_days3_departure", period_col = "season_end_month_year"),
 
 
   # 7) Section B summary report -----------------------------------------------------------------------------------------------------------------------------
@@ -1156,7 +1167,14 @@ tar_plan(
 
   # Semi-supervised HMM state anchor -- paddock-scale point-in-polygon match against recent_plague_maps, see r/c_anchor_plague_state.R.
   # Every paddock-season from census_start to the latest mapped season is non-plague unless inside a polygon mapped that season.
-  plague_state_anchors = anchor_plague_state(survey_state_wide, recent_plague_maps, census_start = "Summer 2013", map_season_scope = "region"),
+  # Summer maps (inferred from adjacent seasons) and the listed state-seasons (build-up or tail, not plague) give no plague anchors -- see r/c_anchor_plague_state.R.
+  plague_state_anchors = anchor_plague_state(survey_state_wide, recent_plague_maps,
+    census_start     = "Summer 2013",
+    map_season_scope = "region",
+    drop_summer_maps = TRUE,
+    drop_map_seasons = c("Spring 2021 NSW", "Winter 2020 QLD", "Winter 2020 SA", "Spring 2020 SA", "Winter 2020 NSW",
+                         "Autumn 2021 SA", "Winter 2021 SA", "Spring 2021 SA")
+  ),
 
 
   # D) OBSERVATION-STREAM EXPLORATORY ANALYSIS -------------------------------------------------------------------------------------------------------------------
@@ -1188,13 +1206,37 @@ tar_plan(
 
   # 1) Build model data ---------------------------------------------------------------------------------------------------------------------------------------
 
+  # Survey counts above these rule out the low state: trap success (captures per 100 trap-nights) and active burrows per 100 m transect.
+  anchor_trap_success_threshold = 20,
+  anchor_burrow_threshold = 5,
+  # Trap success below this, from a session of at least anchor_trap_low_min_effort trap-nights, rules out the plague state.
+  anchor_trap_low_threshold = 5,
+  anchor_trap_low_min_effort = 50,
+
+  # Each AE zone's plague history (yearly records and maps), and whether it came out of a plague within the last year -- see r/e_build_zone_plague_history.R.
+  zone_plague_history = build_zone_plague_history(plague_state_anchors, yearly_plague_occurrence),
+
   # Reshapes to hmmTMB's ID/state format, dropping rows missing a transition covariate.
+  # Anchors: plague maps, plus the survey-count thresholds above -- see anchors_for_states() in r/e_build_hmm_data.R.
   # Level covariates get centred and scaled "_scaled" copies, with the constants kept for prediction -- see r/e_scale_covariates.R.
   hmm_data = build_hmm_data(plague_state_anchors,
-    state_filter   = c("NSW", "VIC", "SA", "QLD", "WA"),
-    covariates     = c("rain_whiplash_trough_to_peak", "gpp_anomaly", "gpp_rolling6", "min_temp", "gpp_rolling3_anomaly", "soil_moisture_anomaly", "min_temp_rolling3_anomaly"),
-    exclude_zones  = "Qld Central",
-    scaled         = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "min_temp", "gpp_finescale", "soil_moisture")
+    state_filter           = c("NSW", "VIC", "SA", "QLD", "WA"),
+    covariates             = c("gpp_anomaly", "soil_moisture_rolling12_anomaly",
+                               "rain_whiplash_trough_to_peak", "gpp_rolling6", "min_temp", "soil_moisture_rolling36_anomaly", "min_temp_cold_days12",
+                               "gpp_rolling6_anomaly", "soil_moisture_rolling6_anomaly",
+                               "gpp_rolling3_anomaly", "soil_moisture_anomaly"),
+    exclude_zones          = "Qld Central",
+    n_states               = 3,
+    trap_success_threshold = anchor_trap_success_threshold,
+    burrow_threshold       = anchor_burrow_threshold,
+    trap_low_threshold     = anchor_trap_low_threshold,
+    trap_low_min_effort    = anchor_trap_low_min_effort,
+    scaled                 = c("rain_whiplash_trough_to_peak", "gpp_rolling6", "min_temp", "min_temp_cold_days12", "gpp_finescale_survey"),
+    # Burrow detection's paddock-scale GPP and recent rainfall, read at each rapid survey's own month -- see r/e_attach_survey_month_covs.R.
+    survey_month_rasters   = list(gpp_finescale_survey = gpp_focal_raster_monthly, prev_rain_anomaly = rain_prev_month_anomaly_raster,
+                                  dry_months_before = rain_dry_months_before_raster),
+    # Each row's zone post-plague indicator.
+    zone_plague_history    = zone_plague_history
   ),
 
 
@@ -1205,17 +1247,19 @@ tar_plan(
   # i. Observation model
 
   # One family and term list per stream and parameter; "1" is intercept-only, offset() fixes a coefficient at 1.
-  # Intercepts differ between the not-plague and plague states; covariate terms are detection effects shared by both states.
+  # Intercepts differ between the low, medium and plague states; covariate terms are detection effects shared by all states.
   # A stream's optional state_specific entry would list covariates estimated separately for each state instead (none at present).
   hmm_observation_model = list(
     trap_count = list(
       family = "nbinom2",
       mean   = c(
-        # Seasonal detection, differing between sorghum and winter-cereal regions.
-        "season * cropping_system",
+        # Detection through the year: one curve shared by all states and both cropping systems (survey-date harmonics; too few trap sessions for a curve per system) -- see r/e_build_hmm_data.R.
+        "trap_sin1 + trap_cos1 + trap_sin2 + trap_cos2",
+        # Sorghum versus winter-cereal regions' overall trap detection.
+        "cropping_system",
         # Crop recorded on the trap visit.
         "crop_group_trap_det",
-        # Regional trapping differences (GRDC subregion; trap type, grid design and programme) -- see r/e_build_hmm_data.R.
+        # GRDC subregion, adjusted for sample size, to capture other regional ecology + trapping differences  -- see r/e_build_hmm_data.R.
         "trap_subregion",
         # Trap-nights.
         "offset(log_trap_effort)"
@@ -1225,101 +1269,118 @@ tar_plan(
     burrow_count = list(
       family = "nbinom2",
       mean   = c(
-        # Seasonal detection, differing between sorghum and winter-cereal regions.
-        "season * cropping_system",
+        # Detection through the year, differing between sorghum and winter-cereal regions: a curve shared by all states (survey-date harmonics) -- see r/e_build_hmm_data.R.
+        "cropping_system * (rapid_sin1 + rapid_cos1 + rapid_sin2 + rapid_cos2)",
         # Regional differences in burrow visibility (adjusted AE zones).
         "ae_zone_adj",
-        # Paddock-scale crop growth.
-        "gpp_finescale_scaled",
-        # Crop group and stage recorded on the rapid visit.
+        # crop group effect
         "crop_group_det",
+        # Burrow visibility under crop cover: paddock-scale GPP at the survey's own month.
+        "gpp_finescale_survey_scaled",
         "crop_stage_det",
         # Paddock's soil order (static, TERN soil map); soil group is a grouping of it, so this also covers soil group's main effect.
         "soil_type_det",
-        # Unusually wet or dry soil.
-        "soil_moisture_anomaly",
-        # Soil moisture's effect on burrow visibility, by soil group (wet clays collapse, dry clays crack).
-        "soil_moisture_scaled",
-        "soil_moisture_scaled:soil_group",
+        # On cracking clay, the previous month's rainfall anomaly (an unusually wet month swells and seals clay burrows).
+        "prev_rain_anomaly:cracking_clay",
+        # Consecutive dry months before the survey, on cracking clay only (a sustained dry spell cracks clay; mice shelter in the cracks).
+        "dry_months_before:cracking_clay",
         # Metres of transect searched.
         "offset(log_burrow_metres_searched)"
       ),
-      shape  = "1"
+      shape  = "1" 
     ),
     # Applied to all four chew-card blocks (cards 1-10, 11-20, 21-30, 31-40), tied across blocks.
     chewcard = list(
       family = "betabinom",
       prob   = c(
-        # Seasonal detection.
-        "season",
-        # Regional differences in chew-card detection (adjusted AE zones).
-        "ae_zone_adj",
-        # Crop group and stage recorded on the rapid visit.
-        "crop_group_det",
-        "crop_stage_det",
-        # Paddock's soil order (static, TERN soil map).
-        "soil_type_det"
+        # Detection through the year, differing between sorghum and winter-cereal regions: a curve shared by all states (survey-date harmonics) -- see r/e_build_hmm_data.R.
+        "cropping_system * (rapid_sin1 + rapid_cos1 + rapid_sin2 + rapid_cos2)",
+        # Regional differences in chew-card detection (adjusted AE zones, QLD S split into South East and South West QLD).
+        "chew_zone",
+        # Crop stage recorded on the rapid visit.
+        "crop_stage_det"
       ),
-      sigma  = "1"
+      sigma  = "1",
+      # Cards saturate once mice build up, so medium and plague share one chew rate and spread -- chew cards tell low from elevated.
+      tied_states = list(prob = c(2, 3), sigma = c(2, 3))
     )
   ),
 
 
   # ii. Transition model
 
-  # Entering plague [1, 2], chosen by the transition search; anomalies are already z-scores, so only levels are "_scaled".
-  plague_transition_enter = c(
+  # Three states: low (1), medium (2) and plague (3); anomalies are already z-scores, so only levels are "_scaled".
+  # Spatially varying effects: an AE-zone random intercept and whiplash slope on medium -> plague only; soil-moisture anomalies differ off cracking clay (not_clay).
+  # One wetness measure per window: rainfall anomalies are dropped, as they duplicate soil moisture (r = 0.83).
+
+  # Low -> medium [1, 2]: build-up when conditions turn good -- the 3-month GPP anomaly by season (a 12-month window lags a drought break).
+  plague_transition_low_medium = c(
+    # 3-month GPP anomaly, its slope by season (shared across cropping systems: their separate slopes over-predicted build-up after strong winters).
+    # No season main effect: seasonal patterns in the counts are detection effects.
+    "gpp_rolling3_anomaly",
+    "gpp_rolling3_anomaly:season",
+    # 12-month soil-moisture anomaly, differing on cracking clay.
+    "soil_moisture_rolling12_anomaly",
+    "soil_moisture_rolling12_anomaly:not_clay"
+  ),
+
+  # Medium -> plague [2, 3]: rainfall whiplash alone -- longer-term food and moisture act through low -> medium and medium -> low.
+  plague_transition_medium_plague = c(
     # Rainfall whiplash, with a partially-pooled slope per AE zone.
     "rain_whiplash_trough_to_peak_scaled",
     "s(ae_zone, by = rain_whiplash_trough_to_peak_scaled, bs = 're')",
-    # 12-month GPP anomaly.
-    "gpp_anomaly",
-    # 6-month GPP level.
-    "gpp_rolling6_scaled",
-    # Seasonal minimum temperature level.
-    "min_temp_scaled",
     # AE-zone random intercept.
-    "s(ae_zone, bs = 're')"
+    "s(ae_zone, bs = 're')",
+    # Zone came out of a plague within the last year: densities too low to erupt again straight away -- see r/e_build_zone_plague_history.R.
+    "post_plague"
   ),
 
-  # Leaving plague [2, 1].
-  plague_transition_leave = c(
+  # Medium -> low [2, 1]: recent good conditions finish; compact, as the medium state is weakly identified.
+  plague_transition_medium_low = c(
+    # 6-month soil-moisture anomaly.
+    "soil_moisture_rolling6_anomaly"
+  ),
+  
+  # Plague -> low [3, 1]: the conditions that caused the plague finish (no AE-zone intercept).
+  plague_transition_plague_low = c(
     # Soil group's own effect.
     "soil_group",
-    # Rainfall whiplash, by soil group.
+    # Rainfall whiplash, differing on cracking clay.
     "rain_whiplash_trough_to_peak_scaled",
-    "rain_whiplash_trough_to_peak_scaled:soil_group",
+    "rain_whiplash_trough_to_peak_scaled:not_clay",
     # 3-month GPP anomaly.
     "gpp_rolling3_anomaly",
-    # Soil-moisture anomaly, by soil group.
+    # Soil-moisture anomaly, differing on cracking clay.
     "soil_moisture_anomaly",
-    "soil_moisture_anomaly:soil_group",
-    # 3-month minimum-temperature anomaly.
-    "min_temp_rolling3_anomaly",
+    "soil_moisture_anomaly:not_clay",
     # Seasonal minimum temperature level.
-    "min_temp_scaled",
-    # AE-zone random intercept.
-    "s(ae_zone, bs = 're')"
+    "min_temp_scaled"
   ),
 
-  # The unsupervised fit's exit drops the soil-group terms, which it can't identify without anchors.
-  plague_transition_leave_unsupervised = c(
-    "rain_whiplash_trough_to_peak_scaled",
-    "gpp_rolling3_anomaly",
-    "soil_moisture_anomaly",
-    "min_temp_rolling3_anomaly",
-    "min_temp_scaled",
-    "s(ae_zone, bs = 're')"
+  # The full transition model; "0" rules a transition out (low -> plague, plague -> medium) -- see r/e_fit_plague_hmm.R's header.
+  hmm_transition_model = list(
+    `1>2` = plague_transition_low_medium,
+    `1>3` = "0",
+    `2>1` = plague_transition_medium_low,
+    `2>3` = plague_transition_medium_plague,
+    `3>1` = plague_transition_plague_low,
+    `3>2` = "0"
   ),
 
 
   # 3) Fit the plague HMM --------------------------------------------------------------------------------------------------------------------------------------
 
   # Each fit runs in a fresh subprocess and is retried if invalid (hmmTMB's C++ is intermittently non-deterministic) -- see r/e_fit_plague_hmm_subprocess.R.
-  plague_hmm = fit_plague_hmm_subprocess(hmm_data, observation_model = hmm_observation_model, transition_model = list(enter = plague_transition_enter, leave = plague_transition_leave)),
-
-  # Unsupervised comparison fit: every anchor removed, and the simpler exit formula above.
-  plague_hmm_unsupervised = fit_plague_hmm_subprocess(dplyr::mutate(hmm_data, state = NA_integer_), observation_model = hmm_observation_model, transition_model = list(enter = plague_transition_enter, leave = plague_transition_leave_unsupervised)),
+  # Keeps the best of 3 valid fits (fits land in local optima ~20 objective units apart), from up to 9 attempts; stops at 2 if they agree within 1 unit.
+  # With no valid fit, accepts flagged (not formally converged) attempts that agree within 4 objective units -- see r/e_fit_plague_hmm_subprocess.R.
+  plague_hmm = fit_plague_hmm_subprocess(hmm_data,
+    observation_model = hmm_observation_model,
+    transition_model  = hmm_transition_model,
+    max_attempts      = 9,
+    n_valid           = 3,
+    valid_agree_tol   = 1,
+    agree_tol         = 4
+  ),
 
   # Posterior-predictive check (2026-09) -- a genuinely different diagnostic from pseudo-residuals (r/e_fit_plague_hmm.R's own header documents ~18 formula/
   # family variants tried against that unresolved miscalibration with no fix): simulates 100 replicate datasets from plague_hmm itself (hmmTMB's own HMM$check(),
@@ -1335,79 +1396,111 @@ tar_plan(
 
 
   # 4) Grid prediction ------------------------------------------------------------------------------------------------------------------------------------------
-  # Pr(not-plague -> plague) on the 0.1 degree grid, over the prediction region below, for the covariates' latest shared period -- see r/e_predict_plague_risk.R.
+  # Transition probabilities on the 0.1 degree grid, over the prediction region below, for the covariates' latest shared period -- see r/e_predict_plague_risk.R.
   # Also masks cells that extrapolate a zone-varying covariate beyond that zone's training range -- see predict_plague_risk()'s header.
+
   # The fitted AE zones (full polygons, for report maps and zone summaries).
   fit_zones_sf = dplyr::filter(aez, ae_zone %in% unique(hmm_data$ae_zone)),
   # Prediction region: the fitted zones cut to SA2 cropping land plus 25 km around surveyed paddocks -- see r/e_build_prediction_region.R.
   prediction_region_sf = build_prediction_region(fit_zones_sf, cropping_regions, dplyr::filter(paddocks_sf_with_soil_type, paddock_id %in% hmm_data$ID)),
 
-  # Soil group on the covariate grid, for the exit transition's soil-group terms -- see r/e_build_soil_group_raster.R.
+  # The zone post-plague indicator on the covariate grid, one layer per season -- see r/e_build_post_plague_raster.R.
+  tar_terra_rast(post_plague_raster, build_post_plague_raster(zone_plague_history, fit_zones_sf, covariate_grid_template), gdal = covariate_gdal_options),
+
+  # Soil group on the covariate grid, for the transitions' soil-group terms -- see r/e_build_soil_group_raster.R.
   tar_file(soil_type_raster_file, "raw_data/predictor_variables/soil_type/ASC_EV_C_P_AU_TRN_N.cog.tif"),
   tar_terra_rast(soil_group_raster, build_soil_group_raster(soil_type_raster_file, rain_whiplash_trough_to_peak), gdal = covariate_gdal_options),
+  # 1 off cracking clay, 0 on it, the transitions' not_clay -- see r/e_build_hmm_data.R.
+  tar_terra_rast(not_clay_raster, terra::ifel(soil_group_raster == 1, 0, 1), gdal = covariate_gdal_options),
+  # Cropping system on the covariate grid (1 winter cereal, 2 sorghum), for the low -> medium GPP slopes -- see r/e_build_cropping_system_raster.R.
+  tar_terra_rast(cropping_system_raster, build_cropping_system_raster(rain_whiplash_trough_to_peak, cropping_regions, sa2_boundaries), gdal = covariate_gdal_options),
   # Seasonal-mean min temp relabelled to season-end months, so predictions use the same values the model was fitted on -- see r/e_relabel_seasonal_raster.R.
   tar_terra_rast(min_temp_seasonal_end_month, relabel_seasonal_raster(min_temp_seasonal_raster), gdal = covariate_gdal_options),
 
   # Each transition covariate's raster, named by its hmm_data column -- extend these lists when the transition formulas gain a covariate (see r/e_build_risk_grid_newdata.R).
 
-  # Both the semi-supervised (anchored) and unsupervised models get their own risk/uncertainty maps -- a standing comparison, not a one-off, via tar_map() over model variant.
-  # Same "same computation, several variants" pattern as gpp_rolling_attach_map/rain_rolling_attach_map above -- a third model variant later is one more tibble row, not a hand-copied target pair.
-  tarchetypes::tar_map(
-    values = tibble::tibble(
-      model_variant = c("supervised", "unsupervised"),
-      model_sym     = rlang::syms(c("plague_hmm", "plague_hmm_unsupervised"))
+  # Pr(medium -> plague): the risk a building-up population becomes a plague next season.
+  tar_terra_rast(plague_risk_map, predict_plague_risk(plague_hmm,
+    list(
+      rain_whiplash_trough_to_peak    = rain_whiplash_trough_to_peak,
+      post_plague                     = post_plague_raster,
+      gpp_anomaly                     = gpp_rolling_anomaly_raster_12,
+      gpp_rolling6                    = gpp_rolling_raster_6,
+      min_temp                        = min_temp_seasonal_end_month,
+      min_temp_cold_days12            = min_temp_cold_days12_raster,
+      soil_moisture_rolling12_anomaly = soil_moisture_rolling_anomaly_raster_12,
+      soil_moisture_rolling36_anomaly = soil_moisture_rolling_anomaly_raster_36,
+      soil_moisture_rolling6_anomaly  = soil_moisture_rolling_anomaly_raster_6,
+      gpp_rolling6_anomaly            = gpp_rolling_anomaly_raster_6,
+      gpp_rolling3_anomaly            = gpp_rolling_anomaly_raster_3,
+      soil_moisture_anomaly           = soil_moisture_anomaly_raster,
+      soil_group                      = soil_group_raster,
+      not_clay                        = not_clay_raster,
+      cropping_system                 = cropping_system_raster
     ),
-    names = "model_variant",
-    tar_terra_rast(plague_risk_map, predict_plague_risk(model_sym,
-      list(
-        rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
-        gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
-        gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_seasonal_end_month,
-        gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
-        soil_moisture_anomaly        = soil_moisture_anomaly_raster,
-        min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
-        soil_group                   = soil_group_raster
-      ),
-      prediction_region_sf
-    )),
-    # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/e_predict_plague_risk.R's header for why this is a separate cached target rather than computed live in the report.
-    tar_terra_rast(plague_risk_map_uncertainty, predict_plague_risk(model_sym,
-      list(
-        rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
-        gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
-        gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_seasonal_end_month,
-        gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
-        soil_moisture_anomaly        = soil_moisture_anomaly_raster,
-        min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
-        soil_group                   = soil_group_raster
-      ),
-      prediction_region_sf,
-      n_post = 500
-    )),
+    prediction_region_sf
+  )),
 
-    # "Nowcast" variant -- same prediction, but using gpp_rolling_raster_6_nowcast/soil_moisture_anomaly_raster_nowcast (2.xii-b/4.iv above) in place of
-    # their season-end-trimmed counterparts, so predict_plague_risk()'s own shared-period auto-detection can land on the latest complete calendar month
-    # (whatever it is) instead of being held back to the last Feb/May/Aug/Nov boundary. rain_whiplash_trough_to_peak is unchanged --
-    # already full monthly grain (see rain_whiplash_source_raster's own comment above). Real, complete-month data
-    # only, no extrapolation -- kept as a separate target rather than changing plague_risk_map itself, so the primary map's own definition never silently
-    # shifts. Point estimate only, no uncertainty variant yet (2026-09) -- deliberately deferred, not an oversight, see the TO-DO note at the top of this
-    # file. See r/e_predict_plague_risk.R's header.
-    tar_terra_rast(plague_risk_map_nowcast, predict_plague_risk(model_sym,
-      list(
-        rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
-        gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
-        gpp_rolling6                 = gpp_rolling_raster_6_nowcast,
-        min_temp                     = min_temp_seasonal_end_month,
-        gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
-        soil_moisture_anomaly        = soil_moisture_anomaly_raster_nowcast,
-        min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
-        soil_group                   = soil_group_raster
-      ),
-      prediction_region_sf
-    ))
+  # Same prediction, plus a 95% CI (mle/lcl/ucl) via posterior sampling -- see r/e_predict_plague_risk.R's header.
+  tar_terra_rast(plague_risk_map_uncertainty, predict_plague_risk(plague_hmm,
+    list(
+      rain_whiplash_trough_to_peak    = rain_whiplash_trough_to_peak,
+      post_plague                     = post_plague_raster,
+      gpp_anomaly                     = gpp_rolling_anomaly_raster_12,
+      gpp_rolling6                    = gpp_rolling_raster_6,
+      min_temp                        = min_temp_seasonal_end_month,
+      min_temp_cold_days12            = min_temp_cold_days12_raster,
+      soil_moisture_rolling12_anomaly = soil_moisture_rolling_anomaly_raster_12,
+      soil_moisture_rolling36_anomaly = soil_moisture_rolling_anomaly_raster_36,
+      soil_moisture_rolling6_anomaly  = soil_moisture_rolling_anomaly_raster_6,
+      gpp_rolling6_anomaly            = gpp_rolling_anomaly_raster_6,
+      gpp_rolling3_anomaly            = gpp_rolling_anomaly_raster_3,
+      soil_moisture_anomaly           = soil_moisture_anomaly_raster,
+      soil_group                      = soil_group_raster,
+      not_clay                        = not_clay_raster,
+      cropping_system                 = cropping_system_raster
+    ),
+    prediction_region_sf,
+    n_post = 500
+  )),
+
+  # Pr(low -> medium): the chance a low population starts building up next season.
+  tar_terra_rast(plague_build_up_map, predict_plague_risk(plague_hmm,
+    list(
+      rain_whiplash_trough_to_peak    = rain_whiplash_trough_to_peak,
+      post_plague                     = post_plague_raster,
+      gpp_anomaly                     = gpp_rolling_anomaly_raster_12,
+      gpp_rolling6                    = gpp_rolling_raster_6,
+      min_temp                        = min_temp_seasonal_end_month,
+      min_temp_cold_days12            = min_temp_cold_days12_raster,
+      soil_moisture_rolling12_anomaly = soil_moisture_rolling_anomaly_raster_12,
+      soil_moisture_rolling36_anomaly = soil_moisture_rolling_anomaly_raster_36,
+      soil_moisture_rolling6_anomaly  = soil_moisture_rolling_anomaly_raster_6,
+      gpp_rolling6_anomaly            = gpp_rolling_anomaly_raster_6,
+      gpp_rolling3_anomaly            = gpp_rolling_anomaly_raster_3,
+      soil_moisture_anomaly           = soil_moisture_anomaly_raster,
+      soil_group                      = soil_group_raster,
+      not_clay                        = not_clay_raster,
+      cropping_system                 = cropping_system_raster
+    ),
+    prediction_region_sf,
+    transition = c(1, 2)
+  )),
+
+
+  # Current state of surveyed paddocks: this season's surveys (not yet in the model data) update each paddock's state, no refit -- see r/e_filter_current_state.R.
+  # The surveys, prepared like the model data, detection covariates at the survey month -- see r/e_build_current_season_data.R.
+  current_season_data = build_current_season_data(plague_state_anchors, hmm_data,
+    soil_moisture_raster         = soil_moisture_raster_coarse_nowcast,
+    soil_moisture_anomaly_raster = soil_moisture_anomaly_raster_nowcast,
+    gpp_focal_raster             = gpp_focal_raster,
+    state_filter                 = c("NSW", "VIC", "SA", "QLD", "WA"),
+    exclude_zones                = "Qld Central",
+    survey_month_rasters         = list(gpp_finescale_survey = gpp_focal_raster_monthly, prev_rain_anomaly = rain_prev_month_anomaly_raster,
+                                        dry_months_before = rain_dry_months_before_raster),
+    zone_plague_history          = zone_plague_history
   ),
+  current_state = filter_current_state(plague_hmm, hmm_data, current_season_data),
 
 
   # 5) Hindcast against recorded plague years --------------------------------------------------------------------------------------------------------------------
@@ -1415,29 +1508,33 @@ tar_plan(
   tar_file(mutze_plague_maps_file, "raw_data/plague_occurrence/mutze_1989_sa_plagues/mutze_1989_sa_plagues.gpkg"),
   mutze_plague_maps = sf::read_sf(mutze_plague_maps_file),
 
-  # Grid hindcast of onset risk and propagated occupancy from Summer 1983, scored against yearly_plague_occurrence by state-year -- see r/e_hindcast_plague_occurrence.R.
-  tarchetypes::tar_map(
-    values = tibble::tibble(
-      model_variant = c("supervised", "unsupervised"),
-      model_sym     = rlang::syms(c("plague_hmm", "plague_hmm_unsupervised"))
+  # Grid hindcast carrying each cell's low / medium / plague mix forward, scored against yearly_plague_occurrence by state-year -- see r/e_hindcast_plague_occurrence.R.
+  plague_hindcast = hindcast_plague_occurrence(plague_hmm,
+    list(
+      rain_whiplash_trough_to_peak    = rain_whiplash_trough_to_peak,
+      post_plague                     = post_plague_raster,
+      gpp_anomaly                     = gpp_rolling_anomaly_raster_12,
+      gpp_rolling6                    = gpp_rolling_raster_6,
+      min_temp                        = min_temp_seasonal_end_month,
+      min_temp_cold_days12            = min_temp_cold_days12_raster,
+      soil_moisture_rolling12_anomaly = soil_moisture_rolling_anomaly_raster_12,
+      soil_moisture_rolling36_anomaly = soil_moisture_rolling_anomaly_raster_36,
+      soil_moisture_rolling6_anomaly  = soil_moisture_rolling_anomaly_raster_6,
+      gpp_rolling6_anomaly            = gpp_rolling_anomaly_raster_6,
+      gpp_rolling3_anomaly            = gpp_rolling_anomaly_raster_3,
+      soil_moisture_anomaly           = soil_moisture_anomaly_raster,
+      soil_group                      = soil_group_raster,
+      not_clay                        = not_clay_raster,
+      cropping_system                 = cropping_system_raster
     ),
-    names = "model_variant",
-    tar_target(plague_hindcast, hindcast_plague_occurrence(model_sym,
-      list(
-        rain_whiplash_trough_to_peak = rain_whiplash_trough_to_peak,
-        gpp_anomaly                  = gpp_rolling_anomaly_raster_12,
-        gpp_rolling6                 = gpp_rolling_raster_6,
-        min_temp                     = min_temp_seasonal_end_month,
-        gpp_rolling3_anomaly         = gpp_rolling_anomaly_raster_3,
-        soil_moisture_anomaly        = soil_moisture_anomaly_raster,
-        min_temp_rolling3_anomaly    = min_temp_rolling_anomaly_raster_3,
-        soil_group                   = soil_group_raster
-      ),
-      prediction_region_sf
-    )),
-    # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/e_score_plague_hindcast.R.
-    tar_target(plague_hindcast_scores, score_plague_hindcast(plague_hindcast, aus_shp, yearly_plague_occurrence))
+    prediction_region_sf
   ),
+  # AUC by era (pre-2013 hindcast vs anchored era) with year-resampled intervals -- see r/e_score_plague_hindcast.R.
+  plague_hindcast_scores = score_plague_hindcast(plague_hindcast, aus_shp, yearly_plague_occurrence),
+  # Calibration: forecasts before surveys vs after, chew-card zeros, reliability against the maps, regional odds factors -- see r/e_check_plague_calibration.R.
+  plague_calibration = check_plague_calibration(plague_hmm, hmm_data),
+  # Pr(plague next season | not plague now) at the latest season: each cell's medium probability times its entry risk -- see r/e_hindcast_risk_map.R.
+  tar_terra_rast(plague_onset_map, hindcast_risk_map(plague_hindcast, rain_whiplash_trough_to_peak)),
 
 
   # 6) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
@@ -1447,7 +1544,43 @@ tar_plan(
   tar_quarto(plague_model_summary_html,
              path       = "quarto_reports/plague_model_summary.qmd",
              quiet      = TRUE,
-             deployment = "main")
+             deployment = "main"),
+
+
+  # 7) Website forecast ----------------------------------------------------------------------------------------------------------------------------------------
+  # The seasonal grower forecast for mouseforecast.com, built from this section's grid forecast.
+  # Each season, hand-edit _overview.md (the outlook) and _management.md before tar_make(); the qmd includes both as-is.
+
+  # Renders the forecast page; the hand-edited text and css are listed so editing them triggers a re-render.
+  tar_quarto(forecast_html,
+             path        = "quarto_reports/mouseforecast.com/model_forecast.qmd",
+             extra_files = c("quarto_reports/mouseforecast.com/_overview.md", "quarto_reports/mouseforecast.com/_management.md",
+                             "quarto_reports/mouseforecast.com/mouse_update_raw_data.css"),
+             quiet       = TRUE,
+             deployment  = "main"),
+  # Copies the page to docs/index.html, which deploys to mouseforecast.com once committed (a manual step, never done by AI assistants).
+  tar_file(mouse_update_docs, {
+    # dependency: re-copy whenever the page is re-rendered
+    forecast_html
+    file.copy("quarto_reports/mouseforecast.com/model_forecast.html", "docs/index.html", overwrite = TRUE)
+    "docs/index.html"
+  }),
+  # The email draft's qmd, tracked so edits to it re-render the draft.
+  tar_file(email_draft_qmd, "quarto_reports/mouseforecast.com/email_draft.qmd"),
+  # Draft email: the outlook text plus the forecast map and caption that forecast_html saves (email_map.png, email_caption.txt).
+  tar_file(email_draft, {
+    # dependencies: the page (and its saved map) and the email qmd
+    forecast_html
+    email_draft_qmd
+    quarto::quarto_render("quarto_reports/mouseforecast.com/email_draft.qmd", quiet = TRUE)
+    "quarto_reports/mouseforecast.com/email_draft.html"
+  }),
+  # PDF copy of the page in mouse_updates/, one per month -- see r/mouse_update_pdf_path.R.
+  tar_file(forecast_pdf, {
+    # dependency: re-convert whenever the page is re-rendered
+    forecast_html
+    mouse_update_pdf_from_html(html_path = "quarto_reports/mouseforecast.com/model_forecast.html", pdf_path = mouse_update_pdf_path("mouse_updates"))
+  })
 
 )
 

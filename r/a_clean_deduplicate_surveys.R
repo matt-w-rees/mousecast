@@ -103,7 +103,7 @@ resolve_duplicate_group <- function(group, crop_cols, sum_cols, value_col, surve
   } else {
     if (survey_type == "rapid") {
       # "Maximum value" = strongest evidence of mouse activity, matching
-      # mice_detected in app.R/raw_data_update.qmd: a row where burrows or
+      # mice_detected in shiny/raw_data_explorer/app.R: a row where burrows or
       # chewcards detected mice outranks one that didn't, regardless of
       # whether its burrow_total_count happens to be NA (0 transects
       # surveyed) vs. an actual 0.

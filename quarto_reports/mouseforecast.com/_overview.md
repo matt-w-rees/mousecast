@@ -1,13 +1,23 @@
-+ [Western Australia]{.underline}: Mice are widespread in the Geraldton and Esperance regions, particularly in canola, with damage reported. 
-While the plague has slowed, it doesn't appear to have crashed, and recent rainfall has been exceptionally favourable for mice. 
-Mouse plagues can extend into a second year, so growers should keep monitoring closely.
++ [Overall]{.underline}:
+  - The plague in WA's Northern (Geraldton) region is likely to continue.
+  - Elsewhere, surveys have found mostly low mouse activity so far, but conditions have been outstanding in the south, with strong crop growth and, across much of SA and the Victorian Mallee, a recent dry-to-wet rainfall swing. In the north, good winter growth has been followed by a dry spring, which should ease the risk there if it continues.
+  - The forecast points to moderate numbers in places (notably the Victorian Mallee, parts of the WA Sandplain, northern NSW and southern Queensland) and high numbers on SA's Far West and Upper Eyre Peninsula, although that is very uncertain.
+  - If populations build while these conditions last, plague risk could rise in the seasons ahead, so we have some cause for concern.
 
-+ [South Australia]{.underline}: A quick swing from a dry period to above-average rainfall, which tends to come before plagues, has recently occurred across the Mid North, Yorke and Eyre Peninsulas, and the Mallee. 
-Mouse numbers are still low, but activity in cereal crops in the Mid North and Yorke Peninsula is slightly above normal for this time of year, so we are watching these regions closely. The Mallee remains quiet.
++ [Western Australia]{.underline}:
+  - Northern (Geraldton): the plague has slowed but not crashed. Recent rainfall has favoured mice, and plagues can sometimes run into a second year.
+  - Sandplain (Esperance): moderate in about a third of the region after exceptional winter crop growth.
+  - Central and Eastern: mostly low.
 
-+ [Victoria and NSW]{.underline}: Activity is slightly above normal in the Wimmera and South East NSW. Growers should check paddocks through spring.
++ [South Australia]{.underline}:
+  - A recent dry-to-wet rainfall swing, which tends to precede plagues, points to high numbers on the Far West and Upper Eyre Peninsula and around Jamestown. This is very uncertain, as few recent surveys exist there.
+  - Mostly low elsewhere, but the rainfall swing means any area where numbers reach moderate in future seasons could quickly progress to a plague. 
 
-+ [Queensland]{.underline}: Mice are present in some ripening winter crops and sorghum stubble paddocks in South East Queensland heading into spring. 
-Growers sowing summer crops should check paddocks, and neighbouring stubble, before planting.
++ [Victoria]{.underline}:
+Moderate in the Mallee north of Birchip (towards Sea Lake and Swan Hill) after excellent winter crop growth; with the recent rainfall swing, these populations could progress to a plague, so we are watching closely. Low elsewhere.
 
-+ [Elsewhere]{.underline}: mouse activity is low or at normal levels for this time of year.
++ [New South Wales]{.underline}:
+Mostly low. Good winter growth raised the chance of a build-up (about even in the north, around Moree and Gunnedah; one in three elsewhere), but the dry spring and low survey results so far make this less likely.
+
++ [Queensland]{.underline}:
+Mostly low. Good winter growth raised the chance of a build-up to about even on the Darling Downs and along the border (around Dalby and Goondiwindi), lower around St George, but the dry spring and low survey results so far make this less likely. The forecast is least reliable here.

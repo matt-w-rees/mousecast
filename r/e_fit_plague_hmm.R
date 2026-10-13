@@ -24,7 +24,8 @@ coef_uses_variable <- function(coef, v, data) {
 # Builds hmmTMB's observation fixpar vector from one rule, so every coefficient's treatment follows
 # from the model specification in _targets.R rather than hand-written lists:
 #   - offset covariates: fixed at 1 (NA here, seeded to 1 before fitting);
-#   - intercepts and each stream's state-specific terms: one value per state (what tells the states apart);
+#   - intercepts and each stream's state-specific terms: one value per state (what tells the states apart),
+#     except that a stream's tied_states (per parameter, e.g. chew-card prob in medium and plague) share one;
 #   - every other covariate term: one value shared by both states (a detection effect);
 #   - and in every case one value shared across the four chew-card blocks, which are replicates of
 #     the same card-reading process (stream_key maps each block to "chewcard").
@@ -40,9 +41,13 @@ coef_uses_variable <- function(coef, v, data) {
 #                         covariates estimated separately in each state
 #   offset_terms          covariates whose coefficient is fixed at 1
 #   fixed_params          named list, per stream, of the parameters its family holds fixed
+#   tied_states           optional named list, per specification name, of named lists per parameter of
+#                         states whose intercepts (and state-specific terms) share one value, e.g.
+#                         list(chewcard = list(prob = c(2, 3))) -- for a stream that can't tell those
+#                         states apart (default NULL: none)
 #
 # Returns a named vector for Observation$update_fixpar(): NA (fixed) or an integer tie id.
-observation_fixpar <- function(row_names, data, stream_key, state_specific_terms, offset_terms, fixed_params) {
+observation_fixpar <- function(row_names, data, stream_key, state_specific_terms, offset_terms, fixed_params, tied_states = NULL) {
   stream <- sub("^([^.]+)\\..*$", "\\1", row_names)
   param  <- sub("^[^.]+\\.([^.]+)\\..*$", "\\1", row_names)
   state  <- sub("^[^.]+\\.[^.]+\\.state([0-9]+)\\..*$", "\\1", row_names)
@@ -75,8 +80,14 @@ observation_fixpar <- function(row_names, data, stream_key, state_specific_terms
   is_state_specific <- coef == "(Intercept)" |
     mapply(function(cf, k) any(vapply(state_specific_terms[[k]], coef_uses_variable, logical(1), coef = cf, data = data)),
            coef, key_stream)
+  # Each coefficient's state in its grouping key: its own state, or the joined set of states it is tied
+  # with (tied_states), so tied states' coefficients share a key.
+  state_key <- mapply(function(k, pa, st) {
+    tied <- tied_states[[k]][[pa]]
+    if (!is.null(tied) && as.integer(st) %in% tied) paste(sort(tied), collapse = "+") else st
+  }, key_stream, param, state, USE.NAMES = FALSE)
   key <- ifelse(is_state_specific,
-                paste(key_stream, param, state, coef),
+                paste(key_stream, param, state_key, coef),
                 paste(key_stream, param, coef))
 
   # One integer id per key shared by two or more coefficients.
@@ -987,6 +998,254 @@ observation_fixpar <- function(row_names, data, stream_key, state_specific_terms
 #     centred and scaled in the data (r/e_scale_covariates.R), replacing the hardcoded in-formula
 #     scaling; centring whiplash also changes how its zone random slope is separated from the zone
 #     intercepts.
+#   Three states, ADDED AS A COMPARISON MODEL (2026-10-03, superseded the same day -- see the
+#     production 3-state entry above): low / build-up / plague
+#     (plague_hmm_3state, _targets.R), fitted with the "i>j" form of transition_model. The intended middle
+#     state was a seasonal high, so seasonal peaks wouldn't drive the plague state; with plague-map anchors
+#     ("3" inside mapped extents, "1,2" where not-plague is anchored now) it became a short build-up phase
+#     instead -- low -> build-up (by season and cropping system) -> plague -> low, the other transitions
+#     going to zero, so the adopted structure rules them out. It fits the data better than the 2-state
+#     model (objective 12659 vs 13129) but its one-season-ahead hindcast skill is the same (0.720 vs 0.722),
+#     so the 2-state model stays the production forecast. hmmTMB's edf/AIC are unusable for it. An
+#     unsupervised 3-state fit didn't converge; its best attempt split high activity into a seasonal elevated
+#     state and a non-seasonal very-high state. Prototype and tests: tmp/three_state/.
+#   Three states (low / medium / plague), ADOPTED AS THE PRODUCTION MODEL (2026-10-03), replacing the
+#     2-state model and its unsupervised comparison (both dropped from the pipeline). Transitions follow
+#     the user's plague-formation hypotheses, each with its own formula (_targets.R, plague_transition_*):
+#     low -> medium on one good year (12-month GPP, rainfall and soil-moisture anomalies, cold nights);
+#     medium -> plague on long-term conditions (whiplash with a zone slope, 36-month anomalies); medium ->
+#     low when recent good conditions finish (6-month soil-moisture and GPP anomalies, 6-month cold nights);
+#     plague -> low with the former exit formula. Low -> plague and plague -> medium are ruled out.
+#     Rainfall and soil-moisture anomalies vary by soil group (as soil moisture did on the old exit);
+#     whiplash by AE zone (as on the old entry). Anchors: plague maps (plague "3", not plague "1,2"), plus
+#     trap success > 20% or > 5 burrows per transect ruling out low ("2" or "2,3"), and trap success < 5%
+#     from a session of >= 50 trap-nights fixing low ("1", overriding maps and burrows -- traps are trusted;
+#     few burrows can mean poor visibility, so low burrow counts don't anchor). Chew cards aren't used
+#     (anchors_for_states(), r/e_build_hmm_data.R). The 36-month GPP anomaly starts the panel in 1985.
+#     First fit: converged (3 attempts), state shares 63/26/12% with almost no seasonal swing (the
+#     2-state second state swung with the season); cold nights near zero on both transitions; sandy-earth
+#     interaction coefficients large (thin data). Medium -> low compared with intercept-only in
+#     tmp/three_state/run_medium_low.R: recent conditions fit far better (objective 12183 vs 12281), skill
+#     no different (one-season-ahead 0.61 vs 0.65, intervals +-0.13), so kept. But both scored well below
+#     the 2-state model (0.71 on the same 1985+ years), traced to medium -> plague: its three 36-month
+#     anomalies all came out negative (a good three years making plague LESS likely). REVISED the same
+#     day (user's choices after reviewing every term): medium -> plague gets back the transition search's
+#     12-month GPP anomaly, 6-month GPP level and seasonal min temp, keeps whiplash (zone slope) and
+#     36-month soil moisture, and gains cold nights (12-month, below 2 C: a screen in tmp/cold_nights/
+#     found fewer cold nights preceded recorded plague years within states, AUC ~0.37 for thresholds 0-4 C,
+#     but no effect on low -> medium or medium -> low, where it was dropped); rainfall anomalies dropped
+#     everywhere (r = 0.83 with soil moisture over the same window, fitted with cancelling signs); the
+#     soil-dependent slopes contrast cracking clay with all other soils (not_clay, r/e_build_hmm_data.R),
+#     since sandy earth is nearly all WA; the 3-month min-temp anomaly dropped from plague -> low (small,
+#     wrong-way). Trap success < 5% from sessions of >= 50 trap-nights now also anchors low.
+#     That revision still scored 0.62 one season ahead: whiplash alone (0.73) beat the model's own
+#     medium -> plague probability, as cold nights (+1.35, opposite to the state-level screen), min temp
+#     and 36-month soil moisture (-3.6) fitted where and when the few mapped onsets since 2013 happened.
+#     Medium -> plague variants (tmp/three_state/run_medium_low.R): whiplash only (zone slope + intercept)
+#     0.76 (NSW 0.68, QLD 0.56, SA 0.87, VIC 0.84), the 2-state entry formula 0.74, against the 2-state
+#     model's 0.71. ADOPTED: whiplash only (best skill; the extra terms improved the objective by just 28).
+#     Cold nights, GPP and min temp no longer enter medium -> plague. Whiplash-only fits often hit
+#     hmmTMB's bad starts (6 attempts for one valid fit), so plague_hmm allows 6 attempts.
+#   Low -> medium on the 3-month GPP anomaly x season, ADOPTED (2026-10-05). The 12-month GPP anomaly
+#     came out negative (-0.76): the medium state peaked in DROUGHT years (Pr(medium) 0.41 in 2020 vs 0.06
+#     in 2022), because plague is reachable only through medium and medium -> plague is whiplash-only,
+#     so the model parked paddocks in medium before the drought break, while the 12-month window still
+#     read the drought. Neither the survey counts nor the map anchors support "good year -> stay low"
+#     (tmp/three_state/gpp_timing.R); a counts-only (no map) model has medium following GOOD years.
+#     Variants (tmp/three_state/run_medium_low.R, queue_summary.md; one-season-ahead skill, objective):
+#     3-month GPP x season 0.752, 12625 (pipeline was 0.760, 12863) -- medium share 21% -> 12%, medium no
+#     longer tracks drought (row-level r -0.34 -> -0.06), NSW .73 / QLD .64 up, SA/VIC .76 down, stable on
+#     refit; slopes summer -1.21, autumn +0.25, winter +0.96, spring +1.15 (season = when conditions are
+#     measured; build-up shows the next season). Not adopted: 3-month GPP alone 0.746 (sign positive but
+#     worse fit); whiplash 0.703; recent soil moisture 0.740; x cropping system 0.704-0.740 (fit gains
+#     10-30, skill falls; dual-cropping summer slope -2.95, the wrong way); + last season's 3-month GPP
+#     0.746 (lag slope +0.38, fit -15) or with a season-specific lag 0.743 (fit -1 more) -- worth
+#     revisiting with a longer distributed lag; a low -> plague route (fit -85, skill flat). OPEN: the
+#     negative summer slope (harvest disturbance, autumn detection, or summer GPP not being mouse food?).
+#   Chew cards: medium and plague share one chew rate and spread, ADOPTED (2026-10-06) via tied_states
+#     (observation_fixpar()). Separately estimated, plague's chew rate came out BELOW medium's (prob
+#     intercepts +0.46 vs +0.71; at real survey conditions 26% vs 31% of cards chewed): cards saturate once
+#     mice build up, so they can't separate medium from plague. Tying the prob intercept cost 9 objective
+#     units (skill 0.732 vs 0.752); tying prob and sigma cost 4 for 2 fewer parameters (skill 0.748, NSW .75
+#     QLD .60 SA .77 VIC .76) -- adopted. Traps and burrows still separate medium from plague.
+#   AE-zone random intercept on medium -> low only, tested (2026-10-07) and REVERTED: zone intercepts removed
+#     from low -> medium, medium -> plague (with whiplash's zone slope) and plague -> low, and added to
+#     medium -> low. Objective 12768.8 vs about 12642 with the zone terms (best of 3 fits each); one-season-
+#     ahead skill 0.749 vs 0.746 overall, but QLD 0.51 vs 0.60 (SA 0.81 vs 0.76, VIC 0.83 vs 0.77). The zone
+#     terms were restored as before (none on medium -> low).
+#   Transition and detection respecification, ADOPTED (2026-10-07, user's design choices balancing ecological
+#     expectation with earlier results): AE-zone random intercepts kept on medium -> plague only (with its
+#     whiplash zone slope), dropped from low -> medium and plague -> low (dropping low -> medium's alone had cost
+#     44 objective units and QLD skill 0.60 -> 0.53); low -> medium's GPP slope is one fixed slope plus
+#     partially-pooled deviations per season x cropping system (s(season, cropping_system, by =
+#     gpp_rolling3_anomaly, bs = "re"), one shared variance; needs cropping_system_raster for prediction).
+#     Detection: burrows drop the soil-moisture anomaly; chew cards drop crop group and soil type.
+#     Then (same day) soil group dropped from low -> medium (coefficients 0.00 / -0.17) and medium -> low's GPP
+#     window shortened from 6 to 3 months: objective 12173.8 -> 12174.4 for 2 fewer parameters, skill 0.717 ->
+#     0.719; the medium -> low GPP slope stays near zero (-0.05), so GPP was then dropped from medium -> low.
+#   Low -> medium without a season main effect, ADOPTED (2026-10-07, user's design choice): seasonal
+#     patterns in the counts belong to the observation model's season (x cropping system) detection terms;
+#     low -> medium reflects ecological conditions, season-specific only through the 3-month GPP anomaly's
+#     slope by season. With it (best of 3 fits), build-up odds at average GPP were ~9x lower from autumn
+#     conditions than summer ones (season effects vs summer: autumn -2.17, winter -0.59, spring -1.22).
+#   Low -> medium additions tested on the respecified model (2026-10-07/08, best of 3 fits each, against the
+#     pipeline's -loglik 12113.8 / skill 0.716), NOT ADOPTED:
+#     - AE-zone random intercept: -loglik ~38 better, skill 0.720, but SA's forecast medium share doubled
+#       (before surveys 22% -> 45%) and only 3 of 8 attempts were valid; regional variation kept in detection.
+#     - Penalised smooth of the 3-month GPP anomaly (k = 4): the penalty shrank it to the linear response
+#       (curves identical, -loglik unchanged; its lower objective is an artefact of how smooths enter it), and
+#       every attempt was flagged as not converged (smoothing parameter at its bound). Unpenalised (fx = TRUE)
+#       smooths aren't supported by hmmTMB ("subscript out of bounds"). GPP capped at +1 fitted worse.
+#       Prompted by spring surveys levelling off after very strong winters (tmp/three_state/), which the
+#       likelihood doesn't support as curvature.
+#     - 3-month min-temp anomaly by season: -loglik 32.6 better (AIC -22.6) but skill 0.716 -> 0.637 (QLD
+#       0.54 -> 0.41, every state down), slopes opposite to the mild-winter-breeding hypothesis (winter -0.30,
+#       spring -0.93): overfits particular seasons.
+#     - Strong-winter overshoot (2026-10-08): after winter-cereal winters with GPP > +1, the prior Pr(medium or
+#       plague) for spring was 53% while spring chew cards implied ~30% (12% / 28% / 30% implied for winter GPP
+#       < 0 / 0 to +1 / > +1; the model gave 4% / 16% / 53%) -- the response is too steep. Tried: penalised GPP
+#       smooths (cr k = 4, tp k = 8) collapsed to the linear response (-loglik unchanged); a per-season smooth
+#       (s(gpp, by = season, k = 5)) diverged in 4 of 6 attempts and fitted worse (-loglik 12136-12142); one
+#       GPP slope per season shared across cropping systems (gpp + gpp:season) cut the overshoot to 43% vs 27%
+#       and raised skill to 0.725 (NSW .71 QLD .51 SA .81 VIC .78) at -loglik +20. hmmTMB's edf for these
+#       random-effect/smooth terms varies implausibly between specifications (111-321), so AIC is not comparable.
+#       ADOPTED (2026-10-08): the shared seasonal slopes, replacing the season x cropping-system deviations.
+#     - Plague -> medium allowed (intercept only, 2026-10-08): seven of nine attempts converged to the same fit as
+#       the ruled-out model (-loglik 12126.2, identical), with the plague -> medium intercept driven to about -19
+#       (rejected by the +-12 coefficient check): the data rule the route out themselves, so it stays "0".
+#     - Follow-ups on the strong-winter overshoot (2026-10-09), NOT ADOPTED: separate chew-card spreads for medium
+#       and plague (sigma -0.14 vs +0.12, -loglik 2.2 better, check unchanged); a low -> plague route on whiplash
+#       (intercept driven to ~ -22, fit identical to the ruled-out model -- with the current anchors every mapped
+#       plague is reached through medium). Spring traps and burrows agree with chew cards that strong winters
+#       don't raise spring activity; the rise comes 3-4 seasons later (autumn and the next winter: chewing x2-4,
+#       burrows x3, mapped plague 9-12%) -- a crop-size / harvest pathway the same-season GPP term can't time.
+#   Burrow detection's soil moisture and paddock-scale GPP read at the survey's own month, ADOPTED (2026-10-10,
+#     a correction, not tested): they were read at the season-end month, two months after two-thirds of rapid
+#     surveys (survey-month vs season-end correlation: soil moisture 0.69, paddock-scale GPP 0.30). New columns
+#     soil_moisture_survey / gpp_finescale_survey (r/e_attach_survey_month_covs.R, from the monthly
+#     soil_moisture_raster_coarse_nowcast and gpp_focal_raster_monthly); the transitions keep season-end values.
+#     Then tested (2026-10-10), NOT ADOPTED: a drying swing on cracking clay (survey-month soil-moisture anomaly
+#     minus the previous 6 months' mean) -- coefficient +0.08 (the expected sign, but negligible), -loglik 0.3
+#     better, nothing else changed. With survey-month timing, burrows on cracking clay show little drying
+#     effect (observed/expected 0.88-0.89 whether drier or steady); the earlier, striking wet-then-dry
+#     shortfall came from season-end timing and 27 extreme cases.
+#   Burrow detection: recent rainfall in place of soil moisture, ADOPTED (2026-10-10). Tested on the survey-month
+#     model (best of 3 each): the previous month's rainfall anomaly by soil group -loglik 5.7 better (cracking clay
+#     -0.38: an unusually wet month swells and seals clay burrows; its amount in mm fitted worse, 2.0); plus
+#     consecutive dry months (< 20 mm) on cracking clay another 2.7 better (-0.27 per month: a sustained dry spell
+#     cracks clay -- burrows seen 0.7 of expected after 2 dry months, 0.3 after 3+), with the clay rain slope
+#     strengthening to -0.57; survey-month soil moisture then added almost nothing (clay -0.04, duplex -0.03), so
+#     it was dropped. Soil order stays as the burrow intercept.
+#     - Off cracking clay, recent rain or soil moisture: DROPPED (2026-10-11). The off-clay rain slope netted only
+#       +0.10 (prev_rain_anomaly:not_clay). Swapping it for survey-month soil moisture level (off-clay residuals
+#       had suggested -0.08 per SD) fitted +0.05 and -loglik 1.1 worse (12118.4 vs 12117.3), skill 0.725 vs
+#       0.727, so recent rain and dry spells now act on cracking clay only. Sandy earth (164 burrow surveys,
+#       split between WA Tenosols and NSW Kandosols) had large, unstable slopes of its own -- revisit once more WA
+#       burrow surveys exist.
+#     - Crop group and stage as one factor (young = seedling/vegetative, old = flowering/ripening per crop;
+#       cotton merged into summer crops; stubble and sown shared across crops; bare soil and pasture their
+#       own levels) on burrows and chew cards (2026-10-11), NOT ADOPTED: -loglik 9.0 worse (12127.6 vs
+#       12118.6) with 5 more coefficients, skill 0.717 vs 0.724 (no state better). Thin cells gave extreme
+#       values (young summer crops -3.13 on burrows, 20 surveys), and merging seedling with vegetative lost
+#       a real difference. A full crop group x stage interaction wasn't fitted: residuals from the additive
+#       terms showed no crop-by-stage pattern beyond summer crops (72 surveys), and many cells are near-empty.
+#     - Survey timing with per-state yearly curves (2026-10-11), NOT ADOPTED: in place of each stream's season x
+#       cropping system, a yearly curve per cropping system shared by all states (survey-date harmonics, tied)
+#       plus each state's penalised departure from it (s(<doy>, bs = "cc", k = 8, by = cropping_system); hmmTMB
+#       can't tie smooths, so a smooth is per state). -loglik 100 better (12018.3 vs 12118.6) but skill 0.728 vs
+#       0.724 (NSW .73 QLD .50 SA .85 VIC .79), state certainty and Pr(plague) by season unchanged, Pr(medium)
+#       in winter-cereal regions swinging slightly more by season; 12 of 18 departures shrank to zero, the
+#       largest survivors in the plague state in sorghum regions (thin data); 2 valid fits in 6 attempts, about
+#       an hour of computing each. Per-state smooths independently on every stream are too flexible to fit.
+#     - Survey timing as a shared yearly curve, ADOPTED (2026-10-11, overnight run under the user's standing
+#       rules: -loglik clearly better per added coefficient, skill no more than 0.005 worse overall or 0.03 in any
+#       state, 2+ agreeing valid fits): each stream's season x cropping system replaced by cropping_system x two
+#       harmonics of its own survey date (traps: trap_*, rapid surveys: rapid_*; r/e_build_hmm_data.R), tied
+#       across states. Detection now changes smoothly through the year and follows each survey's actual date
+#       rather than its season. -loglik 37.1 better (12081.5 vs 12118.6) for 6 more coefficients, skill 0.738 vs
+#       0.724 (NSW .74 QLD .51 SA .86 VIC .80), 2 agreeing valid fits in 2 attempts. To review: mean Pr(medium)
+#       in winter-cereal regions swings a little more by season (0.13-0.29 vs 0.12-0.25, summer highest).
+#     - 3-month rainfall anomaly with its slope by season on low -> medium, alongside the GPP anomaly (2026-10-12,
+#       overnight), NOT ADOPTED: -loglik 22.9 WORSE (12104.4 vs 12081.5) despite 4 more coefficients -- both
+#       agreeing attempts landed in a poorer optimum -- with state shares shifted (69/23/9 vs 74/16/10) and
+#       cancelling slopes (rain -1.15 / winter +2.72 against GPP; the 12-month soil-moisture slope flipped to
+#       -1.27). Rain alongside GPP and soil moisture destabilises low -> medium, as the 12-month rain anomaly did.
+#     - AE-zone departures from the 3-month GPP slope on low -> medium (s(ae_zone, by = gpp_rolling3_anomaly,
+#       bs = "re"), partially pooled; 2026-10-12, overnight), NOT ADOPTED: -loglik 66.6 better (12014.9 vs
+#       12081.5) for one variance (zone SD 1.07), but skill 0.693 vs 0.738 (NSW .76 QLD .52 SA .79 VIC .75). The
+#       summer GPP slope turned negative (-2.23) with NSW Central and NSW Vic Slopes a further -2.02 (a good summer
+#       lowering build-up there) and the 12-month soil-moisture slope flipped (-1.25); SA, Mallee and WA zones
+#       leaned steeper. Zone slopes on the other low -> medium terms were therefore not tried.
+#     - Burrow anchor threshold lowered from 5 to 3 per transect (2026-10-12, after a no-fit screen: at > 3, 7.7%
+#       of the newly anchored seasons give low more than a 10% chance from the count alone, against none at
+#       > 5), NOT ADOPTED: skill 0.735 vs 0.738 (NSW .74 QLD .51 SA .85 VIC .79), state shares and certainty
+#       unchanged; more anchors for no gain, so the more conservative 5 stays.
+#     - Post-plague indicator on medium -> plague, ADOPTED (2026-10-12): "post_plague" = 1 when the paddock's AE
+#       zone came out of a recorded or mapped plague within the last year (r/e_build_zone_plague_history.R; on
+#       the grid via r/e_build_post_plague_raster.R). Prompted by the SA Vic Mallee whiplash slope sitting at
+#       ~0 although Walpeup 1983-2004 trapping (rho 0.78) and the SA/Vic yearly records (AUC 0.88) show whiplash
+#       predicts Mallee plagues: every high-whiplash year without a plague came within a year of one (1999,
+#       2012, 2022, 2023), and the recent ones, counted once per mapped paddock, flattened the slope. -loglik
+#       91.3 better (11990.2 vs 12081.5) for one coefficient, skill 0.749 vs 0.738 (NSW .75 QLD .58 SA .84
+#       VIC .80), 2 agreeing valid fits. Coefficient -10.7: in effect no plague starts in the year after a
+#       zone's plague ends. The Mallee slope recovered to 1.41 (shared slope 2.51); WA Sandplain's fell to
+#       ~0. The window (4 seasons) was set by looking at the same Mallee records the hindcast scores, so the
+#       skill gain is partly in-sample.
+#     - One yearly detection curve for both cropping systems (cropping_system + harmonics, no interaction;
+#       2026-10-12), NOT ADOPTED: -loglik 44.3 worse (12034.5 vs 11990.2) for 12 fewer coefficients, skill
+#       0.746 vs 0.749; state estimates almost unchanged (Pr(medium) correlation 0.994-0.995, most likely state
+#       the same for 98.4-98.9% of surveyed paddock-seasons), but the winter-cereal summer Pr(medium) a little
+#       lower (0.263 vs 0.285). The two systems' detection curves differ, without changing the states. By the
+#       user's choice, traps then got one curve for both systems (a cropping-system level, no interaction): too
+#       few trap sessions (972) to estimate a curve for each; burrows and chew cards keep a curve per system.
+#       That final model: -loglik 12004.7, skill 0.749 (NSW .75 QLD .58 SA .84 VIC .80).
+#     - One rainfall-whiplash slope for every zone on medium -> plague, the zone random intercept kept (2026-10-12),
+#       NOT ADOPTED: once post_plague had restored the Mallee slope (1.41), the remaining question was whether
+#       the zone slopes still earn their place. -loglik 58.6 worse (12063.3 vs 12004.7), skill 0.733 vs 0.749
+#       (NSW .73 QLD .60 SA .83 VIC .80); state estimates almost unchanged (most likely state the same for
+#       99.3% of surveyed paddock-seasons). The zones do respond to whiplash differently. A global plus
+#       zone factor-smooth (Pedersen et al. 2019 model GS) was then tried at the user's request (2026-10-12):
+#       s(whiplash, bs = "tp", k = 5) + s(whiplash, ae_zone, bs = "fs", k = 5, m = 2), replacing the linear slope,
+#       zone slope and zone intercept, with post_plague kept. NO VALID FIT in 9 attempts (the first ran ~45
+#       minutes, the other eight failed within ~5 minutes each), as in 2026-08. A check beforehand found no
+#       curvature for it to capture: binned observed medium -> plague rates (expected transitions from the
+#       forward-backward pass) tracked the fitted logit-linear curve across every whiplash decile, bar slightly
+#       fewer onsets than fitted at negative whiplash. Lagged whiplash (1-4 seasons, or the 4- and 6-season peak)
+#       separated onsets worse than current whiplash in every zone; WA Sandplain's onsets follow no whiplash
+#       measure, so its flat slope reflects its data rather than weak pooling.
+#       A by-factor smooth (model GI: s(whiplash, bs = "tp", k = 4, m = 2) + s(whiplash, by = ae_zone, bs = "tp",
+#       k = 4, m = 1) + the zone intercept, post_plague kept) did fit, though only by agree_tol (two attempts
+#       within 4 objective units, neither formally converged; three others failed with hmmTMB's intermittent
+#       bad starts), NOT ADOPTED: -loglik 115.8 better (11888.9 vs 12004.7) but skill 0.690 vs 0.749 (NSW .79
+#       QLD .55 SA .79 VIC .77). Its smoothing parameters went to almost nothing (0.0004 global, ~0.01-0.05 for
+#       most zones), so most zone curves rose to a peak at whiplash ~0.8-1.0 and fell back towards zero at higher
+#       whiplash -- fitting each zone's few mapped plague seasons, not a plausible response. The linear slope
+#       with partially-pooled zone slopes stays.
+#     - Rain after a dry spell on cracking clay: not fitted. A direct dry_months_before x prev_rain_anomaly
+#       interaction is near-redundant (dry months >= 1 means last month was dry, anomaly about -0.85). Residuals
+#       hinted that an above-normal month after 2+ dry months hides burrows less than the -0.56 slope implies
+#       (+0.19, slope +0.31, SE 0.15), but on about 60 surveys -- revisit with more clay data.
+#     - Last year's April-October GPP anomaly (crop size, gpp_growing_season_anomaly_raster's February layer) on
+#       low -> medium, separate slopes for summer and autumn transitions (2026-10-09), NOT ADOPTED: -loglik 60
+#       better (12066.2) but unstable (1 of 9 attempts valid; flagged attempts spread 12070-12098), skill 0.725
+#       -> 0.677 (NSW .62, VIC .70), autumn slope the wrong way (summer +0.77, autumn -1.61), the winter GPP
+#       slope didn't relax (+1.64) and the spring overshoot barely moved (39% vs 24% implied).
+#     - Min-temp lagged one season: not fitted -- surveyed build-up was lower after mild previous seasons (e.g.
+#       cards chewed after warm vs cool winters 2.4% vs 7.6%), not higher.
+#     - Days below 2 C in the season (min_temp_cold_days3_raster), slopes for autumn, winter and spring (summer
+#       never has one): -loglik 26.3 better, AIC -52.8, but skill 0.703 and the counts are mostly regional.
+#       As a departure from each location's normal, in days (min_temp_cold_days3_departure_raster; a z-score
+#       explodes for these rare counts): -loglik 40.5 better but edf +38 (AIC -4), skill 0.661. Both versions:
+#       frosty springs suppress build-up (spring slope -1.5 to -1.9), colder winters slightly raise it.
+#       Temperature stays on plague -> low only.
+#     - Growing-season (April-October) rainfall to date (rain_growing_season_anomaly_raster, Section B), not
+#       fitted: in winter-only regions it added little beyond the 3-month GPP anomaly in a check of surveyed
+#       build-up (r 0.22-0.64 with GPP; summer's previous-harvest window showed no signal).
+#   Chew cards: season x cropping system, ADOPTED (2026-10-07) by design rather than on diagnostics -- the chew
+#     rate's seasonal detection now differs between sorghum and winter-cereal regions, matching traps and
+#     burrows. Tested (best of 3 valid fits each): objective 12641.5 vs 12647.9, skill 0.751 vs 0.746 -- within
+#     optimiser noise. Other chew-card detection terms tested at the same time were also within noise and not
+#     adopted: paddock-scale GPP, soil moisture and its anomaly, spread by crop group.
 #   Trap subregion, ADOPTED (2026-10-01): GRDC subregion on the trap mean (trap_subregion,
 #     r/e_build_hmm_data.R), tied across states -- a regional / site-programme detection effect; each
 #     site used one trap type, so trap type itself can't be separated from it. Coded with the main
@@ -1030,11 +1289,17 @@ observation_fixpar <- function(row_names, data, stream_key, state_specific_terms
 #                         parameter (e.g. mean = c("season", "offset(log_trap_effort)"), shape = "1"),
 #                         and optionally state_specific: covariates estimated separately in each state
 #                         (every other covariate is tied across states as a detection effect -- see
-#                         observation_fixpar() above for the full rule).
+#                         observation_fixpar() above for the full rule), and tied_states: per parameter,
+#                         states sharing one intercept (e.g. tied_states = list(prob = c(2, 3))).
 #                         Supported families: nbinom2 (trap/burrow), betabinom, binom or zibinom
 #                         (chew cards; size fixed at 10).
-#   transition_model      list(enter = <terms>, leave = <terms>): the terms for entering plague [1, 2]
-#                         and leaving plague [2, 1], as set in _targets.R
+#   transition_model      two states: list(enter = <terms>, leave = <terms>), the terms for entering plague
+#                         [1, 2] and leaving plague [2, 1]. More states: a named list with one element
+#                         per off-diagonal transition "i>j" (from state i to j), its terms or "0" to rule
+#                         it out (the last state is plague). As set in _targets.R.
+#   gam_args              optional list passed to mgcv when hmmTMB builds the observation design (hmmTMB's
+#                         Observation$new(gam_args = ...)), e.g. list(knots = list(month = c(0.5, 12.5))) so
+#                         a cyclic smooth joins December to January. Default NULL: none.
 #   init                  optional fitted HMM whose estimates are used as starting values
 #                         (hmmTMB's HMM$new(init = ...)) instead of the generic ones below.
 #                         Not used by the pipeline; kept for variant fits started from a previous model.
@@ -1052,16 +1317,46 @@ observation_fixpar <- function(row_names, data, stream_key, state_specific_terms
 # Returns the fitted HMM object (hmmTMB::HMM, already $fit()-ed), with the model data's scaling
 # constants as attr(, "covariate_scaling") (r/e_scale_covariates.R) for predictions.
 
-fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init = NULL, start_jitter = 0, map_stream = FALSE, map_false_positive = NULL) {
+fit_plague_hmm <- function(hmm_data, observation_model, transition_model, gam_args = NULL, init = NULL, start_jitter = 0, map_stream = FALSE, map_false_positive = NULL) {
 
-  # Transition formulas: entering plague [1, 2] and leaving plague [2, 1] ("." on the diagonal).
-  transition_formula <- matrix(c(".", paste_formula(transition_model$leave), paste_formula(transition_model$enter), "."), nrow = 2)
+  # Transition formulas, "." on the diagonal (the reference). Two states: entering plague [1, 2] and
+  # leaving plague [2, 1] (transition_model$enter / $leave). More states: one "i>j" element per
+  # transition from state i to j, "0" for a ruled-out transition (intercept only, fixed very low below).
+  ruled_out <- character(0)
+  if (all(c("enter", "leave") %in% names(transition_model))) {
+    n_states <- 2
+    transition_formula <- matrix(c(".", paste_formula(transition_model$leave), paste_formula(transition_model$enter), "."), nrow = 2)
+  } else {
+    pairs <- lapply(strsplit(names(transition_model), ">", fixed = TRUE), as.integer)
+    n_states <- max(unlist(pairs))
+    transition_formula <- matrix(".", n_states, n_states)
+    for (k in seq_along(pairs)) {
+      terms <- transition_model[[k]]
+      if (identical(terms, "0")) {
+        transition_formula[pairs[[k]][1], pairs[[k]][2]] <- "~1"
+        ruled_out <- c(ruled_out, paste0("S", pairs[[k]][1], ">S", pairs[[k]][2], ".(Intercept)"))
+      } else {
+        transition_formula[pairs[[k]][1], pairs[[k]][2]] <- paste_formula(terms)
+      }
+    }
+    # Every off-diagonal transition must be specified.
+    if (any(transition_formula[row(transition_formula) != col(transition_formula)] == ".")) {
+      stop("fit_plague_hmm(): every off-diagonal transition \"i>j\" needs terms, or \"0\" to rule it out.")
+    }
+  }
   hid <- hmmTMB::MarkovChain$new(
     data          = hmm_data,
-    n_states      = 2,
+    n_states      = n_states,
     formula       = transition_formula,
     initial_state = "stationary"
   )
+  # Ruled-out transitions fixed at a logit-scale intercept of -15 (probability about 3e-7).
+  if (length(ruled_out) > 0) {
+    hid$update_fixpar(list(hid = stats::setNames(rep(NA, length(ruled_out)), ruled_out)))
+    hid_coeff <- hid$coeff_fe()
+    hid_coeff[ruled_out, 1] <- -15
+    hid$update_coeff_fe(hid_coeff[, 1])
+  }
 
   # The hmmTMB streams behind each specification name: the chew-card specification applies to all four
   # chew-card blocks (cards 1-10, 11-20, 21-30, 31-40 -- r/e_build_hmm_data.R), hmmTMB's documented
@@ -1072,19 +1367,26 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
                   plague_map = "plague_map")
   streams <- names(stream_key)[stream_key %in% names(observation_model)]
 
-  # Each stream's family and formulas (one per parameter: every list element except "family" and
-  # "state_specific").
-  param_names <- function(spec) setdiff(names(spec), c("family", "state_specific"))
+  # Each stream's family and formulas (one per parameter: every list element except "family",
+  # "state_specific" and "tied_states").
+  param_names <- function(spec) setdiff(names(spec), c("family", "state_specific", "tied_states"))
   dists <- lapply(streams, function(s) observation_model[[stream_key[[s]]]]$family)
+  # Single-state terms (hmmTMB's state1(), state2(), ...) are written first: hmmTMB's make_formulas()
+  # finds them by their position among the formula's variables but uses that position among its term
+  # labels, which only line up when they come first -- placed after an interaction, the wrong term is
+  # moved between states (found 2026-10-03; checked after building the observation model below).
+  state_term <- function(terms) grepl("^state[0-9]+\\(", terms)
   formulas <- lapply(streams, function(s) {
     spec <- observation_model[[stream_key[[s]]]]
-    lapply(spec[param_names(spec)], function(terms) stats::as.formula(paste_formula(terms)))
+    lapply(spec[param_names(spec)], function(terms) stats::as.formula(paste_formula(c(terms[state_term(terms)], terms[!state_term(terms)]))))
   })
   names(dists) <- names(formulas) <- streams
   # Every offset(<covariate>) term across the specification, fixed at 1 below.
   offset_terms <- unique(unlist(lapply(observation_model, function(spec) lapply(spec[param_names(spec)], offset_variables))))
   # Each stream's state-specific covariates (none if not given).
   state_specific_terms <- lapply(observation_model, function(spec) spec$state_specific)
+  # Each stream's tied states (none if not given): states sharing that parameter's intercept.
+  tied_states <- lapply(observation_model, function(spec) spec$tied_states)
 
   # Fail before fitting if a stream's terms are exactly redundant on the rows that stream observes (e.g.
   # soil_group alongside soil_type_det, which nests it, or a factor level with no observations): those
@@ -1095,7 +1397,14 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
     spec_streams <- names(stream_key)[stream_key == k]
     observed <- Reduce(`|`, lapply(spec_streams, function(s) !is.na(hmm_data[[s]])))
     for (param in names(formulas[[spec_streams[1]]])) {
-      X <- stats::model.matrix(formulas[[spec_streams[1]]][[param]], hmm_data[observed, , drop = FALSE])
+      # Only the ordinary (parametric) terms: smooths and random effects (s(), te(), ti()) are penalised,
+      # so they can't make the fit unidentifiable the same way, and model.matrix() can't build them --
+      # nor hmmTMB's single-state terms (state1(), state2(), ...).
+      labels <- attr(stats::terms(formulas[[spec_streams[1]]][[param]]), "term.labels")
+      parametric <- labels[!grepl("^(s|te|ti|state[0-9]+)\\(", labels)]
+      if (length(parametric) == 0) next
+      parametric_formula <- stats::as.formula(paste("~", paste(parametric, collapse = " + ")))
+      X <- stats::model.matrix(parametric_formula, hmm_data[observed, , drop = FALSE])
       qr_X <- qr(X)
       if (qr_X$rank < ncol(X)) {
         stop("fit_plague_hmm(): ", k, " ", param, " terms can't all be estimated from its observations -- redundant column(s): ",
@@ -1104,12 +1413,16 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
     }
   }
 
-  # Starting values: state 1 = not-plague (lower counts/chew rates), state 2 = plague (higher), with
-  # shape = 1 (moderate overdispersion) for the two count streams. These only seed the optimiser.
-  # Chew-card size = c(10, 10) is fixed (each block is 10 cards); it needs a per-state vector, since a
-  # scalar silently mis-broadcasts.
-  count_par <- list(trap_count = list(mean = c(8, 30), shape = c(1, 1)),
-                    burrow_count = list(mean = c(0.5, 8), shape = c(1, 1)))
+  # Starting values, ordered from the lowest state to plague (two states: not-plague, plague; three: low,
+  # build-up, plague), with shape = 1 (moderate overdispersion) for the two count streams. These only
+  # seed the optimiser. Chew-card size (10 cards per block) is fixed; it needs a per-state vector, since
+  # a scalar silently mis-broadcasts.
+  start_means <- list(`2` = list(trap = c(8, 30), burrow = c(0.5, 8), chew = c(0.05, 0.4)),
+                      `3` = list(trap = c(4, 12, 30), burrow = c(0.2, 1.5, 8), chew = c(0.03, 0.12, 0.4)))[[as.character(n_states)]]
+  if (is.null(start_means)) stop("fit_plague_hmm(): starting values are only defined for 2 or 3 states.")
+  per_state <- function(value) rep(value, n_states)
+  count_par <- list(trap_count = list(mean = start_means$trap, shape = per_state(1)),
+                    burrow_count = list(mean = start_means$burrow, shape = per_state(1)))
   for (s in names(count_par)) {
     if (s %in% names(observation_model) && observation_model[[s]]$family != "nbinom2") {
       stop("fit_plague_hmm(): starting values are only defined for ", s, " as nbinom2.")
@@ -1117,9 +1430,9 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
   }
   # zibinom adds a zero-inflation probability z, betabinom an overdispersion sigma.
   chewcard_par <- switch(observation_model$chewcard$family,
-    zibinom   = list(size = c(10, 10), prob = c(0.05, 0.4), z = c(0.1, 0.1)),
-    betabinom = list(size = c(10, 10), prob = c(0.05, 0.4), sigma = c(0.5, 0.5)),
-    binom     = list(size = c(10, 10), prob = c(0.05, 0.4)),
+    zibinom   = list(size = per_state(10), prob = start_means$chew, z = per_state(0.1)),
+    betabinom = list(size = per_state(10), prob = start_means$chew, sigma = per_state(0.5)),
+    binom     = list(size = per_state(10), prob = start_means$chew),
     stop("fit_plague_hmm(): unsupported chew-card family ", observation_model$chewcard$family))
   par <- c(count_par[intersect(names(count_par), streams)],
            stats::setNames(rep(list(chewcard_par), length(chewcard_streams)), chewcard_streams))
@@ -1133,13 +1446,41 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
     par$plague_map      <- list(size = c(1, 1), prob = c(0.05, 0.6))
   }
 
-  obs <- hmmTMB::Observation$new(data = hmm_data, dists = dists, formulas = formulas, par = par)
+  obs <- hmmTMB::Observation$new(data = hmm_data, dists = dists, formulas = formulas, par = par, n_states = n_states, gam_args = gam_args)
+
+  # Check every state's formula holds exactly the intended terms: all ordinary terms, plus only its own
+  # single-state terms (state1(x) in state 1 only, and so on). Guards against the make_formulas()
+  # misallocation described above.
+  # Each term label with its interaction variables sorted (R orders them by first appearance in the formula, which can differ
+  # between the specification and the formula hmmTMB builds), smooth terms left as they are.
+  term_set <- function(f) {
+    labels <- gsub(" ", "", attr(stats::terms(f), "term.labels"))
+    sort(vapply(labels, function(l) if (startsWith(l, "s(")) l else paste(sort(strsplit(l, ":", fixed = TRUE)[[1]]), collapse = ":"), character(1), USE.NAMES = FALSE))
+  }
+  for (s in streams) {
+    spec <- observation_model[[stream_key[[s]]]]
+    for (param in param_names(spec)) {
+      terms_vec <- sub("^offset\\((.*)\\)$", "\\1", spec[[param]])
+      ordinary <- setdiff(terms_vec[!state_term(terms_vec)], "1")
+      for (k in seq_len(n_states)) {
+        own <- sub(paste0("^state", k, "\\((.*)\\)$"), "\\1", terms_vec[grepl(paste0("^state", k, "\\("), terms_vec)])
+        # Parsed the same way as the built formula, so quoting and spacing compare equal.
+        intended <- c(ordinary, own)
+        expected <- if (length(intended) == 0) character(0) else term_set(stats::as.formula(paste("~", paste(intended, collapse = " + "))))
+        built <- term_set(obs$formulas()[[s]][[param]][[paste0("state", k)]])
+        if (!identical(built, expected)) {
+          stop("fit_plague_hmm(): ", s, " ", param, " state ", k, " formula doesn't match the specification -- built: ",
+               paste(setdiff(built, expected), collapse = ", "), " extra; ", paste(setdiff(expected, built), collapse = ", "), " missing.")
+        }
+      }
+    }
+  }
 
   # Which coefficients are fixed, tied across states/blocks, or free -- one rule, see
   # observation_fixpar() above.
   # (obs$dists()'s fixed() flags which parameters each family holds fixed, e.g. binomial size.)
   fixed_params <- lapply(obs$dists(), function(d) names(which(d$fixed())))
-  fixpar_obs <- observation_fixpar(rownames(obs$coeff_fe()), hmm_data, stream_key, state_specific_terms, offset_terms, fixed_params)
+  fixpar_obs <- observation_fixpar(rownames(obs$coeff_fe()), hmm_data, stream_key, state_specific_terms, offset_terms, fixed_params, tied_states)
 
   # Map stream's false-positive rate fixed (map_false_positive), seeded to its value below.
   if (map_stream && !is.null(map_false_positive)) {
@@ -1161,10 +1502,13 @@ fit_plague_hmm <- function(hmm_data, observation_model, transition_model, init =
 
   # Starting values from a previous fit when init is given (see the init argument above).
   hmm <- if (is.null(init)) hmmTMB::HMM$new(obs = obs, hid = hid) else hmmTMB::HMM$new(obs = obs, hid = hid, init = init)
-  # Optional jitter on the transition coefficients' starting values (see the start_jitter argument).
+  # Optional jitter on the free transition coefficients' starting values (see the start_jitter argument);
+  # ruled-out transitions stay fixed.
   if (start_jitter > 0) {
     hid_coeff <- hmm$hid()$coeff_fe()
-    hmm$hid()$update_coeff_fe(hid_coeff[, 1] + stats::rnorm(nrow(hid_coeff), 0, start_jitter))
+    free <- !(rownames(hid_coeff) %in% ruled_out)
+    hid_coeff[free, 1] <- hid_coeff[free, 1] + stats::rnorm(sum(free), 0, start_jitter)
+    hmm$hid()$update_coeff_fe(hid_coeff[, 1])
   }
   hmm$fit(silent = TRUE)
 

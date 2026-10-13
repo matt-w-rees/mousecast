@@ -1,7 +1,7 @@
 ================================================================================
 METADATA DOCUMENTATION: Mouse Monitoring Data
 ================================================================================
-Generated: 2026-09-30 12:53:33
+Generated: 2026-10-13 18:50:03
 
 ORGANIZATION: CSIRO, Health & Biosecurity, Rodent Management team
 
@@ -189,7 +189,7 @@ Generally two paddocks (subsites) per farm are surveyed over 3 nights.
 36 traps are deployed in a 10 m-spacing grid; animals are marked with ear punches.
 
 DATA STRUCTURE:
-  Number of rows: 3119
+  Number of rows: 3125
   Number of columns: 45
 
 UNIQUE VARIABLES (specific to traps dataset):
@@ -329,7 +329,7 @@ Chewcards: oil-soaked paper cards (10x10 cm) are pegged to the ground and checke
 Not conducted when ground cover is too dense to detect burrows or survey safely.
 
 DATA STRUCTURE:
-  Number of rows: 4035
+  Number of rows: 4076
   Number of columns: 92
 
 UNIQUE VARIABLES (specific to rapid dataset):
@@ -511,7 +511,7 @@ recoverable depending on which marking method (pit tag vs ear mark vs none)
 was used for a given capture.
 
 DATA STRUCTURE:
-  Number of rows: 29069
+  Number of rows: 29075
   Number of columns: 28
 
 VARIABLES (specific to individual_captures; join keys shared with traps

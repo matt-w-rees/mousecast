@@ -1,10 +1,10 @@
 # Static lookup mapping each GRDC agro-ecological zone (ae_zone, as it
 # appears in aez_adj / display_aez) to:
 #   - state:        state(s) the zone sits in.
-#   - region_label: broad region grouping used to combine zones into one
-#                    paragraph per region in generate_overview_text().
+#   - region_label: broad region grouping used to summarise zones by region.
 #
-# Used by generate_overview_text() (r/a_generate_overview_text.R). Includes
+# Used by check_plague_calibration() (r/e_check_plague_calibration.R) and
+# quarto_reports/covariate_summary.qmd. Includes
 # all 18 zones in aez_adj, not just the 11 currently in aez_surveyed, so the
 # lookup keeps working as the monitoring network expands.
 aez_zone_info <- function() {

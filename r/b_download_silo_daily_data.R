@@ -158,22 +158,28 @@ download_silo_daily_data <- function(data, lag_years = 1, earliest_year = NULL, 
       }
 
       if (needs_refresh) {
+        # Download to a temporary ".part" file and only rename it into place
+        # once complete, so a run interrupted mid-download (e.g. a stopped
+        # tar_make()) can't leave a truncated file at dest_path that the
+        # file.exists() check above would then treat as finished.
+        part_path <- paste0(dest_path, ".part")
         result <- tryCatch(
-          download.file(url = url, destfile = dest_path, method = "auto",
+          download.file(url = url, destfile = part_path, method = "auto",
                         quiet = TRUE, mode = "wb", cacheOK = TRUE),
           error   = function(e) -1L,
           warning = function(w) -1L
         )
-        # A failed/truncated download (confirmed live: a 60s default timeout
-        # on one of these ~400 MB files left a corrupt partial file that
-        # file.exists() alone would then treat as "already downloaded"
-        # forever) must be caught here and the partial file removed --
-        # otherwise every subsequent call silently skips re-fetching it.
-        # Loud stop() for a past year (that file should always succeed);
-        # silent skip for the current year (still-accumulating, a transient
-        # failure there is expected and self-heals on the next call).
+        if (identical(result, 0L)) {
+          file.rename(part_path, dest_path)
+        } else if (file.exists(part_path)) {
+          file.remove(part_path)
+        }
+        # A failed download leaves dest_path untouched (its partial ".part" file
+        # is removed above), so an existing current-year file survives a
+        # transient failure. Loud stop() for a past year (that file should
+        # always succeed); silent skip for the current year (still-accumulating,
+        # a transient failure there is expected and self-heals on the next call).
         if (!identical(result, 0L)) {
-          if (file.exists(dest_path)) file.remove(dest_path)
           if (year_x != current_year) {
             stop("Failed to download SILO daily ", var, " for ", year_x,
                  " -- this is a past year, so it should exist. URL: ", url)

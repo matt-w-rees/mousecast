@@ -32,7 +32,7 @@ library(purrr)
 library(gt)
 
 ## Handle both pipeline rendering (from project root) and standalone rendering
-## (from inside quarto_reports/), same convention as raw_data_update.qmd.
+## (from inside quarto_reports/), same convention as the other reports.
 store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
 r_path     <- if (dir.exists("_targets")) "r" else "../r"
 
@@ -80,7 +80,7 @@ tar_load(
     soil_moisture_whiplash_source_anomaly, soil_moisture_whiplash_source_window,
     soil_moisture_whiplash_trough_to_peak, soil_moisture_whiplash_window,
     aus_shp,
-    min_temp_seasonal_raster, min_temp_year_blocks,
+    min_temp_seasonal_raster, min_temp_year_blocks, min_temp_cold_days12_raster, min_temp_cold_day_threshold,
     paddock_season_covs
   ),
   store = store_path
@@ -198,7 +198,8 @@ summary_tbl <- tibble::tribble(
   "Rainfall (whiplash)",  "SILO monthly rainfall",                                    "0.05°",              "1982+",              paste0("How far the current value has climbed above its own trough, trailing ", rain_whiplash_source_text), "rain_whiplash_trough_to_peak",
   "Soil moisture",        "AWRA-L v7 (sm_pct)",                                       "~5 km",              "1982+",              "Raw current-season snapshot, no windowing",                              "soil_moisture, soil_moisture_anomaly",
   "Soil moisture (whiplash)", "AWRA-L v7 (sm_pct)",                                   "~5 km",              "1982+",              paste0("How far the current value has climbed above its own trough, trailing ", soil_moisture_whiplash_source_text), "soil_moisture_whiplash_trough_to_peak",
-  "Min temperature",      "SILO daily min_temp",                                      "0.05°",              paste0("1980-", mt_latest_year, " (5-year blocks)"), "Raw mean within each of the 4 seasons",            "min_temp"
+  "Min temperature",      "SILO daily min_temp",                                      "0.05°",              paste0("1980-", mt_latest_year, " (5-year blocks)"), "Raw mean within each of the 4 seasons",            "min_temp",
+  "Cold nights",          "SILO daily min_temp",                                      "0.05°",              paste0("1980-", mt_latest_year, " (5-year blocks)"), paste0("Days below ", min_temp_cold_day_threshold, "°C, summed over the trailing 12 months"), "min_temp_cold_days12"
 )
 
 summary_tbl |>
@@ -716,12 +717,12 @@ ggplot(sm_zone_whiplash_df, aes(date, value, colour = ae_zone)) +
 **Native resolution:** 0.05&deg; -- kept at SILO's own native grid, not resampled onto PML's 0.1&deg; grid like the other three: min_temp is extracted at each paddock's own point rather than compared pixel-for-pixel against them (see [Attaching to the seasonal model](#sec-attach) below).
 **Temporal span:** 1980-`r max(unlist(min_temp_year_blocks))` (5-year blocks).
 
-**Processing:** aggregate daily composites to monthly means in `r length(min_temp_year_blocks)` independent, fixed 5-year blocks spanning `r min(unlist(min_temp_year_blocks))`-`r max(unlist(min_temp_year_blocks))` (`build_year_blocks()`, `summarise_silo_to_month()`), not as one command covering the whole record &rarr; concatenate every block into one continuous stack (`combine_spatraster_list()`) &rarr; average within each of the 4 seasons (`build_seasonal_raster()`). **Deliberately kept as a raw value, never converted to an anomaly** -- winter cold is used directly as a breeding-relevant threshold, not as a deviation from that paddock's own long-term norm.
+**Processing:** aggregate daily composites to monthly means in `r length(min_temp_year_blocks)` independent, fixed 5-year blocks spanning `r min(unlist(min_temp_year_blocks))`-`r max(unlist(min_temp_year_blocks))` (`build_year_blocks()`, `summarise_silo_to_month()`, each year read by `read_silo_daily()`), not as one command covering the whole record &rarr; concatenate every block into one continuous stack (`combine_spatraster_list()`) &rarr; average within each of the 4 seasons (`build_seasonal_raster()`). **Deliberately kept as a raw value, never converted to an anomaly** -- winter cold is used directly as a breeding-relevant threshold, not as a deviation from that paddock's own long-term norm.
 
 ::: {.callout-note}
 #### Why blocks, not one 46-year command
 
-SILO's daily NetCDF files store each day as one indivisible chunk covering the *entire country* -- there's no way to decompress a spatial subset without loading the whole day, and processing all `r max(unlist(min_temp_year_blocks)) - min(unlist(min_temp_year_blocks)) + 1` years at once as a single `terra::tapp()` call repeatedly exhausted memory and was killed partway through, hours in. Splitting the record into fixed 5-year blocks bounds peak memory to one block at a time, lets independent blocks build concurrently, and means a killed block only costs re-running that one block -- not the whole record.
+Fixed 5-year blocks mean a change to one file (in practice, the current year's) only reprocesses its own block, and independent blocks build concurrently. Each year is read through GDAL's HDF5 driver (`read_silo_daily()`), which reads a year of daily grids in about a second -- GDAL's netCDF driver gives identical values for these files but takes about 3.5 seconds per day.
 :::
 
 ```{r}
@@ -803,6 +804,26 @@ ggplot(mt_map_df, aes(x, y, fill = value)) +
   scale_fill_viridis_c(option = "B", name = "Min. temp (°C)") +
   labs(x = NULL, y = NULL) +
   theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+### Cold nights {#sec-colddays}
+
+**Processing:** count the days each month with a daily minimum below `r min_temp_cold_day_threshold`&deg;C, from the same daily files and blocks (`count_silo_days_below()`) &rarr; resample onto the 0.1&deg; grid (cell-average count) &rarr; sum the trailing 12 months, read at each season's end month (`min_temp_cold_days12`). A 12-month total covers one full winter whatever season it is read in, so it varies between years rather than with the seasonal cycle -- unlike the seasonal mean above.
+
+```{r}
+#| label: fig-colddays-zone
+#| fig-cap: "Cold nights: days below the threshold in the 12 months to each season's end, by AE zone. Regions differ several-fold in their usual count; the year-to-year swings within a zone are what the covariate adds beyond each region's usual climate."
+#| fig-asp: 1.1
+
+cd_zone_df <- raster_zone_series(min_temp_cold_days12_raster, aez) |>
+  dplyr::left_join(zone_regions, by = "ae_zone")
+
+ggplot(cd_zone_df, aes(date, value, colour = ae_zone)) +
+  geom_line(linewidth = 0.35) +
+  facet_wrap(~region_label, ncol = 2) +
+  scale_colour_manual(values = zone_colours) +
+  labs(x = NULL, y = "Cold nights in the last 12 months", colour = "AE zone") +
+  theme(legend.position = "right", legend.text = element_text(size = 8), strip.text = element_text(size = 8.5))
 ```
 
 ## Attaching to the seasonal model {#sec-attach}

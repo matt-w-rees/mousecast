@@ -34,26 +34,19 @@
 #                        before aggregating -- SILO's daily files are always
 #                        national (no ROI-scoped download, unlike GPP).
 #                        NULL (default) processes the full national extent.
-#                        Confirmed live this session that this alone barely
-#                        speeds anything up: each daily layer's HDF5 chunk
-#                        (ncdump -h -s: min_temp:_ChunkSizes = 1, 681, 841)
-#                        already covers the *entire country* in one chunk,
-#                        so cropping after loading can't avoid decompressing
-#                        it -- kept anyway since it shrinks the in-memory
-#                        array tapp() then works with, but months (below) is
-#                        the change that actually matters for speed.
 #   margin_deg           degrees of margin added around roi's own extent
 #                        before cropping (default 0.5); ignored if roi is NULL
 #   months               optional integer vector (1-12) to restrict which
 #                        calendar months are read and aggregated at all --
-#                        e.g. c(6, 7, 8) for a winter-only covariate
-#                        (build_min_temp_winter_raster(), r/b_build_min_temp_winter_raster.R).
-#                        Applied before any per-cell work, so unwanted months'
-#                        daily chunks are never decompressed in the first
-#                        place -- confirmed this is what actually cuts cost,
-#                        not roi above, since each day is its own full-country
-#                        chunk regardless of spatial extent requested.
+#                        e.g. c(6, 7, 8) for a winter-only covariate.
 #                        NULL (default) keeps all 12 months.
+#
+# Each annual file is read by read_silo_daily() (r/b_read_silo_daily.R), which
+# reads through GDAL's HDF5 driver -- about 1 s per year, against about 21 min
+# per year through the netCDF driver this function used to read with (see that
+# function's header). Files are summarised one year at a time, which gives the
+# same months as summarising them all together, since SILO's files are
+# calendar years and no month spans two files.
 #
 # Returns a SpatRaster, one layer per month_year (for tar_terra_rast()).
 
@@ -65,58 +58,34 @@ summarise_silo_to_month <- function(files, summary_func = "mean", min_days_per_m
     stop("summary_func must be one of: ", paste(allowed_funcs, collapse = ", "))
   }
 
-  # Let GDAL parallelise decompression/aggregation across cores -- terra
-  # defaults to threads = 0 (off) in this installation (confirmed live
-  # 2026-08, see load_and_clamp_gpp_composites()'s own header for the fuller
-  # investigation). Matters most for step 2's tapp() call below, which
-  # aggregates potentially years' worth of full-country daily chunks down to
-  # monthly layers.
-  terra::terraOptions(threads = TRUE)
+  # One year's file at a time, so only one year's values are held in memory.
+  yearly_summaries <- lapply(files, function(file) {
 
-  # ── 1. Load daily composites, one layer per day (metadata only -- terra is
-  # lazy, actual decompression happens only when values are later read) ─────
-  rasters <- terra::rast(files)
+    # The year's daily layers (requested months only, cropped, in memory) and their dates.
+    silo <- read_silo_daily(file, roi = roi, margin_deg = margin_deg, months = months)
 
-  if (is.null(terra::time(rasters))) {
-    stop("Raster stack does not contain valid time metadata.")
-  }
+    # Each day's "<month>_<year>" label, in this pipeline's month_year convention.
+    month_lbl <- paste0(lubridate::month(silo$dates), "_", lubridate::year(silo$dates))
 
-  all_months <- lubridate::month(terra::time(rasters))
-  all_years  <- lubridate::year(terra::time(rasters))
+    # Only months with enough days to trust (drops an in-progress month).
+    days_count      <- table(month_lbl)
+    complete_months <- names(days_count[days_count >= min_days_per_month])
+    keep <- month_lbl %in% complete_months
+    if (!any(keep)) {
+      return(NULL)
+    }
+    days      <- silo$days[[keep]]
+    month_lbl <- month_lbl[keep]
 
-  # Restrict to the requested calendar months BEFORE any further step --
-  # this is what actually avoids decompressing unwanted days (see months'
-  # own header note above), unlike cropping which happens too late to help.
-  if (!is.null(months)) {
-    keep_months <- all_months %in% months
-    rasters    <- rasters[[keep_months]]
-    all_months <- all_months[keep_months]
-    all_years  <- all_years[keep_months]
-  }
+    # Collapse days to one layer per month with the named summary (terra's built-in version of it).
+    summarised <- terra::tapp(days, index = month_lbl, fun = summary_func)
 
-  if (!is.null(roi)) {
-    bbox <- sf::st_bbox(roi)
-    rasters <- terra::crop(rasters, terra::ext( # shrinks the in-memory array tapp() works with, see roi's own header note
-      bbox["xmin"] - margin_deg, bbox["xmax"] + margin_deg,
-      bbox["ymin"] - margin_deg, bbox["ymax"] + margin_deg
-    ))
-  }
+    # tapp() mangles index labels into syntactic names; restore the clean "<month>_<year>" labels,
+    # in the same first-appearance (chronological) order tapp() used to build the layers.
+    names(summarised) <- unique(month_lbl)
+    summarised
+  })
 
-  # ── 2. Collapse days to month means/sums ──────────────────────────────────
-  month_lbl <- paste0(all_months, "_", all_years) # this pipeline's "<month>_<year>" convention, per day
-
-  days_count      <- table(month_lbl)                                          # how many daily layers landed in each month
-  complete_months <- names(days_count[days_count >= min_days_per_month])       # only months with enough days to trust
-  keep      <- month_lbl %in% complete_months
-  rasters   <- rasters[[keep]]
-  month_lbl <- month_lbl[keep]
-
-  summarised_raster <- terra::tapp(rasters, index = month_lbl, fun = match.fun(summary_func))
-  # tapp() mangles index labels into syntactic names; restore the clean
-  # "<month>_<year>" labels, in the same first-appearance order tapp() used
-  # to build the layers (files are read in filename order, one per year, so
-  # this is chronological already).
-  names(summarised_raster) <- unique(month_lbl)
-
-  summarised_raster
+  # Stack the years in file (chronological) order.
+  do.call(c, Filter(Negate(is.null), yearly_summaries))
 }

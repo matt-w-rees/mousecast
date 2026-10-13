@@ -7,9 +7,8 @@
 # Dataset-wide reference level for a metric: by default, the 95th percentile
 # of every individual record's value across the whole survey history (every
 # AE zone, all time). Used as the "1.0" anchor for activity_index and the
-# Moderate/High thresholds for activity_category in both
-# shiny/raw_data_explorer/app.R and
-# quarto_reports/mouseforecast.com/raw_data_update.qmd — i.e. "1.0"
+# Moderate/High thresholds for activity_category in
+# shiny/raw_data_explorer/app.R — i.e. "1.0"
 # represents how high this metric gets, dataset-wide, in its less common but
 # not extreme cases, the same for every zone (rather than each zone's own
 # typical level).
@@ -62,10 +61,9 @@ index_max_percentile <- function(percentile) list(value = NULL, percentile = per
   )
 }
 
-# Compute the full set of dataset-wide reference levels ("ranges") that both
-# shiny/raw_data_explorer/app.R and
-# quarto_reports/mouseforecast.com/raw_data_update.qmd scale their metrics
-# against, from the shared surveys_all frame (see combine_survey_data()).
+# Compute the full set of dataset-wide reference levels ("ranges") that
+# shiny/raw_data_explorer/app.R scales its metrics against, from the
+# surveys_all frame (see combine_survey_data()).
 #
 # index_max_result_traps / index_max_result_burrow / index_max_chew_per10 /
 # index_max_avg_daily_high control how each of the four max_* index reference

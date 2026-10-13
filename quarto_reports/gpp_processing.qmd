@@ -41,7 +41,7 @@ library(gt)
 terra::terraOptions(progress = 0)
 
 ## Handle both pipeline rendering (from project root) and standalone rendering
-## (from inside quarto_reports/), same convention as raw_data_update.qmd.
+## (from inside quarto_reports/), same convention as the other reports.
 store_path <- if (dir.exists("_targets")) "_targets" else "../_targets"
 r_path     <- if (dir.exists("_targets")) "r" else "../r"
 

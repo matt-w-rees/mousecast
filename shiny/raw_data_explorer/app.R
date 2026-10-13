@@ -44,10 +44,8 @@ surveys_raw <- surveys_bound |>
   dplyr::mutate(survey_date = as.Date(survey_date))
 
 # ── Pre-processed flat survey-level frame ────────────────────────────────────
-# Built by combine_survey_data() in r/combine_survey_data.R, run once as the
-# surveys_all target in _targets.R and exported here as data/surveys_all.rds —
-# shared verbatim with quarto_reports/mouseforecast.com/raw_data_update.qmd so
-# both consumers always see identical data.
+# Built by combine_survey_data() in r/a_combine_survey_data.R, run once as the
+# surveys_all target in _targets.R and exported here as data/surveys_all.rds.
 surveys_all <- readRDS("data/surveys_all.rds")
 
 # ── Individual capture log ───────────────────────────────────────────────────
@@ -95,19 +93,15 @@ paddock_labels <- purrr::map(data_list_raw[c("traps", "rapid")], function(d) {
 # ── Zone name formatter ───────────────────────────────────────────────────────
 # Apply title case then uppercase all short words (≤ 3 letters) so state codes
 # and directional abbreviations are fully capitalised (e.g. "NSW NE Qld SE" →
-# "NSW NE QLD SE", "Vic High Rainfall" → "VIC High Rainfall"). Mirrors fmt_aez()
-# in quarto_reports/mouseforecast.com/raw_data_update.qmd.
+# "NSW NE QLD SE", "Vic High Rainfall" → "VIC High Rainfall").
 fmt_aez <- function(x) {
   x <- stringr::str_to_title(as.character(x))
   gsub("\\b([A-Za-z]{1,3})\\b", "\\U\\1", x, perl = TRUE)
 }
 
 # ── Colour palettes ──────────────────────────────────────────────────────────
-# Green -> yellow -> red diverging scale, matching
-# quarto_reports/mouseforecast.com/raw_data_update.qmd's
-# make_activity_gradient_fill() (same hex values as that qmd's base_cols
-# Low/Moderate/High) — used for every "Continuous" colour-scale metric below
-# so the map/table read the same way as the qmd's gradient report style.
+# Green -> yellow -> red diverging scale (Low/Moderate/High) — used for every
+# "Continuous" colour-scale metric below so the map and table read the same way.
 activity_gradient_colours <- c("#91cf60", "#ffeda0", "#f03b20")
 
 pal_aez_pct <- leaflet::colorNumeric(
@@ -237,9 +231,8 @@ compute_aez_display <- function(surveys, metric, zone_col = "ae_zone") {
 
 # ── Continuous "activity gradient" colour scale ──────────────────────────────
 # scales::colour_ramp() over activity_gradient_colours — the same Lab-space
-# interpolation ggplot2's scale_fill_gradient2() uses for
-# make_activity_gradient_fill() in raw_data_update.qmd, so a value of
-# val / max_val maps to the same colour in both reports.
+# interpolation ggplot2's scale_fill_gradient2() uses, so a value of
+# val / max_val maps to the same colour a ggplot2 gradient would give.
 .activity_gradient_ramp <- scales::colour_ramp(activity_gradient_colours)
 activity_gradient_color <- function(val, max_val) {
   # NA/missing → grey so empty cells are visually distinct from low values.
@@ -349,10 +342,8 @@ compute_znp50_by_aez <- function(surveys) {
 }
 
 # ── Dataset-wide reference levels ("ranges") ─────────────────────────────────
-# Computed once by compute_metric_ranges() (r/compute_metric_ranges.R) from
-# surveys_all and shared verbatim with
-# quarto_reports/mouseforecast.com/raw_data_update.qmd via the metric_ranges
-# target, exported here as data/metric_ranges.rds.
+# Computed once by compute_metric_ranges() (r/a_compute_metric_ranges.R) from
+# surveys_all as the metric_ranges target, exported here as data/metric_ranges.rds.
 #   - max_result_traps / max_result_burrow / max_chew_per10 / max_avg_daily_high:
 #     pooled-percentile references — the "1.0" anchor for
 #     compute_activity_index().
@@ -789,8 +780,7 @@ ui <- fluidPage(
         # which the green-yellow-red gradient reaches full red, with yellow at
         # half this value (see activity_gradient_color()). activity_index isn't
         # capped at 1, so a standout AEZ/season can exceed this — lower it to
-        # make red appear sooner. raw_data_update.qmd's execute_params sets its
-        # own default of 2 separately.
+        # make red appear sooner.
         fluidRow(
           column(3, sliderInput("activity_index_gradient_max", "Activity index colour scale max",
                                  min = 0.5, max = 5, value = 1, step = 0.25))
@@ -1471,8 +1461,7 @@ server <- function(input, output, session) {
   mice_by_aez_r        <- reactive({ compute_mice_by_aez(surveys_filtered(), zone_col_r()) })
   # n_days (the avg_daily_high denominator) is normally
   # map_date_end - map_date_start + 1 — the *selected* date window, regardless
-  # of whether a survey happens to fall on its boundary dates — matching
-  # compute_mouse_alert_by_aez() in raw_data_update.qmd. If a year/season
+  # of whether a survey happens to fall on its boundary dates. If a year/season
   # filter is also active, map_date_start/map_date_end default to the full
   # ~13.6-year history and don't reflect that narrowing, so n_days falls back
   # to the *actual* date range of the filtered data instead — otherwise a
