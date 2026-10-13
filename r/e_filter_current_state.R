@@ -48,26 +48,15 @@ filter_current_state <- function(plague_hmm, hmm_data, current_season_data) {
 
   # The observation model's parameters for each state at each current survey's own conditions.
   obs_par <- plague_hmm$predict(what = "obspar", newdata = current)
-  dists <- plague_hmm$obs()$dists()
 
-  # Likelihood of each row's survey results in each state: the product over every stream it surveyed.
-  likelihood <- matrix(1, nrow(current), n_states)
-  for (stream in names(dists)) {
-    observed <- which(!is.na(current[[stream]]))
-    if (length(observed) == 0) next
-    pdf <- dists[[stream]]$pdf()
-    stream_rows <- startsWith(rownames(obs_par), paste0(stream, "."))
-    for (i in observed) {
-      for (k in seq_len(n_states)) {
-        pars <- obs_par[stream_rows, k, i]
-        names(pars) <- sub(paste0("^", stream, "\\."), "", rownames(obs_par)[stream_rows])
-        likelihood[i, k] <- likelihood[i, k] * do.call(pdf, c(list(x = current[[stream]][i]), as.list(pars)))
-      }
-    }
-  }
+  # Log likelihood of each row's survey results in each state, over every stream it surveyed
+  # (r/e_survey_log_likelihood.R).
+  log_lik <- survey_log_likelihood(plague_hmm, current, obs_par)
 
-  # Posterior: prior times likelihood, renormalised.
-  posterior <- prior * likelihood
+  # Posterior: prior times likelihood, renormalised (on the log scale, rescaled by each row's maximum
+  # first, to avoid underflow).
+  log_post <- log(prior) + log_lik
+  posterior <- exp(log_post - apply(log_post, 1, max))
   posterior <- posterior / rowSums(posterior)
 
   out <- tibble::tibble(ID = current$ID, longitude = current$longitude, latitude = current$latitude,

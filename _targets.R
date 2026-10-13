@@ -1535,6 +1535,13 @@ tar_plan(
   plague_calibration = check_plague_calibration(plague_hmm, hmm_data),
   # Pr(plague next season | not plague now) at the latest season: each cell's medium probability times its entry risk -- see r/e_hindcast_risk_map.R.
   tar_terra_rast(plague_onset_map, hindcast_risk_map(plague_hindcast, rain_whiplash_trough_to_peak)),
+  # How far surveyed paddocks' evidence spreads, by leave-one-out scoring over past seasons -- see r/e_score_state_spread.R.
+  state_spread_scores = score_state_spread(plague_hmm, hmm_data, plague_hindcast),
+  # Survey-informed state map for the season just surveyed: nearby paddocks' survey evidence on top of the grid hindcast -- see r/e_spread_current_state.R.
+  current_state_map = spread_current_state(plague_hindcast, current_state,
+    bandwidth_km = state_spread_scores$settings$bandwidth_km[1],
+    prior_weight = state_spread_scores$settings$prior_weight[1]
+  ),
 
 
   # 6) Summary report --------------------------------------------------------------------------------------------------------------------------------------------
