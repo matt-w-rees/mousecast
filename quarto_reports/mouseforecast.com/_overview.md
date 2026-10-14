@@ -1,23 +1,20 @@
-+ [Overall]{.underline}:
-  - The plague in WA's Northern (Geraldton) region is likely to continue.
-  - Elsewhere, surveys have found mostly low mouse activity so far, but conditions have been outstanding in the south, with strong crop growth and, across much of SA and the Victorian Mallee, a recent dry-to-wet rainfall swing. In the north, good winter growth has been followed by a dry spring, which should ease the risk there if it continues.
-  - The forecast points to moderate numbers in places (notably the Victorian Mallee, parts of the WA Sandplain, northern NSW and southern Queensland) and high numbers on SA's Far West and Upper Eyre Peninsula, although that is very uncertain.
-  - If populations build while these conditions last, plague risk could rise in the seasons ahead, so we have some cause for concern.
-
 + [Western Australia]{.underline}:
-  - Northern (Geraldton): the plague has slowed but not crashed. Recent rainfall has favoured mice, and plagues can sometimes run into a second year.
-  - Sandplain (Esperance): moderate in about a third of the region after exceptional winter crop growth.
-  - Central and Eastern: mostly low.
+  - Northern (Geraldton) region: The mouse plague has slowed, but recent Spring surveys confirm mouse numbers still remain high (likely favoured by recent rainfall).
+  - Sandplain (Esperance) region: Mouse numbers are expected to be moderate across more than half of the region, particularly around Esperance and Salmon Gums, following exceptional winter crop growth.
+  - Central and Eastern regions: mouse numbers likely remain mostly low. 
 
 + [South Australia]{.underline}:
-  - A recent dry-to-wet rainfall swing, which tends to precede plagues, points to high numbers on the Far West and Upper Eyre Peninsula and around Jamestown. This is very uncertain, as few recent surveys exist there.
-  - Mostly low elsewhere, but the rainfall swing means any area where numbers reach moderate in future seasons could quickly progress to a plague. 
+  - Surveys have found mostly low numbers so far, except Southern Yorke Peninsula which detected moderate numbers. 
+  - However, above average winter crop growth and a recent swing from long-term dry-to-wet conditions (which often occurs prior to outbreaks) point towards risk of higher numbers in the future. 
+  - In the absence of any mouse survey data in the Far West and Upper Eyre Peninsula and around Jamestown, the model is forecasting high numbers here due to the prime conditions --- *but with considerable uncertainty*. 
 
 + [Victoria]{.underline}:
-Moderate in the Mallee north of Birchip (towards Sea Lake and Swan Hill) after excellent winter crop growth; with the recent rainfall swing, these populations could progress to a plague, so we are watching closely. Low elsewhere.
+  - Mallee: mouse numbers are potentially moderate in parts of the Mallee north of Birchip, towards Swan Hill. This is likely due to excellent winter crop growth, a recent swing from long-term dry-to-wet conditions increases the risk of further escalation further into the future. 
+  - Elsewhere: mouse numbers are expected to be low.
 
 + [New South Wales]{.underline}:
-Mostly low. Good winter growth raised the chance of a build-up (about even in the north, around Moree and Gunnedah; one in three elsewhere), but the dry spring and low survey results so far make this less likely.
+  - Mouse numbers are mostly low, except potentially moderate in parts around the Liverpool Plains (near Gunnedah) and eastern Riverina (near Temora and Wagga Wagga).
 
-+ [Queensland]{.underline}:
-Mostly low. Good winter growth raised the chance of a build-up to about even on the Darling Downs and along the border (around Dalby and Goondiwindi), lower around St George, but the dry spring and low survey results so far make this less likely. The forecast is least reliable here.
++ [Southern Queensland]{.underline}:
+  - Mouse numbers are expected to be mostly low, but with patches of moderate activity (particularly around St George although we have no surveys here to confirm this). 
+

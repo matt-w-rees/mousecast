@@ -310,10 +310,16 @@ tar_plan(
   
   
   # 4) Clean integrated data  -------------------------------------------------------------------------------------------------------------------------------
+  # Hand-maintained coordinate corrections for sites whose recorded coordinate isn't in the surveyed paddock.
+  tar_file(site_coordinate_corrections_file, "raw_data/survey_data/site_coordinate_corrections.csv"),
+
   data_list_clean = data_list |>
 
     # normalise all character columns to lowercase for consistency across sources
     purrr::map(~ dplyr::mutate(.x, dplyr::across(where(is.character), tolower))) |>
+
+    # move corrected sites to their surveyed paddock's coordinates -- see r/a_correct_site_coordinates.R
+    correct_site_coordinates(read_csv(site_coordinate_corrections_file, show_col_types = FALSE)) |>
 
     # add time variables: year, year_adj, month_year, season_year_adj (ordered factors)
     purrr::map(attach_time_variables),

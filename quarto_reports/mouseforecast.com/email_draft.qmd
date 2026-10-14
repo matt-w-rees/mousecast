@@ -164,17 +164,17 @@ cat(paste0(
 
 Hi all, 
 
-A new Mouse Forecast is available, along with some changes to the way we communicate these updates.
+A new Mouse Forecast is available for the remainder of Spring on [www.mouseforecast.com](https://mouseforecast.com).
 
-**We have launched a new website - [www.mouseforecast.com](https://mouseforecast.com) - where you can see the full report with the most up-to-date information.** 
+Excitingly, we are now using a considerably updated statistical model to produce a more accurate forecast at a finer spatial resolution. The new model better considers recent environmental conditions and crop growth, alongside mouse survey data to forecast mouse abundance into the future. Please let me know if you have any feedback on how this information is presented. 
 
-We will regularly refresh the website as new data comes in (and continue to send these emails at key times of the growing year, the next due in Spring).
+A few more Spring mouse surveys are due to roll in, and we will refresh the website afterwards (and continue to send these emails at key times of the growing year).
+
+The next round of mouse surveys will occur over summer in QLD and northern NSW. 
+For more southern regions and Western Australia, our next surveys are scheduled from March 2027. 
+Due to recent favourable conditions, we are particularly interested in your observations of mice in paddocks post-harvest - please log these on [MouseAlert](https://feralscan.org.au/mousealert). 
 
 A pdf version of the forecast is also attached to this email, please forward on to your relevant network. 
-
-Mouse activity estimates are now completely based on quantitative data. Live-trapping, active burrow, and chew card assessments are integrated with farmer observations via [MouseAlert](https://feralscan.org.au/mousealert). We have kept the same "traffic light" colour coding but shifted to a continuous scale to show detail. 
-We are actively refining statistical methods to improve these forecasts and their presentation. Please let us know if you have any feedback. 
-
 
 Cheers, Matt.
 

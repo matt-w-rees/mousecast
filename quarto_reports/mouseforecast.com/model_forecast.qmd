@@ -37,7 +37,8 @@ toc: TRUE
 #| include: false
 
 ## The seasonal grower forecast for mouseforecast.com, built from the plague forecast model (Section E's 3-state
-## hidden Markov model). It replaced a summary of the raw survey data (r_not_in_use/raw_data_update.qmd).
+## hidden Markov model), with this season's surveys spread to nearby cells (r/e_spread_current_state.R). It replaced
+## a summary of the raw survey data (r_not_in_use/raw_data_update.qmd).
 
 library(targets)
 library(dplyr)
@@ -50,7 +51,7 @@ library(terra)
 store_path <- if (dir.exists("_targets")) "_targets" else "../../_targets"
 r_path <- if (dir.exists("r")) "r" else "../../r"
 qmd_dir <- if (dir.exists("quarto_reports/mouseforecast.com")) "quarto_reports/mouseforecast.com" else "."
-tar_load(c(plague_hindcast, plague_hindcast_scores, aez, aus_shp, surveys_all), store = store_path)
+tar_load(c(plague_hindcast, plague_hindcast_scores, current_state_map, state_spread_scores, aez, aus_shp, surveys_all), store = store_path)
 source(file.path(r_path, "a_season_info.R"))
 
 ## Town labels for map orientation, as on the current page.
@@ -73,14 +74,18 @@ phase_colours <- c(Low = "#1a9641", Moderate = "#fdae61", High = "#d7191c")
 #| label: forecast-prep
 #| include: false
 
-## The forecast: each 0.1 degree cell's chance of each level in the season after the model's latest
-## complete season (r/e_hindcast_plague_occurrence.R). The hindcast is already limited to the prediction region
-## (grain-growing land), so no further masking is needed.
+## The grid hindcast's latest season (r/e_hindcast_plague_occurrence.R), which sets the season forecast below. The
+## hindcast and the maps built from it are already limited to the prediction region (grain-growing land), so no
+## further masking is needed.
 period_key <- function(p) as.integer(sub(".*_", "", p)) * 100 + as.integer(sub("_.*", "", p))
 latest <- plague_hindcast[period_key(plague_hindcast$period) == max(period_key(plague_hindcast$period)), ]
-cells <- latest[!is.na(latest$next_1), ] |>
-  mutate(phase = factor(phase_labels[max.col(cbind(next_1, next_2, next_3), ties.method = "first")], levels = phase_labels),
-         at_least_building = next_2 + next_3)
+## Each cell's chance of each level once this season's surveys at nearby paddocks are taken into account
+## (r/e_spread_current_state.R); cells far from any survey keep the conditions-only forecast.
+cells <- current_state_map[!is.na(current_state_map$spread_1), ] |>
+  mutate(phase = factor(phase_labels[max.col(cbind(spread_1, spread_2, spread_3), ties.method = "first")], levels = phase_labels),
+         at_least_building = spread_2 + spread_3)
+## The spread distance chosen by the pipeline (r/e_score_state_spread.R), for the text.
+spread_km <- state_spread_scores$settings$bandwidth_km[1]
 
 ## The season forecast (the one after the covariates' season), for the outlook heading, figures and captions.
 covariate_period <- latest$period[1]
@@ -286,7 +291,7 @@ forecast_map <- function(fill_col, fill_scale) {
           axis.text = element_blank(), axis.ticks = element_blank())
 }
 ## Figure 1's caption, also saved for the email draft.
-cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain growing areas (shown at a 10 x 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels (potentially in a build-up phase), and \"high\" approaching or at plague-like numbers. Current season forecast depends on both mouse survey data and environmental conditions in the previous season.")
+cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain growing areas (shown at a 10 x 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels (potentially in a build-up phase), and \"high\" approaching or at plague-like numbers. Current season forecast depends on mouse survey data, environmental conditions in the previous season, and this season's surveys at nearby paddocks.")
 ```
 
 ```{r}
@@ -332,7 +337,7 @@ We are primarily seeking observations from within paddocks (not houses or farm s
 
 ## About
 
-Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Pest Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data becomes available.
+Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data becomes available.
 
 We are actively testing and improving the statistical forecast model, and working on its presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meets three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities.
 
@@ -349,6 +354,7 @@ We also receive reports from farmers, agronomists and other community members di
 - **A statistical model.** The forecast comes from a model built on more than 40 years of mouse surveys, which estimates which of three levels of mouse numbers to expect next season.
 - **Three levels.** Mouse numbers move from **low** to **moderate**, usually after conditions turn good, and from moderate to **high**, most often after a sharp swing from dry to wet conditions. Moderate and high can both fall back to low when good conditions end.
 - **What drives predictions.** Satellite crop growth over recent months, soil moisture over the past 6 to 12 months, rainfall swings, temperature, soil type, and whether a plague has just ended in the region set the chance of each move.
+- **This season's surveys.** Where paddocks have already been surveyed this season, their results update the forecast for the surrounding area (within about `r spread_km` km, in the same state). Areas far from any survey rely on conditions alone.
 - **How far ahead.** One season, since it uses observed conditions, not weather forecasts.
 - **How reliable.** Tested against recorded plague years before 2013, which the model never saw, `r skill_text`. It can't yet be tested in Western Australia, which has no reliable plague records over that period.
 
