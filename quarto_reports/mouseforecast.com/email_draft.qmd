@@ -166,7 +166,7 @@ Hi all,
 
 A new Mouse Forecast is available for the remainder of Spring on [www.mouseforecast.com](https://mouseforecast.com).
 
-Excitingly, we are now using a considerably updated statistical model to produce a more accurate forecast at a finer spatial resolution. The new model better considers recent environmental conditions and crop growth, alongside mouse survey data to forecast mouse abundance into the future. Please let me know if you have any feedback on how this information is presented. 
+Excitingly, we are now using an updated statistical model, allowing a more accurate forecast at a finer spatial resolution. This model better considers recent environmental conditions and crop growth alongside mouse survey data. Please let me know if you have any feedback on how the forecast is presented. 
 
 A few more Spring mouse surveys are due to roll in, and we will refresh the website afterwards (and continue to send these emails at key times of the growing year).
 

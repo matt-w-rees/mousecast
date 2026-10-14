@@ -291,7 +291,7 @@ forecast_map <- function(fill_col, fill_scale) {
           axis.text = element_blank(), axis.ticks = element_blank())
 }
 ## Figure 1's caption, also saved for the email draft.
-cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain growing areas (shown at a 10 x 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels (potentially in a build-up phase), and \"high\" approaching or at plague-like numbers. Current season forecast depends on mouse survey data, environmental conditions in the previous season, and this season's surveys at nearby paddocks.")
+cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain-growing areas (shown at a 10 × 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels where crop damage is possible (potentially in a build-up phase), and \"high\" approaching or at concerning numbers where crop damage is likely. The forecast is based on past mouse surveys, environmental conditions in the previous season, and this season's surveys at nearby paddocks.")
 ```
 
 ```{r}
@@ -319,7 +319,7 @@ Disclaimer: forecasts and recommendations are prepared by CSIRO researchers from
 ```{r}
 #| label: fig-chance
 #| fig-asp: !expr map_fig_asp
-#| fig-cap: !expr 'paste0("Chance of mouse numbers being moderate or high in ", forecast_season$label, ", a level where growers should monitor mouse numbers in paddocks and be prepared to take management action. Red shows where mouse numbers are more likely to be moderate-high than low. Blue shows where mouse numbers are more likely to be low than to be moderate-high. White areas within the grain growing regions (outlined in black) show equal probability of being low or moderate-high (i.e., same chance as a coin toss).")'
+#| fig-cap: !expr 'paste0("Chance of mouse numbers being moderate or high in ", forecast_season$label, ", a level where growers should monitor mouse numbers in paddocks and be prepared to take management action. Red shows where mouse numbers are more likely to be moderate or high than low. Blue shows where mouse numbers are more likely to be low than moderate or high. White areas within the grain-growing regions (outlined in black) show an equal chance of being low or moderate or high (the same chance as a coin toss).")'
 
 ## Diverging at 50%: blue where moderate or high activity is less likely than not, red where more likely,
 ## white at 50%.
@@ -337,32 +337,32 @@ We are primarily seeking observations from within paddocks (not houses or farm s
 
 ## About
 
-Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025-29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data becomes available.
+Mouse forecasts are enabled through a [Grains Research and Development Corporation and CSIRO investment into the 2025–29 Mouse Monitoring and Surveillance project](https://groundcover.grdc.com.au/grdc/announcements/investments-target-new-normal-of-mouse-activity) via the [Rodent Management team](https://research.csiro.au/rm/). Forecasts will be updated seasonally or as new data becomes available.
 
-We are actively testing and improving the statistical forecast model, and working on its presentation. This work is run in coordination with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meets three times a year to update local reports of the current mouse situation, review management recommendations and determine research priorities.
+We are actively testing and improving the statistical forecast model, and working on its presentation. This work is coordinated with the National Mouse Group, a grower-led network of farmers, industry representatives, state government, GRDC and CSIRO. The group meets three times a year to share local reports of the current mouse situation, review management recommendations and determine research priorities.
 
 ### Monitoring data
 Mouse population surveys are conducted 3–4 times a year at each of the ~170 long-term monitoring sites.
 Mice are surveyed through active burrow searches and chew cards. To calibrate this data against more robust population density measurements, we also conduct live-trapping at 4 sites (Adelaide Plains SA, Northern Mallee VIC, Central West NSW and Moree NSW).
 
-Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, and Farmanco. We also thank NSW DPIRD, who generously provide additional live-trapping survey data. Further live-trapping data is also occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024-2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
+Mouse monitoring data is collected by CSIRO, NSW Local Land Services, NSW Department of Primary Industries and Regional Development, Central West Farming Services, Birchip Cropping Group, and Farmanco. We also thank NSW DPIRD, who generously provide additional live-trapping survey data. Further live-trapping data is occasionally supplied through the [GRDC / CSIRO Mouse Ecology 2024–2029 project](https://research.csiro.au/rm/research-projects/mouse-ecology-2024-2029/).
 
-We also receive reports from farmers, agronomists and other community members directly. This is key information we consider given we cannot feasibly survey every paddock across the entire grain growing region.
+We also receive reports from farmers, agronomists and other community members directly. These reports are valuable, as we cannot feasibly survey every paddock across the grain-growing region.
 
 ### How the forecast works
 
-- **A statistical model.** The forecast comes from a model built on more than 40 years of mouse surveys, which estimates which of three levels of mouse numbers to expect next season.
-- **Three levels.** Mouse numbers move from **low** to **moderate**, usually after conditions turn good, and from moderate to **high**, most often after a sharp swing from dry to wet conditions. Moderate and high can both fall back to low when good conditions end.
-- **What drives predictions.** Satellite crop growth over recent months, soil moisture over the past 6 to 12 months, rainfall swings, temperature, soil type, and whether a plague has just ended in the region set the chance of each move.
-- **This season's surveys.** Where paddocks have already been surveyed this season, their results update the forecast for the surrounding area (within about `r spread_km` km, in the same state). Areas far from any survey rely on conditions alone.
-- **How far ahead.** One season, since it uses observed conditions, not weather forecasts.
-- **How reliable.** Tested against recorded plague years before 2013, which the model never saw, `r skill_text`. It can't yet be tested in Western Australia, which has no reliable plague records over that period.
+- **A statistical model.** Built on more than 40 years of mouse surveys (live-trapping, active burrow counts and chew cards), it estimates whether mouse numbers in each area are most likely low, moderate or high this season.
+- **Three abundance levels.** Numbers move from low to moderate after conditions turn good, and from moderate to high most often after a sharp dry-to-wet swing. Both fall back to low when good conditions end.
+- **What drives predictions.** Recent mouse survey data and environmental conditions: satellite crop growth, soil moisture, rainfall swings, temperature, soil type.
+- **How far ahead.** One season, as it uses observed conditions, not weather forecasts.
+- **How reliable.** Tested against plague years recorded before 2013 (records it was not trained on), `r skill_text`. It can't yet be tested in Western Australia, which lacks reliable plague records for that period.
+- **How to interpret.** The forecast shows regional risk, not individual paddocks, and will sometimes miss an outbreak or give a false alarm, so use it as a prompt to check your own paddocks.
 
 ### Contact {#sec-contact}
 
-Questions about the forecast? Get in touch with Dr Matthew Rees [matt.rees@csiro.au](mailto:matt.rees@csiro.au).
+Questions about the forecast? Get in touch with Dr Matthew Rees at [matt.rees@csiro.au](mailto:matt.rees@csiro.au).
 
-For media enquiries, contact Research Officer Steve Henry [steve.henry@csiro.au](mailto:steve.henry@csiro.au) or the [CSIRO media office](https://www.csiro.au/en/news/Media-Centre).
+For media enquiries, contact Research Officer Steve Henry ([steve.henry@csiro.au](mailto:steve.henry@csiro.au)) or the [CSIRO media office](https://www.csiro.au/en/news/Media-Centre).
 
 We value your feedback.
 
