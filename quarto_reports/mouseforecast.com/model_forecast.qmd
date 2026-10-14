@@ -299,7 +299,7 @@ forecast_map <- function(fill_col, fill_scale) {
           axis.text = element_blank(), axis.ticks = element_blank())
 }
 ## Figure 1's caption, also saved for the email draft.
-cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain-growing areas (shown at a 10 × 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels where crop damage is possible (potentially in a build-up phase), and \"high\" approaching or at concerning numbers where crop damage is likely. The forecast is based on past mouse surveys, environmental conditions in the previous season, and this season's surveys at nearby paddocks.")
+cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$label, " predicted across key grain-growing areas (shown at a 10 × 10 km spatial resolution). \"Low\" numbers reflect typical yearly fluctuations in mouse numbers, with \"moderate\" numbers rising above normal levels where crop damage is possible (potentially in a build-up phase), and \"high\" approaching or at concerning numbers where crop damage is likely. Paler shades show where the forecast is less certain of that level. The forecast is based on past mouse surveys, environmental conditions in the previous season, and this season's surveys at nearby paddocks.")
 ```
 
 ```{r}
@@ -307,7 +307,7 @@ cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$la
 #| fig-asp: !expr map_fig_asp
 #| fig-cap: !expr cap_phase
 
-p_phase <- forecast_map("phase", scale_fill_manual(values = phase_colours, drop = FALSE, name = paste("Estimated level of mouse numbers in", forecast_season$label),
+p_phase <- forecast_map("phase", scale_fill_manual(values = phase_colours, drop = FALSE, name = paste("Estimated level of mouse numbers in", forecast_season$label, "(paler = less certain)"),
                                                    guide = guide_legend(title.position = "top", title.hjust = 0.5)))
 ## The faded colours drawn over the level colours (straight after forecast_map()'s own grid layer, so the outline and
 ## towns stay on top); the legend keeps the three solid level colours.
