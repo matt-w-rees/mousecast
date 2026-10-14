@@ -84,6 +84,14 @@ latest <- plague_hindcast[period_key(plague_hindcast$period) == max(period_key(p
 cells <- current_state_map[!is.na(current_state_map$spread_1), ] |>
   mutate(phase = factor(phase_labels[max.col(cbind(spread_1, spread_2, spread_3), ties.method = "first")], levels = phase_labels),
          at_least_building = spread_2 + spread_3)
+## Figure 1's shading: each cell's most likely level, faded towards white the less certain it is. Certainty is that
+## level's chance, rescaled from a three-way tie (1/3) to certain (1); the least certain cells keep a quarter of
+## their colour, so the level stays visible.
+certainty <- pmax(cells$spread_1, cells$spread_2, cells$spread_3)
+colour_kept <- 0.25 + 0.75 * pmin(1, pmax(0, (certainty - 1/3) / (2/3)))
+level_rgb <- grDevices::col2rgb(phase_colours[as.character(cells$phase)]) / 255
+faded_rgb <- level_rgb * rep(colour_kept, each = 3) + (1 - rep(colour_kept, each = 3))
+cells$phase_colour <- grDevices::rgb(faded_rgb[1, ], faded_rgb[2, ], faded_rgb[3, ])
 ## The spread distance chosen by the pipeline (r/e_score_state_spread.R), for the text.
 spread_km <- state_spread_scores$settings$bandwidth_km[1]
 
@@ -301,6 +309,9 @@ cap_phase <- paste0("Most likely level of mouse numbers in ", forecast_season$la
 
 p_phase <- forecast_map("phase", scale_fill_manual(values = phase_colours, drop = FALSE, name = paste("Estimated level of mouse numbers in", forecast_season$label),
                                                    guide = guide_legend(title.position = "top", title.hjust = 0.5)))
+## The faded colours drawn over the level colours (straight after forecast_map()'s own grid layer, so the outline and
+## towns stay on top); the legend keeps the three solid level colours.
+p_phase$layers <- append(p_phase$layers, list(geom_raster(data = cells, aes(x, y), fill = cells$phase_colour)), after = 2)
 ## A copy of the map and its caption for the email draft (email_draft.qmd), which embeds them as they are.
 ggplot2::ggsave(file.path(qmd_dir, "email_map.png"), plot = p_phase, width = 8, height = 8 * map_fig_asp, dpi = 150, bg = "white")
 writeLines(cap_phase, file.path(qmd_dir, "email_caption.txt"))
@@ -319,7 +330,7 @@ Disclaimer: forecasts and recommendations are prepared by CSIRO researchers from
 ```{r}
 #| label: fig-chance
 #| fig-asp: !expr map_fig_asp
-#| fig-cap: !expr 'paste0("Chance of mouse numbers being moderate or high in ", forecast_season$label, ", a level where growers should monitor mouse numbers in paddocks and be prepared to take management action. Red shows where mouse numbers are more likely to be moderate or high than low. Blue shows where mouse numbers are more likely to be low than moderate or high. White areas within the grain-growing regions (outlined in black) show an equal chance of being low or moderate or high (the same chance as a coin toss).")'
+#| fig-cap: !expr 'paste0("Chance of mouse numbers being moderate or high in ", forecast_season$label, ". Red shows where mouse numbers are more likely to be moderate or high than low. Blue shows where mouse numbers are more likely to be low than moderate or high. White areas within the grain-growing regions (outlined in black) show an equal chance of being low or moderate or high (the same chance as a coin toss). Moderate or high mouse numbers are a level where growers should monitor mouse numbers in paddocks and be prepared to take management action.")'
 
 ## Diverging at 50%: blue where moderate or high activity is less likely than not, red where more likely,
 ## white at 50%.
