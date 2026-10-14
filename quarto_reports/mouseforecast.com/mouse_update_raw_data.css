@@ -44,7 +44,7 @@
   @page { margin-top: 0.5cm; margin-bottom: 0.3cm; }
 
   body {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   /* Tighten the title banner padding */
@@ -56,18 +56,18 @@
   /* Remove any top margin on the title block itself */
   .quarto-title-block { margin-top: 0; padding-top: 0; }
 
-  /* Heading sizes, with extra space (~2 lines at the new body size) above
-     each section heading so sections are clearly separated */
-  h2 { font-size: 16px; margin-top: 42px; margin-bottom: 6px; }
-  h3 { font-size: 15px; margin-top: 36px; margin-bottom: 4px; }
+  /* Heading sizes, with about a line of space above each section heading so sections stay separated
+     without pushing the PDF onto extra pages */
+  h2 { font-size: 16px; margin-top: 22px; margin-bottom: 6px; }
+  h3 { font-size: 15px; margin-top: 16px; margin-bottom: 4px; }
 
   /* Spacing for paragraphs and lists */
   p, ul, ol { margin-top: 4px; margin-bottom: 6px; }
   li        { margin-bottom: 2px; }
 
   /* "In short" and "In detail" blocks — inherit the body size */
-  .overview-detail           { font-size: 13px; }
-  .overview-detail h3        { font-size: 13px; }
+  .overview-detail           { font-size: 12px; }
+  .overview-detail h3        { font-size: 12px; }
   .overview-detail p,
   .overview-detail ul,
   .overview-detail li        { margin-bottom: 0px; }
@@ -76,7 +76,7 @@
      match caption font size to body text */
   figcaption,
   .figure-caption,
-  .quarto-figure figcaption  { margin-top: 0; padding-top: 0; font-size: 13px; }
+  .quarto-figure figcaption  { margin-top: 0; padding-top: 0; font-size: 12px; }
 
   /* Remove bottom margin on the image so it sits flush against the caption */
   .quarto-figure img,
@@ -90,10 +90,10 @@
     break-after: page;  /* modern equivalent for broader browser support */
   }
 
-  /* Cap figure heights so they stay compact and don't dominate a page */
+  /* Cap figure heights so the first map fits on page 1 under the outlook, and the PDF stays at three pages */
   .quarto-figure img,
   .cell-output-display img {
-    max-height: 420px;
+    max-height: 270px;
     width: auto;
   }
 
@@ -108,4 +108,10 @@
      end of the document */
   .doc-footer { margin-top: 10px; padding-top: 8px; }
   hr          { margin: 8px 0; }
+
+  /* Smaller footer logos in print, so they fit at the foot of the last page rather than on a page of their own */
+  .doc-footer img { height: 36px !important; }
+  /* No spacing below the footer, which otherwise tips a blank page onto the end */
+  .doc-footer p, .doc-footer div { margin-bottom: 0; }
+  main, #quarto-content, .page-columns { padding-bottom: 0 !important; margin-bottom: 0 !important; }
 }
